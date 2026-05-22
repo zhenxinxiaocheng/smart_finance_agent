@@ -1,0 +1,48 @@
+server:
+  port: 8080
+
+spring:
+  config:
+    import: optional:classpath:application-local.yml
+  datasource:
+    url: jdbc:mysql://localhost:3306/smart_finance?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always
+      continue-on-error: true
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# JWT
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration: 86400000
+
+# LangChain4j - DashScope (通义千问)
+langchain4j:
+  dashscope:
+    api-key: ${DASHSCOPE_API_KEY:}
+    chat-model:
+      model-name: qwen3.5-plus
+      temperature: 0.8
+      top-p: 0.9
+    embedding-model:
+      model-name: text-embedding-v3
+
+# 联网搜索配置（可选，不配置时搜索工具会提示未启用）
+search:
+  api-key: ${TAVILY_API_KEY:}
