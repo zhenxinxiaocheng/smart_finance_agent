@@ -41,8 +41,8 @@
             <div class="empty-icon">&#x1F4B0;</div>
           </div>
           <h2 class="empty-title">你好！我是智财Agent</h2>
-          <p class="empty-desc">我可以帮你分析消费记录、发现省钱机会、生成财务报告</p>
-          <p class="empty-hint">试试问我你的财务状况，或点击下方问题快速开始</p>
+          <p class="empty-desc">我可以帮你分析消费行为、监控财务状况、规划预算，还能快速记账</p>
+          <p class="empty-hint">试试用自然语言记账，或点击下方问题快速开始</p>
         </div>
 
         <div
@@ -142,7 +142,7 @@
           <textarea
             v-model="inputMessage"
             class="chat-input"
-            :placeholder="loading ? '等待AI回复...' : '输入你的财务问题...'"
+            :placeholder="loading ? '等待AI回复...' : '输入财务问题，或直接记账...'"
             :disabled="loading"
             rows="1"
             @keydown.enter.prevent="handleSend"
@@ -160,7 +160,7 @@
             </svg>
           </button>
         </div>
-        <p class="input-hint">智财Agent · 基于你的消费数据提供个性化建议</p>
+        <p class="input-hint">智财Agent · 消费分析 + 理财顾问 · 试试说「分析一下我的消费结构」</p>
       </div>
     </div>
   </div>
@@ -189,11 +189,10 @@ const suggestions = [
   '我这个月消费情况如何？',
   '帮我分析支出分类占比',
   '有什么省钱建议吗？',
-  '上个月收支总结如何？',
   '我在餐饮上花了多少？'
 ]
 
-const suggestionIcons = ['📊', '📈', '💡', '📋', '🍜']
+const suggestionIcons = ['📝', '💰', '📊', '📈', '💡', '🍜']
 
 function autoResizeInput(e) {
   const el = e.target

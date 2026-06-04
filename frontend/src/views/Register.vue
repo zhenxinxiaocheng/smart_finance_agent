@@ -89,7 +89,7 @@ async function handleRegister() {
       nickname: form.nickname || undefined
     })
     ElMessage.success('注册成功')
-    router.push('/dashboard')
+    router.push('/statistics')
   } catch {
   } finally {
     loading.value = false
