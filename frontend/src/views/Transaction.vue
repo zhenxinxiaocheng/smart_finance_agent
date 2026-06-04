@@ -5,10 +5,16 @@
         <h1 class="page-title">消费记录</h1>
         <p class="page-subtitle">管理和查看你的所有收支记录</p>
       </div>
-      <el-button type="primary" size="large" @click="showAddDialog">
-        <el-icon><Plus /></el-icon>
-        新增记录
-      </el-button>
+      <div class="header-actions">
+        <el-button size="large" @click="showCategoryDialog">
+          <el-icon><Setting /></el-icon>
+          管理分类
+        </el-button>
+        <el-button type="primary" size="large" @click="showAddDialog">
+          <el-icon><Plus /></el-icon>
+          新增记录
+        </el-button>
+      </div>
     </div>
 
     <div class="filter-section">
@@ -36,7 +42,7 @@
         <div class="filter-group">
           <span class="filter-label">分类</span>
           <el-select v-model="filter.category" placeholder="全部分类" clearable size="default" @change="fetchData">
-            <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+            <el-option v-for="cat in categories" :key="cat.name" :label="cat.name" :value="cat.name" />
           </el-select>
         </div>
         <div class="filter-group">
@@ -145,7 +151,7 @@
           <el-col :span="12">
             <el-form-item label="分类" prop="category">
               <el-select v-model="form.category" placeholder="选择分类" style="width: 100%">
-                <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+                <el-option v-for="cat in categories" :key="cat.name" :label="cat.name" :value="cat.name" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -182,12 +188,101 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="categoryDialogVisible"
+      title="管理消费分类"
+      width="600px"
+      :close-on-click-modal="false"
+      class="fin-dialog"
+    >
+      <div class="category-mgr-header">
+        <p class="category-mgr-desc">自定义你的消费分类，系统分类不可修改或删除</p>
+        <el-button type="primary" size="small" @click="showAddCategoryForm">
+          <el-icon><Plus /></el-icon>
+          新增分类
+        </el-button>
+      </div>
+
+      <div v-if="showCategoryForm" class="category-form-card">
+        <el-form ref="catFormRef" :model="catForm" :rules="catRules" label-width="90px">
+          <el-row :gutter="12">
+            <el-col :span="12">
+              <el-form-item label="分类名称" prop="name">
+                <el-input v-model="catForm.name" placeholder="如：教育" maxlength="20" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="图标标识" prop="icon">
+                <el-input v-model="catForm.icon" placeholder="如：education" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="12">
+            <el-col :span="8">
+              <el-form-item label="对标下限(%)" prop="benchmarkMin">
+                <el-input-number v-model="catForm.benchmarkMin" :min="0" :max="100" :step="1" style="width: 100%" controls-position="right" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="对标上限(%)" prop="benchmarkMax">
+                <el-input-number v-model="catForm.benchmarkMax" :min="0" :max="100" :step="1" style="width: 100%" controls-position="right" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="排序" prop="sortOrder">
+                <el-input-number v-model="catForm.sortOrder" :min="0" :step="1" style="width: 100%" controls-position="right" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="对标标签" prop="benchmarkLabel">
+            <el-input v-model="catForm.benchmarkLabel" placeholder="如：教育/培训支出" />
+          </el-form-item>
+        </el-form>
+        <div class="category-form-actions">
+          <el-button size="small" @click="cancelCategoryForm">取消</el-button>
+          <el-button type="primary" size="small" :loading="catSubmitLoading" @click="handleCategorySubmit">
+            {{ catEditId ? '保存更改' : '添加分类' }}
+          </el-button>
+        </div>
+      </div>
+
+      <div class="category-list">
+        <div v-for="cat in categories" :key="cat.id" class="category-item">
+          <div class="cat-info">
+            <span class="cat-icon">{{ cat.name.charAt(0) }}</span>
+            <div class="cat-detail">
+              <span class="cat-name">{{ cat.name }}</span>
+              <span v-if="cat.userId === 0" class="cat-badge cat-system">系统分类</span>
+              <span v-else class="cat-badge cat-custom">自定义</span>
+            </div>
+          </div>
+          <div class="cat-benchmark">
+            <template v-if="cat.benchmarkMin != null && cat.benchmarkMax != null">
+              <span class="benchmark-range">{{ cat.benchmarkMin }}%-{{ cat.benchmarkMax }}%</span>
+              <span v-if="cat.benchmarkLabel" class="benchmark-label">{{ cat.benchmarkLabel }}</span>
+            </template>
+            <span v-else class="cat-no-benchmark">无对标数据</span>
+          </div>
+          <div class="cat-actions">
+            <el-button v-if="cat.userId !== 0" text size="small" @click="showEditCategoryForm(cat)">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+            <el-button v-if="cat.userId !== 0" text type="danger" size="small" @click="handleDeleteCategory(cat.id, cat.name)">
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+        <el-empty v-if="categories.length === 0" :image-size="80" description="暂无分类数据" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { listTransactionsAPI, addTransactionAPI, updateTransactionAPI, deleteTransactionAPI } from '../api/transaction'
+import { listCategoriesAPI, addCategoryAPI, updateCategoryAPI, deleteCategoryAPI } from '../api/category'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const tableData = ref([])
@@ -202,7 +297,16 @@ const filter = reactive({
   dateRange: null
 })
 
-const categories = ['餐饮', '交通', '购物', '住房', '娱乐', '工资', '其他']
+const categories = ref([])
+
+async function fetchCategories() {
+  try {
+    const res = await listCategoriesAPI()
+    if (res.code === 200) {
+      categories.value = res.data || []
+    }
+  } catch {}
+}
 
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -223,6 +327,104 @@ const rules = {
   category: [{ required: true, message: '请选择分类' }],
   amount: [{ required: true, message: '请输入金额' }],
   transactionDate: [{ required: true, message: '请选择日期' }]
+}
+
+const categoryDialogVisible = ref(false)
+const showCategoryForm = ref(false)
+const catEditId = ref(null)
+const catSubmitLoading = ref(false)
+const catFormRef = ref(null)
+
+const catForm = reactive({
+  name: '',
+  icon: '',
+  benchmarkMin: null,
+  benchmarkMax: null,
+  benchmarkLabel: '',
+  sortOrder: 0
+})
+
+const catRules = {
+  name: [{ required: true, message: '请输入分类名称' }]
+}
+
+function showCategoryDialog() {
+  categoryDialogVisible.value = true
+  cancelCategoryForm()
+}
+
+function showAddCategoryForm() {
+  catEditId.value = null
+  catForm.name = ''
+  catForm.icon = ''
+  catForm.benchmarkMin = null
+  catForm.benchmarkMax = null
+  catForm.benchmarkLabel = ''
+  catForm.sortOrder = categories.value.length + 1
+  showCategoryForm.value = true
+}
+
+function showEditCategoryForm(cat) {
+  catEditId.value = cat.id
+  catForm.name = cat.name
+  catForm.icon = cat.icon || ''
+  catForm.benchmarkMin = cat.benchmarkMin
+  catForm.benchmarkMax = cat.benchmarkMax
+  catForm.benchmarkLabel = cat.benchmarkLabel || ''
+  catForm.sortOrder = cat.sortOrder || 0
+  showCategoryForm.value = true
+}
+
+function cancelCategoryForm() {
+  showCategoryForm.value = false
+  catEditId.value = null
+  catForm.name = ''
+  catForm.icon = ''
+  catForm.benchmarkMin = null
+  catForm.benchmarkMax = null
+  catForm.benchmarkLabel = ''
+  catForm.sortOrder = 0
+}
+
+async function handleCategorySubmit() {
+  const valid = await catFormRef.value.validate().catch(() => false)
+  if (!valid) return
+  catSubmitLoading.value = true
+  try {
+    const data = {
+      name: catForm.name,
+      icon: catForm.icon || null,
+      benchmarkMin: catForm.benchmarkMin,
+      benchmarkMax: catForm.benchmarkMax,
+      benchmarkLabel: catForm.benchmarkLabel || null,
+      sortOrder: catForm.sortOrder || 0
+    }
+    if (catEditId.value) {
+      await updateCategoryAPI(catEditId.value, data)
+      ElMessage.success('分类更新成功')
+    } else {
+      await addCategoryAPI(data)
+      ElMessage.success('分类添加成功')
+    }
+    showCategoryForm.value = false
+    await fetchCategories()
+  } finally {
+    catSubmitLoading.value = false
+  }
+}
+
+function handleDeleteCategory(id, name) {
+  ElMessageBox.confirm(`确定要删除分类「${name}」吗？删除后不可恢复。`, '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      await deleteCategoryAPI(id)
+      ElMessage.success(`分类「${name}」已删除`)
+      await fetchCategories()
+    } catch {}
+  }).catch(() => {})
 }
 
 async function fetchData() {
@@ -308,7 +510,10 @@ function handleDelete(id) {
   }).catch(() => {})
 }
 
-onMounted(fetchData)
+onMounted(() => {
+  fetchData()
+  fetchCategories()
+})
 </script>
 
 <style scoped>
@@ -324,6 +529,10 @@ onMounted(fetchData)
   margin-bottom: 24px;
 }
 
+.header-text {
+  flex: 1;
+}
+
 .page-title {
   font-size: 24px;
   font-weight: 700;
@@ -335,6 +544,12 @@ onMounted(fetchData)
   font-size: 14px;
   color: var(--text-muted);
   margin-top: 4px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .filter-section {
@@ -519,5 +734,141 @@ onMounted(fetchData)
 :deep(.el-radio-button.is-active .el-radio-button__inner) {
   background: var(--primary);
   border-color: var(--primary);
+}
+
+.category-mgr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.category-mgr-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.category-form-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.category-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+
+.category-item:hover {
+  border-color: var(--primary-light);
+}
+
+.cat-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 160px;
+  flex-shrink: 0;
+}
+
+.cat-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.cat-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cat-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cat-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  align-self: flex-start;
+}
+
+.cat-badge.cat-system {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.cat-badge.cat-custom {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.cat-benchmark {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.benchmark-range {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-surface);
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.benchmark-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.cat-no-benchmark {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.cat-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
 }
 </style>

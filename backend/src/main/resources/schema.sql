@@ -35,6 +35,24 @@ CREATE TABLE IF NOT EXISTS `transaction`
     CONSTRAINT `fk_transaction_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='交易记录表';
 
+-- 消费分类表
+CREATE TABLE IF NOT EXISTS `expense_category`
+(
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT       NOT NULL DEFAULT 0 COMMENT '用户ID(0=系统默认)',
+    `name`            VARCHAR(50)  NOT NULL COMMENT '分类名称',
+    `icon`            VARCHAR(50)  NULL     COMMENT '图标标识',
+    `benchmark_min`   INT          NULL     COMMENT '对标分析下限(%)',
+    `benchmark_max`   INT          NULL     COMMENT '对标分析上限(%)',
+    `benchmark_label` VARCHAR(100) NULL     COMMENT '对标分析标签(如"食品支出")',
+    `sort_order`      INT          NOT NULL DEFAULT 0 COMMENT '排序号',
+    `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `deleted`         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
+    PRIMARY KEY (`id`),
+    INDEX `idx_user_sort` (`user_id`, `sort_order`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='消费分类表';
+
 -- 聊天消息表
 CREATE TABLE IF NOT EXISTS `chat_message`
 (

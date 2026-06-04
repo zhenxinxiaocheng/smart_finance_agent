@@ -1,9 +1,19 @@
--- 插入测试用户 (密码: 123456, BCrypt加密)
-INSERT IGNORE INTO `user` (`username`, `password`, `nickname`) VALUES
+DELETE FROM expense_category WHERE user_id = 0;
+
+INSERT INTO expense_category (user_id, name, icon, benchmark_min, benchmark_max, benchmark_label, sort_order) VALUES
+(0, '餐饮', 'food', 25, 35, '食品支出', 1),
+(0, '住房', 'home', 20, 35, '房租/房贷/水电', 2),
+(0, '交通', 'transport', 8, 15, '通勤/出行', 3),
+(0, '购物', 'shopping', 10, 20, '日用品/服装/数码', 4),
+(0, '娱乐', 'entertainment', 5, 15, '休闲/旅游/游戏', 5),
+(0, '医疗', 'medical', 3, 10, '看病/药品/体检', 6),
+(0, '工资', 'salary', NULL, NULL, '工资收入', 7),
+(0, '其他', 'other', NULL, NULL, '其他支出', 8);
+
+INSERT IGNORE INTO user (username, password, nickname) VALUES
 ('test_user', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '测试用户');
 
--- 插入测试交易记录（需要确保上面的 test_user 的 id = 1）
-INSERT IGNORE INTO `transaction` (`user_id`, `amount`, `type`, `category`, `description`, `transaction_date`) VALUES
+INSERT IGNORE INTO `transaction` (user_id, amount, type, category, description, transaction_date) VALUES
 (1, 35.50, 'EXPENSE', '餐饮', '午餐-公司食堂', '2026-05-20'),
 (1, 12.00, 'EXPENSE', '交通', '地铁通勤', '2026-05-20'),
 (1, 299.00, 'EXPENSE', '购物', '购买书籍', '2026-05-19'),

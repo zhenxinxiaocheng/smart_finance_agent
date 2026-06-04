@@ -1,7 +1,19 @@
 server:
   port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
 
 spring:
+  http:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+      force-request: true
+      force-response: true
   config:
     import: optional:classpath:application-local.yml
   datasource:
@@ -13,6 +25,7 @@ spring:
     init:
       mode: always
       continue-on-error: true
+      encoding: UTF-8
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
