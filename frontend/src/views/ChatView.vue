@@ -26,6 +26,23 @@
           </div>
         </div>
         <div class="header-actions">
+          <el-popover placement="bottom-end" :width="340" trigger="click" popper-class="alert-pop">
+            <template #reference>
+              <button class="action-btn" title="预算预警">
+                <el-badge :value="unreadAlertCount" :hidden="unreadAlertCount===0" :max="99">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+                </el-badge>
+              </button>
+  </template>
+    <div class="alert-panel" style="min-height:80px">
+      <div style="font-weight:600;font-size:14px;margin-bottom:10px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:8px">&#x1f514; 预算预警</div>
+      <div v-if="alertList.length===0" style="text-align:center;color:#94a3b8;padding:24px 0;font-size:13px">&#x2705; 暂无预警消息</div>
+      <div v-for="a in alertList" :key="a.id" style="padding:10px 12px;margin-bottom:8px;border-radius:8px;font-size:13px;line-height:1.5" :style="{background:a.severity==='CRITICAL'?'#fef2f2':'#fffbeb',color:a.severity==='CRITICAL'?'#991b1b':'#92400e',border:a.severity==='CRITICAL'?'1px solid #fecaca':'1px solid #fde68a'}">
+        <div style="font-weight:500;margin-bottom:3px">{{ a.message }}</div>
+        <div style="font-size:11px;opacity:0.6">{{ (a.createdAt||'').slice(0,16) }}</div>
+      </div>
+    </div>
+  </el-popover>
           <button class="action-btn" title="新建对话" @click="clearChat">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 3v18M3 12h18"/>
@@ -35,19 +52,19 @@
       </header>
 
       <div class="messages-area" ref="messageListRef">
-        <div v-if="messages.length === 0" class="empty-state">
+        <div v-if="messages.length === 0 && !historyLoading" class="empty-state">
           <div class="empty-icon-wrapper">
             <div class="empty-icon-bg"></div>
             <div class="empty-icon">&#x1F4B0;</div>
           </div>
           <h2 class="empty-title">你好！我是智财Agent</h2>
-          <p class="empty-desc">我可以帮你分析消费记录、发现省钱机会、生成财务报告</p>
-          <p class="empty-hint">试试问我你的财务状况，或点击下方问题快速开始</p>
+          <p class="empty-desc">我可以帮你分析消费行为、监控财务状况、规划预算，还能快速记账</p>
+          <p class="empty-hint">试试用自然语言记账，或点击下方问题快速开始</p>
         </div>
 
         <div
           v-for="(msg, index) in messages"
-          :key="index"
+          :key="msg.role + '-' + index + '-' + (msg.content?.slice(0, 20))"
           class="message-wrapper"
           :class="msg.role === 'USER' ? 'user-message' : 'ai-message'"
         >
@@ -113,7 +130,7 @@
           <div class="message-content">
             <div class="message-label">智财Agent</div>
             <div class="message-bubble ai-bubble typing-bubble">
-              <span v-html="typingDisplay"></span>
+              <span v-html="renderMarkdown(typingDisplay)"></span>
               <span class="typing-cursor" v-if="isTyping">|</span>
               <span class="typing-dots" v-else>
                 <span>.</span><span>.</span><span>.</span>
@@ -142,7 +159,7 @@
           <textarea
             v-model="inputMessage"
             class="chat-input"
-            :placeholder="loading ? '等待AI回复...' : '输入你的财务问题...'"
+            :placeholder="loading ? '等待AI回复...' : '输入财务问题，或直接记账...'"
             :disabled="loading"
             rows="1"
             @keydown.enter.prevent="handleSend"
@@ -160,15 +177,16 @@
             </svg>
           </button>
         </div>
-        <p class="input-hint">智财Agent · 基于你的消费数据提供个性化建议</p>
+        <p class="input-hint">智财Agent · 消费分析 + 理财顾问 · 试试说「分析一下我的消费结构」</p>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { sendChatAPI, getChatHistoryAPI } from '../api/chat'
+import { getUnreadAlertsAPI } from '../api/alert'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -179,21 +197,25 @@ marked.setOptions({
 const messages = ref([])
 const inputMessage = ref('')
 const loading = ref(false)
+const unreadAlertCount = ref(0)
+const alertList = ref([])
 const messageListRef = ref(null)
 const showTypingAnimation = ref(false)
 const typingDisplay = ref('')
 const isTyping = ref(false)
+const historyLoading = ref(true)
 let typingTimer = null
+let alertTimer = null
 
 const suggestions = [
   '我这个月消费情况如何？',
   '帮我分析支出分类占比',
   '有什么省钱建议吗？',
-  '上个月收支总结如何？',
-  '我在餐饮上花了多少？'
+  '我在餐饮上花了多少？',
+  '帮我看看我的预算设置'
 ]
 
-const suggestionIcons = ['📊', '📈', '💡', '📋', '🍜']
+const suggestionIcons = ['📝', '💰', '📊', '📈', '💡', '🍜']
 
 function autoResizeInput(e) {
   const el = e.target
@@ -203,10 +225,28 @@ function autoResizeInput(e) {
 
 function renderMarkdown(content) {
   if (!content) return ''
-  const html = marked.parse(content)
-  return html
-    .replace(/<table>/g, '<div class="md-table-wrap"><table>')
-    .replace(/<\/table>/g, '</table></div>')
+  
+  // 处理不完整的Markdown语法
+  let safeContent = content
+  
+  // 处理不完整的代码块
+  const codeBlockStart = (safeContent.match(/```/g) || []).length
+  if (codeBlockStart % 2 !== 0) {
+    safeContent += '\n```'
+  }
+  
+  // 处理不完整的列表项（确保不会因为截断导致问题）
+  // 处理不完整的加粗/斜体等内联格式
+  
+  try {
+    const html = marked.parse(safeContent)
+    return html
+      .replace(/<table>/g, '<div class="md-table-wrap"><table>')
+      .replace(/<\/table>/g, '</table></div>')
+  } catch {
+    // 如果Markdown解析失败，返回纯文本
+    return safeContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
 }
 
 function scrollToBottom() {
@@ -224,7 +264,10 @@ function typeText(text, index = 0) {
   if (index < text.length) {
     isTyping.value = true
     typingDisplay.value += text[index]
-    scrollToBottom()
+    // 减少滚动频率，提升性能
+    if (index % 5 === 0 || text[index] === '\n') {
+      scrollToBottom()
+    }
     const delay = text[index] === '\n' ? 80 : 20 + Math.random() * 15
     typingTimer = setTimeout(() => typeText(text, index + 1), delay)
   } else {
@@ -288,13 +331,31 @@ function sendSuggestion(text) {
 }
 
 async function loadHistory() {
+  historyLoading.value = true
   try {
     const res = await getChatHistoryAPI({ limit: 50 })
-    if (res.code === 200) {
-      messages.value = res.data || []
+    if (res.code === 200 && Array.isArray(res.data)) {
+      messages.value = res.data.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
     }
-  } catch {
-    // silently fail
+  } catch (err) {
+    console.error('加载聊天历史失败:', err)
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function fetchAlerts() {
+  try {
+    const res = await getUnreadAlertsAPI()
+    if (res.code === 200 && Array.isArray(res.data)) {
+      alertList.value = res.data
+      unreadAlertCount.value = res.data.length
+    }
+  } catch (err) {
+    console.error('获取预警失败:', err)
   }
 }
 
@@ -312,7 +373,20 @@ function clearChat() {
 
 onMounted(async () => {
   await loadHistory()
+  await fetchAlerts()
+  alertTimer = setInterval(fetchAlerts, 30000)
   scrollToBottom()
+})
+
+onUnmounted(() => {
+  if (typingTimer) {
+    clearTimeout(typingTimer)
+    typingTimer = null
+  }
+  if (alertTimer) {
+    clearInterval(alertTimer)
+    alertTimer = null
+  }
 })
 
 watch(messages, () => {
@@ -513,9 +587,9 @@ watch(messages, () => {
 }
 
 .message-bubble {
-  padding: 14px 18px;
+  padding: 12px 16px;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.55;
   word-wrap: break-word;
   white-space: pre-wrap;
 }
@@ -537,6 +611,12 @@ watch(messages, () => {
 
 .typing-bubble {
   min-height: 28px;
+  transition: all 0.1s ease-out;
+}
+
+.typing-bubble :deep(*),
+.ai-bubble :deep(*) {
+  transition: all 0.15s ease-out;
 }
 
 .typing-cursor {
@@ -808,15 +888,15 @@ watch(messages, () => {
 :deep(.ai-bubble ul),
 :deep(.ai-bubble ol) {
   padding-left: 20px;
-  margin: 6px 0;
+  margin: 4px 0;
 }
 
 :deep(.ai-bubble li) {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 :deep(.ai-bubble p) {
-  margin: 6px 0;
+  margin: 4px 0;
 }
 
 :deep(.ai-bubble p:first-child) {
@@ -825,5 +905,19 @@ watch(messages, () => {
 
 :deep(.ai-bubble p:last-child) {
   margin-bottom: 0;
+}
+
+:deep(.ai-bubble h1),
+:deep(.ai-bubble h2),
+:deep(.ai-bubble h3),
+:deep(.ai-bubble h4) {
+  margin: 8px 0 4px;
+  line-height: 1.4;
+}
+
+:deep(.ai-bubble br) {
+  display: block;
+  content: "";
+  margin-top: 2px;
 }
 </style>

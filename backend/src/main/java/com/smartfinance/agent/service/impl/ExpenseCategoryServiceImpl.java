@@ -1,0 +1,92 @@
+package com.smartfinance.agent.service.impl;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.smartfinance.agent.entity.ExpenseCategory;
+import com.smartfinance.agent.mapper.ExpenseCategoryMapper;
+import com.smartfinance.agent.service.ExpenseCategoryService;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+public class ExpenseCategoryServiceImpl implements ExpenseCategoryService {
+
+    private final ExpenseCategoryMapper expenseCategoryMapper;
+
+    public ExpenseCategoryServiceImpl(ExpenseCategoryMapper expenseCategoryMapper) {
+        this.expenseCategoryMapper = expenseCategoryMapper;
+    }
+
+    @Override
+    public List<ExpenseCategory> listByUser(Long userId) {
+        LambdaQueryWrapper<ExpenseCategory> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ExpenseCategory::getUserId, userId);
+        wrapper.orderByAsc(ExpenseCategory::getSortOrder);
+        wrapper.orderByAsc(ExpenseCategory::getId);
+        return expenseCategoryMapper.selectList(wrapper);
+    }
+
+    @Override
+    public ExpenseCategory getById(Long id, Long userId) {
+        ExpenseCategory category = expenseCategoryMapper.selectById(id);
+        if (category == null) {
+            throw new IllegalArgumentException("消费类型不存在");
+        }
+        if (!category.getUserId().equals(userId)) {
+            throw new IllegalArgumentException("无权访问该消费类型");
+        }
+        return category;
+    }
+
+    @Override
+    public ExpenseCategory add(Long userId, String name, String icon,
+                               Integer benchmarkMin, Integer benchmarkMax,
+                               String benchmarkLabel, Integer sortOrder) {
+        ensureNameAvailable(userId, null, name);
+        ExpenseCategory category = new ExpenseCategory();
+        category.setUserId(userId);
+        category.setName(name);
+        category.setIcon(icon);
+        category.setBenchmarkMin(benchmarkMin);
+        category.setBenchmarkMax(benchmarkMax);
+        category.setBenchmarkLabel(benchmarkLabel);
+        category.setSortOrder(sortOrder != null ? sortOrder : 0);
+        expenseCategoryMapper.insert(category);
+        return category;
+    }
+
+    @Override
+    public ExpenseCategory update(Long id, Long userId, String name, String icon,
+                                  Integer benchmarkMin, Integer benchmarkMax,
+                                  String benchmarkLabel, Integer sortOrder) {
+        ExpenseCategory existing = getById(id, userId);
+        ensureNameAvailable(userId, id, name);
+        existing.setName(name);
+        existing.setIcon(icon);
+        existing.setBenchmarkMin(benchmarkMin);
+        existing.setBenchmarkMax(benchmarkMax);
+        existing.setBenchmarkLabel(benchmarkLabel);
+        existing.setSortOrder(sortOrder != null ? sortOrder : existing.getSortOrder());
+        expenseCategoryMapper.updateById(existing);
+        return existing;
+    }
+
+    @Override
+    public void delete(Long id, Long userId) {
+        getById(id, userId);
+        expenseCategoryMapper.deleteById(id);
+    }
+
+    private void ensureNameAvailable(Long userId, Long currentId, String name) {
+        LambdaQueryWrapper<ExpenseCategory> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ExpenseCategory::getUserId, userId)
+                .eq(ExpenseCategory::getName, name);
+        if (currentId != null) {
+            wrapper.ne(ExpenseCategory::getId, currentId);
+        }
+        Long count = expenseCategoryMapper.selectCount(wrapper);
+        if (count != null && count > 0) {
+            throw new IllegalArgumentException("分类名称已存在，请更换名称");
+        }
+    }
+}

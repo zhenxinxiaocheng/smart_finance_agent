@@ -5,10 +5,16 @@
         <h1 class="page-title">消费记录</h1>
         <p class="page-subtitle">管理和查看你的所有收支记录</p>
       </div>
-      <el-button type="primary" size="large" @click="showAddDialog">
-        <el-icon><Plus /></el-icon>
-        新增记录
-      </el-button>
+      <div class="header-actions">
+        <el-button size="large" @click="showCategoryDialog">
+          <el-icon><Setting /></el-icon>
+          管理分类
+        </el-button>
+        <el-button type="primary" size="large" @click="showAddDialog">
+          <el-icon><Plus /></el-icon>
+          新增记录
+        </el-button>
+      </div>
     </div>
 
     <div class="filter-section">
@@ -35,9 +41,13 @@
         </div>
         <div class="filter-group">
           <span class="filter-label">分类</span>
-          <el-select v-model="filter.category" placeholder="全部分类" clearable size="default" @change="fetchData">
-            <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-          </el-select>
+          <CategorySelect
+            ref="filterCategorySelectRef"
+            v-model="filter.category"
+            placeholder="全部分类"
+            type="ALL"
+            @change="fetchData"
+          />
         </div>
         <div class="filter-group">
           <span class="filter-label">日期</span>
@@ -66,7 +76,7 @@
 
       <el-table :data="tableData" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent' }">
         <el-table-column prop="transactionDate" label="日期" width="130" />
-        <el-table-column prop="type" label="类型" width="90">
+        <el-table-column prop="type" label="类型" width="120">
           <template #default="{ row }">
             <span class="type-badge" :class="row.type === 'INCOME' ? 'income' : 'expense'">
               <el-icon :size="14">
@@ -144,9 +154,12 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="分类" prop="category">
-              <el-select v-model="form.category" placeholder="选择分类" style="width: 100%">
-                <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-              </el-select>
+              <CategorySelect
+                ref="categorySelectRef"
+                v-model="form.category"
+                placeholder="选择分类"
+                :type="form.type"
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -182,12 +195,80 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="categoryDialogVisible"
+      title="管理消费分类"
+      width="600px"
+      :close-on-click-modal="false"
+      class="fin-dialog"
+    >
+      <div class="category-mgr-header">
+        <p class="category-mgr-desc">管理你的消费分类，所有分类均可自由编辑和删除</p>
+        <el-button type="primary" size="small" @click="showAddCategoryForm">
+          <el-icon><Plus /></el-icon>
+          新增分类
+        </el-button>
+      </div>
+
+      <div v-if="showCategoryForm" class="category-form-card">
+        <el-form ref="catFormRef" :model="catForm" :rules="catRules" label-width="90px">
+          <el-row :gutter="12">
+            <el-col :span="12">
+              <el-form-item label="分类名称" prop="name">
+                <el-input v-model="catForm.name" placeholder="如：教育" maxlength="20" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="图标标识" prop="icon">
+                <el-input v-model="catForm.icon" placeholder="如：education" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="12">
+            <el-col :span="24">
+              <el-form-item label="排序" prop="sortOrder">
+                <el-input-number v-model="catForm.sortOrder" :min="0" :step="1" style="width: 100%" controls-position="right" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form>
+        <div class="category-form-actions">
+          <el-button size="small" @click="cancelCategoryForm">取消</el-button>
+          <el-button type="primary" size="small" :loading="catSubmitLoading" @click="handleCategorySubmit">
+            {{ catEditId ? '保存更改' : '添加分类' }}
+          </el-button>
+        </div>
+      </div>
+
+      <div class="category-list">
+        <div v-for="cat in categories" :key="cat.id" class="category-item">
+          <div class="cat-info">
+            <span class="cat-icon">{{ cat.name.charAt(0) }}</span>
+            <div class="cat-detail">
+              <span class="cat-name">{{ cat.name }}</span>
+            </div>
+          </div>
+          <div class="cat-actions">
+            <el-button text size="small" @click="showEditCategoryForm(cat)">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+            <el-button text type="danger" size="small" @click="handleDeleteCategory(cat.id, cat.name)">
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+        <el-empty v-if="categories.length === 0" :image-size="80" description="暂无分类，请点击「新增分类」创建" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { listTransactionsAPI, addTransactionAPI, updateTransactionAPI, deleteTransactionAPI } from '../api/transaction'
+import { listCategoriesAPI, addCategoryAPI, updateCategoryAPI, deleteCategoryAPI } from '../api/category'
+import CategorySelect from '../components/CategorySelect.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const tableData = ref([])
@@ -202,7 +283,18 @@ const filter = reactive({
   dateRange: null
 })
 
-const categories = ['餐饮', '交通', '购物', '住房', '娱乐', '工资', '其他']
+const categories = ref([])
+const categorySelectRef = ref(null)
+const filterCategorySelectRef = ref(null)
+
+async function fetchCategories() {
+  try {
+    const res = await listCategoriesAPI()
+    if (res.code === 200) {
+      categories.value = res.data || []
+    }
+  } catch {}
+}
 
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -223,6 +315,95 @@ const rules = {
   category: [{ required: true, message: '请选择分类' }],
   amount: [{ required: true, message: '请输入金额' }],
   transactionDate: [{ required: true, message: '请选择日期' }]
+}
+
+const categoryDialogVisible = ref(false)
+const showCategoryForm = ref(false)
+const catEditId = ref(null)
+const catSubmitLoading = ref(false)
+const catFormRef = ref(null)
+
+const catForm = reactive({
+  name: '',
+  icon: '',
+  sortOrder: 1
+})
+
+const catRules = {
+  name: [{ required: true, message: '请输入分类名称' }]
+}
+
+function showCategoryDialog() {
+  categoryDialogVisible.value = true
+  cancelCategoryForm()
+}
+
+function showAddCategoryForm() {
+  catEditId.value = null
+  catForm.name = ''
+  catForm.icon = ''
+  catForm.sortOrder = categories.value.length + 1
+  showCategoryForm.value = true
+}
+
+function showEditCategoryForm(cat) {
+  catEditId.value = cat.id
+  catForm.name = cat.name
+  catForm.icon = cat.icon || ''
+  catForm.sortOrder = cat.sortOrder || 0
+  showCategoryForm.value = true
+}
+
+function cancelCategoryForm() {
+  showCategoryForm.value = false
+  catEditId.value = null
+  catForm.name = ''
+  catForm.icon = ''
+  catForm.sortOrder = 0
+}
+
+async function handleCategorySubmit() {
+  const valid = await catFormRef.value.validate().catch(() => false)
+  if (!valid) return
+  catSubmitLoading.value = true
+  try {
+    const data = {
+      name: catForm.name,
+      icon: catForm.icon || null,
+      sortOrder: catForm.sortOrder || 0
+    }
+    if (catEditId.value) {
+      await updateCategoryAPI(catEditId.value, data)
+      ElMessage.success('分类更新成功')
+    } else {
+      await addCategoryAPI(data)
+      ElMessage.success('分类添加成功')
+    }
+    showCategoryForm.value = false
+    await fetchCategories()
+    // 刷新所有分类选择器
+    categorySelectRef.value?.refresh()
+    filterCategorySelectRef.value?.refresh()
+  } finally {
+    catSubmitLoading.value = false
+  }
+}
+
+function handleDeleteCategory(id, name) {
+  ElMessageBox.confirm(`确定要删除分类「${name}」吗？删除后不可恢复。`, '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      await deleteCategoryAPI(id)
+      ElMessage.success(`分类「${name}」已删除`)
+      await fetchCategories()
+      // 刷新所有分类选择器
+      categorySelectRef.value?.refresh()
+      filterCategorySelectRef.value?.refresh()
+    } catch {}
+  }).catch(() => {})
 }
 
 async function fetchData() {
@@ -308,7 +489,10 @@ function handleDelete(id) {
   }).catch(() => {})
 }
 
-onMounted(fetchData)
+onMounted(() => {
+  fetchData()
+  fetchCategories()
+})
 </script>
 
 <style scoped>
@@ -321,84 +505,110 @@ onMounted(fetchData)
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
+}
+
+.header-text {
+  flex: 1;
 }
 
 .page-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text);
+  font-size: 28px;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--text) 0%, var(--primary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
   margin: 0;
+  letter-spacing: -0.5px;
 }
 
 .page-subtitle {
   font-size: 14px;
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 6px;
+  font-weight: 500;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .filter-section {
-  background: #fff;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 20px 24px;
-  margin-bottom: 20px;
-  box-shadow: var(--shadow);
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow-md);
 }
 
 .filter-row {
   display: flex;
   align-items: flex-end;
-  gap: 24px;
+  gap: 28px;
   flex-wrap: wrap;
 }
 
 .filter-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .filter-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
 }
 
 .filter-chips {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 
 .chip {
-  padding: 6px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 500;
+  padding: 8px 18px;
+  border-radius: 100px;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
   background: var(--bg);
   color: var(--text-secondary);
-  transition: var(--transition);
-  border: 1.5px solid transparent;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 2px solid transparent;
 }
 
 .chip:hover {
   background: var(--primary-surface);
   color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .chip.active {
-  background: var(--primary);
+  background: linear-gradient(135deg, var(--primary) 0%, #1e40af 100%);
   color: #fff;
   border-color: var(--primary);
+  box-shadow: 0 4px 12px rgba(30, 58, 138, 0.25);
 }
 
-.chip.chip-income.active { background: #1e3a8a; border-color: #1e3a8a; }
-.chip.chip-income:hover:not(.active) { color: #1e3a8a; background: #eef2ff; }
-.chip.chip-expense.active { background: #ef4444; border-color: #ef4444; }
-.chip.chip-expense:hover:not(.active) { color: #ef4444; background: #fef2f2; }
+.chip.chip-income.active { 
+  background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); 
+  border-color: #1e3a8a;
+  box-shadow: 0 4px 12px rgba(30, 58, 138, 0.3);
+}
+.chip.chip-income:hover:not(.active) { color: #1e3a8a; background: #eef2ff; border-color: #dbeafe; }
+.chip.chip-expense.active { 
+  background: linear-gradient(135deg, #ef4444 0%, #f87171 100%); 
+  border-color: #ef4444;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+.chip.chip-expense:hover:not(.active) { color: #ef4444; background: #fef2f2; border-color: #fee2e2; }
 
 .filter-actions {
   display: flex;
@@ -408,10 +618,10 @@ onMounted(fetchData)
 }
 
 .table-card {
-  background: #fff;
+  background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
 }
 
@@ -419,46 +629,56 @@ onMounted(fetchData)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 20px 24px;
   border-bottom: 1px solid var(--border);
+  background: linear-gradient(to right, #f8fafc 0%, #ffffff 50%, #f8fafc 100%);
 }
 
 .table-info {
   font-size: 14px;
   color: var(--text-muted);
+  font-weight: 500;
 }
 
 .table-info strong {
-  color: var(--text);
-  font-weight: 600;
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 16px;
 }
 
 .type-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 12px;
-  border-radius: 6px;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 100px;
   font-size: 13px;
   font-weight: 600;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  flex-direction: row;
+  min-width: 80px;
 }
 
 .type-badge.income {
-  background: #eef2ff;
+  background: linear-gradient(135deg, #eef2ff 0%, #dbeafe 100%);
   color: #1e3a8a;
 }
 
 .type-badge.expense {
-  background: #fef2f2;
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
   color: #ef4444;
 }
 
 .category-tag {
-  background: var(--bg);
-  padding: 4px 10px;
-  border-radius: 6px;
+  background: linear-gradient(135deg, var(--bg) 0%, #e2e8f0 100%);
+  padding: 5px 12px;
+  border-radius: 100px;
   font-size: 13px;
+  font-weight: 500;
   color: var(--text-secondary);
+  border: 1px solid rgba(0,0,0,0.03);
 }
 
 .amount-value {
@@ -485,6 +705,35 @@ onMounted(fetchData)
   justify-content: flex-end;
   padding: 16px 24px;
   border-top: 1px solid var(--border);
+}
+
+:deep(.el-pagination) {
+  gap: 8px;
+}
+
+:deep(.el-pagination .el-select .el-input__wrapper) {
+  border-radius: 8px !important;
+  box-shadow: 0 0 0 1px var(--border) inset !important;
+}
+
+:deep(.el-pagination .el-pager li) {
+  border-radius: 8px !important;
+  font-weight: 500;
+  min-width: 32px;
+  height: 32px;
+  line-height: 32px;
+}
+
+:deep(.el-pagination .el-pager li.is-active) {
+  background: var(--primary) !important;
+  color: #fff !important;
+}
+
+:deep(.el-pagination .btn-prev),
+:deep(.el-pagination .btn-next) {
+  border-radius: 8px !important;
+  min-width: 32px;
+  height: 32px;
 }
 
 :deep(.el-table th.el-table__cell) {
@@ -519,5 +768,96 @@ onMounted(fetchData)
 :deep(.el-radio-button.is-active .el-radio-button__inner) {
   background: var(--primary);
   border-color: var(--primary);
+}
+
+.category-mgr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.category-mgr-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.category-form-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.category-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+
+.category-item:hover {
+  border-color: var(--primary-light);
+}
+
+.cat-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 160px;
+  flex-shrink: 0;
+}
+
+.cat-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.cat-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cat-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cat-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
 }
 </style>

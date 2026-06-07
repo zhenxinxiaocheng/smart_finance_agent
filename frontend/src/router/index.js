@@ -18,13 +18,13 @@ const routes = [
     path: '/',
     component: () => import('../layouts/MainLayout.vue'),
     meta: { auth: true },
-    redirect: '/dashboard',
+    redirect: '/statistics',
     children: [
       {
-        path: 'dashboard',
-        name: 'Dashboard',
-        component: () => import('../views/Dashboard.vue'),
-        meta: { title: '仪表盘' }
+        path: 'statistics',
+        name: 'Statistics',
+        component: () => import('../views/Statistics.vue'),
+        meta: { title: '统计' }
       },
       {
         path: 'transactions',
@@ -52,7 +52,7 @@ router.beforeEach((to, from, next) => {
   if (to.meta.auth && !authStore.isLoggedIn) {
     next('/login')
   } else if (to.meta.guest && authStore.isLoggedIn) {
-    next('/dashboard')
+    next('/statistics')
   } else {
     next()
   }

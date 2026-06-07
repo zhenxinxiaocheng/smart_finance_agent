@@ -71,7 +71,7 @@ async function handleLogin() {
   try {
     await authStore.login(form)
     ElMessage({ type: 'success', message: '登录成功', duration: 2000 })
-    router.push('/dashboard')
+    router.push('/statistics')
   } catch {
   } finally {
     loading.value = false

@@ -6,22 +6,32 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("chat_message")
-public class ChatMessage {
+@TableName("expense_category")
+public class ExpenseCategory {
 
     @TableId(type = IdType.AUTO)
     private Long id;
 
     private Long userId;
 
-    private String role;
+    private String name;
 
-    private String content;
+    private String icon;
+
+    private Integer benchmarkMin;
+
+    private Integer benchmarkMax;
+
+    private String benchmarkLabel;
+
+    private Integer sortOrder;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
+    @TableField(fill = FieldFill.INSERT_UPDATE)
+    private LocalDateTime updatedAt;
+
     @TableLogic
-    @TableField("deleted")
     private Integer deleted;
 }

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS `transaction`
     `user_id`          BIGINT        NOT NULL COMMENT '用户ID',
     `amount`           DECIMAL(12,2) NOT NULL COMMENT '金额',
     `type`             VARCHAR(10)   NOT NULL DEFAULT 'EXPENSE' COMMENT '类型(INCOME-收入,EXPENSE-支出)',
-    `category`         VARCHAR(50)   NOT NULL COMMENT '分类(餐饮/购物/交通/住房/娱乐/工资/其他)',
+    `category`         VARCHAR(50)   NOT NULL COMMENT '分类名称',
     `description`      VARCHAR(500)  NULL     COMMENT '备注描述',
     `transaction_date` DATE          NOT NULL COMMENT '交易日期',
     `created_at`       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -35,6 +35,25 @@ CREATE TABLE IF NOT EXISTS `transaction`
     CONSTRAINT `fk_transaction_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='交易记录表';
 
+-- 消费分类表
+CREATE TABLE IF NOT EXISTS `expense_category`
+(
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT       NOT NULL DEFAULT 0 COMMENT '用户ID(0=系统默认)',
+    `name`            VARCHAR(50)  NOT NULL COMMENT '分类名称',
+    `icon`            VARCHAR(50)  NULL     COMMENT '图标标识',
+    `benchmark_min`   INT          NULL     COMMENT '对标分析下限(%)',
+    `benchmark_max`   INT          NULL     COMMENT '对标分析上限(%)',
+    `benchmark_label` VARCHAR(100) NULL     COMMENT '对标分析标签(如"食品支出")',
+    `sort_order`      INT          NOT NULL DEFAULT 0 COMMENT '排序号',
+    `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `deleted`         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_user_category` (`user_id`, `name`),
+    INDEX `idx_user_sort` (`user_id`, `sort_order`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='消费分类表';
+
 -- 聊天消息表
 CREATE TABLE IF NOT EXISTS `chat_message`
 (
@@ -43,8 +62,70 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     `role`       VARCHAR(20)  NOT NULL COMMENT '角色(USER-用户,ASSISTANT-AI助手)',
     `content`    TEXT         NOT NULL COMMENT '消息内容',
     `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `deleted`    TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-正常,1-已删)',
     PRIMARY KEY (`id`),
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_created_at` (`created_at`),
     CONSTRAINT `fk_chat_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='聊天消息表';
+
+
+-- 预算表
+CREATE TABLE IF NOT EXISTS `budget`
+(
+    `id`              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT        NOT NULL COMMENT '用户ID',
+    `category`        VARCHAR(50)   NOT NULL COMMENT '预算分类(ALL=总预算，其他为具体分类)',
+    `month`           VARCHAR(7)    NOT NULL COMMENT '预算月份(yyyy-MM)',
+    `budget_amount`   DECIMAL(12,2) NOT NULL COMMENT '预算金额',
+    `alert_threshold` INT           NOT NULL DEFAULT 80 COMMENT '预警阈值百分比(如80表示使用达80%时预警)',
+    `created_at`      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `deleted`         TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_user_category_month` (`user_id`, `category`, `month`),
+    INDEX `idx_user_month` (`user_id`, `month`),
+    CONSTRAINT `fk_budget_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='预算表';
+
+-- 预算预警记录表
+CREATE TABLE IF NOT EXISTS `budget_alert`
+(
+    `id`              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT        NOT NULL COMMENT '用户ID',
+    `category`        VARCHAR(50)   NOT NULL COMMENT '触发预警的分类',
+    `month`           VARCHAR(7)    NOT NULL COMMENT '预警月份',
+    `alert_type`      VARCHAR(20)   NOT NULL COMMENT '预警类型(THRESHOLD-阈值预警, OVERRUN-超支预警, TREND-趋势预警)',
+    `severity`        VARCHAR(10)   NOT NULL DEFAULT 'INFO' COMMENT '严重程度(INFO/WARNING/CRITICAL)',
+    `spent_amount`    DECIMAL(12,2) NOT NULL COMMENT '当前已支出金额',
+    `budget_amount`   DECIMAL(12,2) NOT NULL COMMENT '预算金额',
+    `usage_percent`   DECIMAL(5,1)  NOT NULL COMMENT '使用百分比',
+    `message`         VARCHAR(500)  NOT NULL COMMENT '预警消息',
+    `is_read`         TINYINT       NOT NULL DEFAULT 0 COMMENT '是否已读(0-未读,1-已读)',
+    `created_at`      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `deleted`         TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
+    PRIMARY KEY (`id`),
+    INDEX `idx_user_read` (`user_id`, `is_read`),
+    INDEX `idx_user_month` (`user_id`, `month`),
+    CONSTRAINT `fk_alert_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='预算预警记录表';
+
+-- Agent分析记录表
+CREATE TABLE IF NOT EXISTS `analysis_record`
+(
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`      BIGINT       NOT NULL COMMENT '用户ID',
+    `query`        TEXT         NOT NULL COMMENT '用户原始问题',
+    `plan`         TEXT         NULL     COMMENT 'Agent执行计划(JSON)',
+    `steps_result` TEXT         NULL     COMMENT '各步骤执行结果(JSON)',
+    `final_answer` TEXT         NULL     COMMENT '最终回答',
+    `score`        INT          NULL     COMMENT '用户评分(1-5)',
+    `feedback`     VARCHAR(500) NULL     COMMENT '用户反馈',
+    `tokens_used`  INT          NULL     COMMENT '消耗Token数',
+    `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `deleted`      TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
+    PRIMARY KEY (`id`),
+    INDEX `idx_user_id` (`user_id`),
+    INDEX `idx_created_at` (`created_at`),
+    CONSTRAINT `fk_analysis_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent分析记录表';

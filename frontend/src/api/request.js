@@ -25,13 +25,24 @@ request.interceptors.response.use(
       if (res.code === 401) {
         localStorage.removeItem('token')
         localStorage.removeItem('user')
-        window.location.href = '/login'
+        // 使用 router 跳转，避免硬刷新页面导致状态丢失
+        import('../router/index.js').then(router => {
+          router.default.push('/login')
+        })
       }
       return Promise.reject(new Error(res.message))
     }
     return res
   },
   error => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      import('../router/index.js').then(router => {
+        router.default.push('/login')
+      })
+      return Promise.reject(error)
+    }
     if (error.code === 'ECONNABORTED') {
       ElMessage.warning('请求超时，AI回复较慢，请稍后重试')
     } else {
