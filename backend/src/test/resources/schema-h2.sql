@@ -43,7 +43,8 @@ CREATE TABLE expense_category
     sort_order      INT          NOT NULL DEFAULT 0,
     created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted         TINYINT      NOT NULL DEFAULT 0
+    deleted         TINYINT      NOT NULL DEFAULT 0,
+    CONSTRAINT uk_user_category UNIQUE (user_id, name)
 );
 
 CREATE TABLE chat_message

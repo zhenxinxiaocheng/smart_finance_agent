@@ -35,9 +35,9 @@ public class FinancialTools {
     @Tool("查询用户在指定时间范围内的总支出")
     public String getTotalExpense(@P("开始日期(yyyy-MM-dd)") String startDate,
                                   @P("结束日期(yyyy-MM-dd)") String endDate) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
@@ -50,9 +50,9 @@ public class FinancialTools {
     @Tool("查询用户在指定时间范围内的总收入")
     public String getTotalIncome(@P("开始日期(yyyy-MM-dd)") String startDate,
                                  @P("结束日期(yyyy-MM-dd)") String endDate) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
@@ -65,9 +65,9 @@ public class FinancialTools {
     @Tool("查询用户在指定时间范围内按消费分类的支出明细，返回各分类的消费金额和占比")
     public String getExpenseByCategory(@P("开始日期(yyyy-MM-dd)") String startDate,
                                        @P("结束日期(yyyy-MM-dd)") String endDate) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
@@ -101,9 +101,9 @@ public class FinancialTools {
     public String getRecentTransactions(@P("开始日期(yyyy-MM-dd)") String startDate,
                                         @P("结束日期(yyyy-MM-dd)") String endDate,
                                         @P("返回的记录条数上限") int limit) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
@@ -130,9 +130,9 @@ public class FinancialTools {
     @Tool("获取用户的月度财务摘要，包含收入、支出、结余和主要消费分类")
     public String getMonthlySummary(@P("年份(如2026)") int year,
                                     @P("月份(1-12)") int month) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         String monthStr = String.format("%d-%02d", year, month);
         LocalDate start = LocalDate.of(year, month, 1);
@@ -180,9 +180,9 @@ public class FinancialTools {
     @Tool("按日期范围查询用户的财务统计概览数据（总收入、总支出、结余、支出分类数），用于生成图表")
     public String getFinanceOverview(@P("开始日期(yyyy-MM-dd)") String startDate,
                                      @P("结束日期(yyyy-MM-dd)") String endDate) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
@@ -202,9 +202,9 @@ public class FinancialTools {
 
     @Tool("根据用户的月度支出情况，计算建议的紧急备用金金额范围")
     public String analyzeEmergencyFund() {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusMonths(3);
@@ -232,9 +232,9 @@ public class FinancialTools {
 
     @Tool("评估用户的储蓄率健康状况，提供专业的储蓄建议")
     public String evaluateSavingsRate() {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate now = LocalDate.now();
         LocalDate monthStart = now.withDayOfMonth(1);
@@ -292,9 +292,9 @@ public class FinancialTools {
     @Tool("根据用户的财务状况，提供专业的资产配置建议")
     public String getInvestmentAdvice(@P("用户年龄") int age,
                                       @P("风险承受能力：保守/稳健/积极/激进") String riskProfile) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate now = LocalDate.now();
         LocalDate yearStart = now.withDayOfYear(1);
@@ -357,9 +357,9 @@ public class FinancialTools {
 
     @Tool("检测用户近期的异常消费行为，包括单日支出异常、高额单笔消费、分类支出突增等")
     public String detectAnomalies() {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusDays(89);
@@ -442,9 +442,9 @@ public class FinancialTools {
 
     @Tool("将用户的消费结构与同收入段人群的对标数据进行比较，提供消费结构优化建议")
     public String compareWithBenchmark() {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusMonths(6);
@@ -520,9 +520,9 @@ public class FinancialTools {
     @Tool("根据用户的历史消费数据，结合50/30/20法则提供个性化的预算规划方案")
     public String budgetPlanningWizard(
             @P("用户计划每月总预算（元，如8000），如果不确定可填0由系统推算") double userBudget) {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusMonths(6);
@@ -587,9 +587,9 @@ public class FinancialTools {
 
     @Tool("根据用户的收入情况，估算个人所得税（中国内地），并提供节税建议")
     public String taxEstimation() {
-        Long userId = UserIdContext.get();
+        Long userId = validateAndGetUserId();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            return getAuthErrorMessage();
         }
         LocalDate end = LocalDate.now();
         LocalDate yearStart = end.withDayOfYear(1);
@@ -656,6 +656,24 @@ public class FinancialTools {
 
                 ⚠️ 此为基于已录入数据的粗略估算，不构成税务建议，请以税务机关核定为准
                 """, yearIncome, taxableIncome, bracket, tax, effectiveRate);
+    }
+
+    /**
+     * 验证用户身份并获取用户ID，如果验证失败返回null
+     */
+    private Long validateAndGetUserId() {
+        Long userId = UserIdContext.get();
+        if (userId == null) {
+            log.warn("用户身份验证失败：UserIdContext中无用户信息");
+        }
+        return userId;
+    }
+
+    /**
+     * 获取用户身份验证失败时的统一错误消息
+     */
+    private String getAuthErrorMessage() {
+        return "无法获取用户信息，请重新登录后重试";
     }
 
     private Map<String, Benchmark> loadBenchmarks(Long userId) {

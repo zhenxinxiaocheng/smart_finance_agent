@@ -12,7 +12,7 @@ import java.util.List;
 public interface ChatMessageMapper extends BaseMapper<ChatMessage> {
 
     @Select("SELECT * FROM chat_message WHERE user_id = #{userId} " +
-            "ORDER BY created_at ASC LIMIT #{limit}")
+            "ORDER BY created_at DESC LIMIT #{limit}")
     List<ChatMessage> selectRecentByUser(@Param("userId") Long userId,
                                          @Param("limit") int limit);
 }

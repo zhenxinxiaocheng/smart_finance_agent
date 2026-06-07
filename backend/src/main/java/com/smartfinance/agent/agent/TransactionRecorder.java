@@ -36,7 +36,7 @@ public class TransactionRecorder {
             @P("用户原始消息全文") String userMessage,
             @P("交易类型：EXPENSE(支出) 或 INCOME(收入)") String type,
             @P("金额(数字)") BigDecimal amount,
-            @P("交易分类，必须从可用分类中选择。支出可用：餐饮/交通/购物/住房/医疗/教育/娱乐/通讯/人情/金融/宠物/其他；收入可用：工资/兼职/投资收益/退款/转账/其他收入") String category,
+            @P("交易分类，必须从系统可用分类中选择（请通过分类列表了解当前可用分类）") String category,
             @P("交易描述/备注") String description,
             @P("交易日期(yyyy-MM-dd)，如未指定则填今天") String date) {
 
@@ -46,10 +46,10 @@ public class TransactionRecorder {
         }
 
         // 验证分类是否有效
-        List<String> validCategories = categorizationService.getAvailableCategories(type);
+        List<String> validCategories = categorizationService.getAvailableCategories(type, userId);
         if (!validCategories.contains(category)) {
             SmartCategorizationService.CategorizationResult result =
-                    categorizationService.categorize(userMessage, type);
+                    categorizationService.categorize(userMessage, type, userId);
             category = result.category();
             log.info("分类自动修正: {} -> {}", userMessage, category);
         }
@@ -92,8 +92,10 @@ public class TransactionRecorder {
             @P("用户原始消息") String userMessage,
             @P("交易类型：EXPENSE/INCOME") String type) {
 
+        Long userId = UserIdContext.get();
+
         SmartCategorizationService.CategorizationResult result =
-                categorizationService.categorize(userMessage, type);
+                categorizationService.categorize(userMessage, type, userId);
 
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("推荐分类：%s（置信度：%.0f%%）\n", result.category(), result.confidence() * 100));

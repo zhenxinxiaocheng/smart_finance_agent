@@ -35,7 +35,7 @@
       </header>
 
       <div class="messages-area" ref="messageListRef">
-        <div v-if="messages.length === 0" class="empty-state">
+        <div v-if="messages.length === 0 && !historyLoading" class="empty-state">
           <div class="empty-icon-wrapper">
             <div class="empty-icon-bg"></div>
             <div class="empty-icon">&#x1F4B0;</div>
@@ -47,7 +47,7 @@
 
         <div
           v-for="(msg, index) in messages"
-          :key="index"
+          :key="msg.role + '-' + index + '-' + (msg.content?.slice(0, 20))"
           class="message-wrapper"
           :class="msg.role === 'USER' ? 'user-message' : 'ai-message'"
         >
@@ -113,7 +113,7 @@
           <div class="message-content">
             <div class="message-label">智财Agent</div>
             <div class="message-bubble ai-bubble typing-bubble">
-              <span v-html="typingDisplay"></span>
+              <span v-html="renderMarkdown(typingDisplay)"></span>
               <span class="typing-cursor" v-if="isTyping">|</span>
               <span class="typing-dots" v-else>
                 <span>.</span><span>.</span><span>.</span>
@@ -183,6 +183,7 @@ const messageListRef = ref(null)
 const showTypingAnimation = ref(false)
 const typingDisplay = ref('')
 const isTyping = ref(false)
+const historyLoading = ref(true)
 let typingTimer = null
 
 const suggestions = [
@@ -202,10 +203,28 @@ function autoResizeInput(e) {
 
 function renderMarkdown(content) {
   if (!content) return ''
-  const html = marked.parse(content)
-  return html
-    .replace(/<table>/g, '<div class="md-table-wrap"><table>')
-    .replace(/<\/table>/g, '</table></div>')
+  
+  // 处理不完整的Markdown语法
+  let safeContent = content
+  
+  // 处理不完整的代码块
+  const codeBlockStart = (safeContent.match(/```/g) || []).length
+  if (codeBlockStart % 2 !== 0) {
+    safeContent += '\n```'
+  }
+  
+  // 处理不完整的列表项（确保不会因为截断导致问题）
+  // 处理不完整的加粗/斜体等内联格式
+  
+  try {
+    const html = marked.parse(safeContent)
+    return html
+      .replace(/<table>/g, '<div class="md-table-wrap"><table>')
+      .replace(/<\/table>/g, '</table></div>')
+  } catch {
+    // 如果Markdown解析失败，返回纯文本
+    return safeContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
 }
 
 function scrollToBottom() {
@@ -223,7 +242,10 @@ function typeText(text, index = 0) {
   if (index < text.length) {
     isTyping.value = true
     typingDisplay.value += text[index]
-    scrollToBottom()
+    // 减少滚动频率，提升性能
+    if (index % 5 === 0 || text[index] === '\n') {
+      scrollToBottom()
+    }
     const delay = text[index] === '\n' ? 80 : 20 + Math.random() * 15
     typingTimer = setTimeout(() => typeText(text, index + 1), delay)
   } else {
@@ -287,13 +309,19 @@ function sendSuggestion(text) {
 }
 
 async function loadHistory() {
+  historyLoading.value = true
   try {
     const res = await getChatHistoryAPI({ limit: 50 })
-    if (res.code === 200) {
-      messages.value = res.data || []
+    if (res.code === 200 && Array.isArray(res.data)) {
+      messages.value = res.data.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
     }
-  } catch {
-    // silently fail
+  } catch (err) {
+    console.error('加载聊天历史失败:', err)
+  } finally {
+    historyLoading.value = false
   }
 }
 
@@ -512,9 +540,9 @@ watch(messages, () => {
 }
 
 .message-bubble {
-  padding: 14px 18px;
+  padding: 12px 16px;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.55;
   word-wrap: break-word;
   white-space: pre-wrap;
 }
@@ -536,6 +564,12 @@ watch(messages, () => {
 
 .typing-bubble {
   min-height: 28px;
+  transition: all 0.1s ease-out;
+}
+
+.typing-bubble :deep(*),
+.ai-bubble :deep(*) {
+  transition: all 0.15s ease-out;
 }
 
 .typing-cursor {
@@ -807,15 +841,15 @@ watch(messages, () => {
 :deep(.ai-bubble ul),
 :deep(.ai-bubble ol) {
   padding-left: 20px;
-  margin: 6px 0;
+  margin: 4px 0;
 }
 
 :deep(.ai-bubble li) {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 :deep(.ai-bubble p) {
-  margin: 6px 0;
+  margin: 4px 0;
 }
 
 :deep(.ai-bubble p:first-child) {
@@ -824,5 +858,19 @@ watch(messages, () => {
 
 :deep(.ai-bubble p:last-child) {
   margin-bottom: 0;
+}
+
+:deep(.ai-bubble h1),
+:deep(.ai-bubble h2),
+:deep(.ai-bubble h3),
+:deep(.ai-bubble h4) {
+  margin: 8px 0 4px;
+  line-height: 1.4;
+}
+
+:deep(.ai-bubble br) {
+  display: block;
+  content: "";
+  margin-top: 2px;
 }
 </style>

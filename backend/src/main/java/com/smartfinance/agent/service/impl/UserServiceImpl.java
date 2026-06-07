@@ -1,7 +1,10 @@
 package com.smartfinance.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.smartfinance.agent.common.DefaultCategories;
+import com.smartfinance.agent.entity.ExpenseCategory;
 import com.smartfinance.agent.entity.User;
+import com.smartfinance.agent.mapper.ExpenseCategoryMapper;
 import com.smartfinance.agent.mapper.UserMapper;
 import com.smartfinance.agent.service.UserService;
 import org.springframework.stereotype.Service;
@@ -10,14 +13,17 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.List;
 
 @Service
 public class UserServiceImpl implements UserService {
 
     private final UserMapper userMapper;
+    private final ExpenseCategoryMapper categoryMapper;
 
-    public UserServiceImpl(UserMapper userMapper) {
+    public UserServiceImpl(UserMapper userMapper, ExpenseCategoryMapper categoryMapper) {
         this.userMapper = userMapper;
+        this.categoryMapper = categoryMapper;
     }
 
     @Override
@@ -34,6 +40,14 @@ public class UserServiceImpl implements UserService {
         user.setNickname(nickname != null ? nickname : username);
         user.setEmail(email);
         userMapper.insert(user);
+
+        // 为新用户初始化默认消费分类
+        List<ExpenseCategory> defaults = DefaultCategories.getDefaults();
+        for (ExpenseCategory cat : defaults) {
+            cat.setUserId(user.getId());
+            categoryMapper.insert(cat);
+        }
+
         return user;
     }
 

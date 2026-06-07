@@ -96,8 +96,10 @@ const sevenDayData = ref({ income: [], expense: [], labels: [] })
 const assetSummary = ref({ totalAssets: 0, totalIncome: 0, totalExpense: 0, transactionCount: 0 })
 
 const sevenDayRange = computed(() => {
-  const end = new Date()
-  const start = new Date()
+  const now = new Date()
+  const end = new Date(now)
+  end.setHours(0, 0, 0, 0)
+  const start = new Date(end)
   start.setDate(start.getDate() - 6)
   const fmt = d => `${d.getMonth() + 1}/${d.getDate()}`
   return `${fmt(start)} - ${fmt(end)}`
@@ -150,35 +152,40 @@ const sevenDayChartOption = computed(() => ({
 }))
 
 async function fetchData() {
-  const end = new Date()
-  const start = new Date()
+  const now = new Date()
+  const end = new Date(now)
+  end.setHours(0, 0, 0, 0)
+  const start = new Date(end)
   start.setDate(start.getDate() - 6)
-  const fmt = d => d.toISOString().split('T')[0]
+  
+  const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const fmtLabel = d => `${d.getMonth() + 1}/${d.getDate()}`
 
   try {
-    const res = await listTransactionsAPI({ page: 1, size: 1000, startDate: fmt(start), endDate: fmt(end) })
+    const res = await listTransactionsAPI({ page: 1, size: 1000, startDate: fmtDate(start), endDate: fmtDate(end) })
     if (res.code === 200) {
       const records = res.data.records || []
       assetSummary.value.transactionCount = res.data.total || records.length
 
-      // 按天聚合
+      // 初始化7天数据
       const days = []
       const income = []
       const expense = []
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date()
-        d.setDate(d.getDate() - i)
-        days.push(`${d.getMonth() + 1}/${d.getDate()}`)
+      const dayKeys = []
+      
+      for (let i = 0; i <= 6; i++) {
+        const d = new Date(start)
+        d.setDate(d.getDate() + i)
+        days.push(fmtLabel(d))
+        dayKeys.push(fmtDate(d))
         income.push(0)
         expense.push(0)
       }
 
       let totalIncome = 0, totalExpense = 0
       for (const r of records) {
-        const d = new Date(r.transactionDate)
-        const diff = Math.round((end - d) / (1000 * 60 * 60 * 24))
-        const idx = 6 - diff
-        if (idx >= 0 && idx <= 6) {
+        const idx = dayKeys.indexOf(r.transactionDate)
+        if (idx !== -1) {
           if (r.type === 'INCOME') {
             income[idx] += Number(r.amount)
             totalIncome += Number(r.amount)

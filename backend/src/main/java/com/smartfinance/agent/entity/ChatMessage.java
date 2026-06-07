@@ -20,4 +20,8 @@ public class ChatMessage {
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
+
+    @TableLogic
+    @TableField("deleted")
+    private Integer deleted;
 }

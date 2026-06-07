@@ -17,17 +17,17 @@
     <!-- ==================== 软切换内容区（带过渡） ==================== -->
     <transition name="slide-fade" mode="out-in">
       <!-- 日常统计 -->
-      <div v-if="activeTab === 'daily'" key="daily" class="tab-content">
+      <div v-if="activeTab === 'daily'" :key="'daily-' + lastRefresh" class="tab-content">
         <DailyStats />
       </div>
 
       <!-- 月统计 -->
-      <div v-else-if="activeTab === 'monthly'" key="monthly" class="tab-content">
+      <div v-else-if="activeTab === 'monthly'" :key="'monthly-' + lastRefresh" class="tab-content">
         <MonthlyStats />
       </div>
 
       <!-- 年统计 -->
-      <div v-else key="yearly" class="tab-content">
+      <div v-else :key="'yearly-' + lastRefresh" class="tab-content">
         <YearlyStats />
       </div>
     </transition>
@@ -47,9 +47,11 @@ const tabs = [
 ]
 
 const activeTab = ref('daily')
+const lastRefresh = ref(Date.now())
 
 function switchTab(value) {
   activeTab.value = value
+  lastRefresh.value = Date.now() // 强制刷新组件
 }
 </script>
 

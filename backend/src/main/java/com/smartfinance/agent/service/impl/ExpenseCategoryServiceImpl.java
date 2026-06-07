@@ -20,8 +20,7 @@ public class ExpenseCategoryServiceImpl implements ExpenseCategoryService {
     @Override
     public List<ExpenseCategory> listByUser(Long userId) {
         LambdaQueryWrapper<ExpenseCategory> wrapper = new LambdaQueryWrapper<>();
-        wrapper.and(w -> w.eq(ExpenseCategory::getUserId, 0L)
-                .or().eq(ExpenseCategory::getUserId, userId));
+        wrapper.eq(ExpenseCategory::getUserId, userId);
         wrapper.orderByAsc(ExpenseCategory::getSortOrder);
         wrapper.orderByAsc(ExpenseCategory::getId);
         return expenseCategoryMapper.selectList(wrapper);
@@ -33,7 +32,7 @@ public class ExpenseCategoryServiceImpl implements ExpenseCategoryService {
         if (category == null) {
             throw new IllegalArgumentException("消费类型不存在");
         }
-        if (category.getUserId() != 0L && !category.getUserId().equals(userId)) {
+        if (!category.getUserId().equals(userId)) {
             throw new IllegalArgumentException("无权访问该消费类型");
         }
         return category;
@@ -61,9 +60,6 @@ public class ExpenseCategoryServiceImpl implements ExpenseCategoryService {
                                   Integer benchmarkMin, Integer benchmarkMax,
                                   String benchmarkLabel, Integer sortOrder) {
         ExpenseCategory existing = getById(id, userId);
-        if (existing.getUserId() == 0L) {
-            throw new IllegalArgumentException("系统默认分类不可修改");
-        }
         ensureNameAvailable(userId, id, name);
         existing.setName(name);
         existing.setIcon(icon);
@@ -77,19 +73,14 @@ public class ExpenseCategoryServiceImpl implements ExpenseCategoryService {
 
     @Override
     public void delete(Long id, Long userId) {
-        ExpenseCategory existing = getById(id, userId);
-        if (existing.getUserId() == 0L) {
-            throw new IllegalArgumentException("系统默认分类不可删除");
-        }
+        getById(id, userId);
         expenseCategoryMapper.deleteById(id);
     }
 
     private void ensureNameAvailable(Long userId, Long currentId, String name) {
         LambdaQueryWrapper<ExpenseCategory> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(ExpenseCategory::getName, name)
-                .and(w -> w.eq(ExpenseCategory::getUserId, 0L)
-                        .or()
-                        .eq(ExpenseCategory::getUserId, userId));
+        wrapper.eq(ExpenseCategory::getUserId, userId)
+                .eq(ExpenseCategory::getName, name);
         if (currentId != null) {
             wrapper.ne(ExpenseCategory::getId, currentId);
         }

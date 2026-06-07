@@ -59,6 +59,8 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public List<Map<String, Object>> getChatHistory(Long userId, int limit) {
         List<ChatMessage> messages = chatMessageMapper.selectRecentByUser(userId, limit);
+        // 查询是 DESC（最新在前），反转后按时间正序返回
+        java.util.Collections.reverse(messages);
         List<Map<String, Object>> result = new ArrayList<>();
         for (ChatMessage msg : messages) {
             Map<String, Object> item = new HashMap<>();

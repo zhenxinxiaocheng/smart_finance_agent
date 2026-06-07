@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS `transaction`
     `user_id`          BIGINT        NOT NULL COMMENT '用户ID',
     `amount`           DECIMAL(12,2) NOT NULL COMMENT '金额',
     `type`             VARCHAR(10)   NOT NULL DEFAULT 'EXPENSE' COMMENT '类型(INCOME-收入,EXPENSE-支出)',
-    `category`         VARCHAR(50)   NOT NULL COMMENT '分类(餐饮/购物/交通/住房/娱乐/工资/其他)',
+    `category`         VARCHAR(50)   NOT NULL COMMENT '分类名称',
     `description`      VARCHAR(500)  NULL     COMMENT '备注描述',
     `transaction_date` DATE          NOT NULL COMMENT '交易日期',
     `created_at`       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS `expense_category`
     `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `deleted`         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-未删,1-已删)',
     PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_user_category` (`user_id`, `name`),
     INDEX `idx_user_sort` (`user_id`, `sort_order`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='消费分类表';
 
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     `role`       VARCHAR(20)  NOT NULL COMMENT '角色(USER-用户,ASSISTANT-AI助手)',
     `content`    TEXT         NOT NULL COMMENT '消息内容',
     `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `deleted`    TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-正常,1-已删)',
     PRIMARY KEY (`id`),
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_created_at` (`created_at`),
