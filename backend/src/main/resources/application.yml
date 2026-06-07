@@ -7,12 +7,10 @@ server:
       force: true
 
 spring:
-  config:
-    import: optional:classpath:application-local.yml
   datasource:
     url: jdbc:mysql://localhost:3306/smart_finance?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: root
-    password: ${DB_PASSWORD:}
+    password: ${DB_PASSWORD:775899}
     driver-class-name: com.mysql.cj.jdbc.Driver
   sql:
     init:
@@ -35,7 +33,7 @@ mybatis-plus:
 
 # JWT
 jwt:
-  secret: ${JWT_SECRET:}
+  secret: smart-finance-agent-jwt-secret-key-2024-must-be-at-least-256-bits-long
   expiration: 86400000
 
 # LangChain4j - DashScope (通义千问)
@@ -49,6 +47,6 @@ langchain4j:
     embedding-model:
       model-name: text-embedding-v3
 
-# 联网搜索配置（可选，不配置时搜索工具会提示未启用）
+# 联网搜索配置
 search:
   api-key: ${TAVILY_API_KEY:}

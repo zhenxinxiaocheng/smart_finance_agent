@@ -26,6 +26,23 @@
           </div>
         </div>
         <div class="header-actions">
+          <el-popover placement="bottom-end" :width="340" trigger="click" popper-class="alert-pop">
+            <template #reference>
+              <button class="action-btn" title="预算预警">
+                <el-badge :value="unreadAlertCount" :hidden="unreadAlertCount===0" :max="99">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+                </el-badge>
+              </button>
+  </template>
+    <div class="alert-panel" style="min-height:80px">
+      <div style="font-weight:600;font-size:14px;margin-bottom:10px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:8px">&#x1f514; 预算预警</div>
+      <div v-if="alertList.length===0" style="text-align:center;color:#94a3b8;padding:24px 0;font-size:13px">&#x2705; 暂无预警消息</div>
+      <div v-for="a in alertList" :key="a.id" style="padding:10px 12px;margin-bottom:8px;border-radius:8px;font-size:13px;line-height:1.5" :style="{background:a.severity==='CRITICAL'?'#fef2f2':'#fffbeb',color:a.severity==='CRITICAL'?'#991b1b':'#92400e',border:a.severity==='CRITICAL'?'1px solid #fecaca':'1px solid #fde68a'}">
+        <div style="font-weight:500;margin-bottom:3px">{{ a.message }}</div>
+        <div style="font-size:11px;opacity:0.6">{{ (a.createdAt||'').slice(0,16) }}</div>
+      </div>
+    </div>
+  </el-popover>
           <button class="action-btn" title="新建对话" @click="clearChat">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 3v18M3 12h18"/>
@@ -167,8 +184,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { sendChatAPI, getChatHistoryAPI } from '../api/chat'
+import { getUnreadAlertsAPI } from '../api/alert'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -179,18 +197,22 @@ marked.setOptions({
 const messages = ref([])
 const inputMessage = ref('')
 const loading = ref(false)
+const unreadAlertCount = ref(0)
+const alertList = ref([])
 const messageListRef = ref(null)
 const showTypingAnimation = ref(false)
 const typingDisplay = ref('')
 const isTyping = ref(false)
 const historyLoading = ref(true)
 let typingTimer = null
+let alertTimer = null
 
 const suggestions = [
   '我这个月消费情况如何？',
   '帮我分析支出分类占比',
   '有什么省钱建议吗？',
-  '我在餐饮上花了多少？'
+  '我在餐饮上花了多少？',
+  '帮我看看我的预算设置'
 ]
 
 const suggestionIcons = ['📝', '💰', '📊', '📈', '💡', '🍜']
@@ -325,6 +347,18 @@ async function loadHistory() {
   }
 }
 
+async function fetchAlerts() {
+  try {
+    const res = await getUnreadAlertsAPI()
+    if (res.code === 200 && Array.isArray(res.data)) {
+      alertList.value = res.data
+      unreadAlertCount.value = res.data.length
+    }
+  } catch (err) {
+    console.error('获取预警失败:', err)
+  }
+}
+
 function clearChat() {
   if (typingTimer) {
     clearTimeout(typingTimer)
@@ -339,7 +373,20 @@ function clearChat() {
 
 onMounted(async () => {
   await loadHistory()
+  await fetchAlerts()
+  alertTimer = setInterval(fetchAlerts, 30000)
   scrollToBottom()
+})
+
+onUnmounted(() => {
+  if (typingTimer) {
+    clearTimeout(typingTimer)
+    typingTimer = null
+  }
+  if (alertTimer) {
+    clearInterval(alertTimer)
+    alertTimer = null
+  }
 })
 
 watch(messages, () => {

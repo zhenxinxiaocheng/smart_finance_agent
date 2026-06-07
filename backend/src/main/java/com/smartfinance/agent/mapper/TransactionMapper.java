@@ -22,7 +22,27 @@ public interface TransactionMapper extends BaseMapper<Transaction> {
                                             @Param("startDate") LocalDate startDate,
                                             @Param("endDate") LocalDate endDate);
 
-    @Select("SELECT category, COALESCE(SUM(amount), 0) as total FROM transaction " +
+    @Select("SELECT COALESCE(SUM(amount), 0) FROM transaction " +
+            "WHERE user_id = #{userId} AND type = 'EXPENSE' AND category = #{category} " +
+            "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0")
+    BigDecimal sumByUserAndCategoryAndDateRange(@Param("userId") Long userId,
+                                                @Param("category") String category,
+                                                @Param("startDate") LocalDate startDate,
+                                                @Param("endDate") LocalDate endDate);
+
+    @Select("SELECT COALESCE(SUM(amount), 0) FROM transaction " +
+            "WHERE user_id = #{userId} AND type = #{type} AND deleted = 0")
+    BigDecimal sumByUserAndType(@Param("userId") Long userId, @Param("type") String type);
+
+    @Select("SELECT category AS name, COALESCE(SUM(amount), 0) AS total FROM transaction " +
+            "WHERE user_id = #{userId} AND type = 'EXPENSE' " +
+            "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0 " +
+            "GROUP BY category ORDER BY total DESC")
+    List<Map<String, Object>> sumExpenseGroupByCategory(@Param("userId") Long userId,
+                                                         @Param("startDate") LocalDate startDate,
+                                                         @Param("endDate") LocalDate endDate);
+
+    @Select("SELECT category, COALESCE(SUM(amount), 0) AS total FROM transaction " +
             "WHERE user_id = #{userId} AND type = 'EXPENSE' " +
             "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0 " +
             "GROUP BY category ORDER BY total DESC")
@@ -30,37 +50,34 @@ public interface TransactionMapper extends BaseMapper<Transaction> {
                                             @Param("startDate") LocalDate startDate,
                                             @Param("endDate") LocalDate endDate);
 
-    @Select("SELECT * FROM transaction WHERE user_id = #{userId} " +
-            "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0 " +
-            "ORDER BY transaction_date DESC, created_at DESC")
-    List<Transaction> selectByUserAndDateRange(@Param("userId") Long userId,
-                                               @Param("startDate") LocalDate startDate,
-                                               @Param("endDate") LocalDate endDate);
-
-    @Select("SELECT transaction_date as date, COALESCE(SUM(amount), 0) as total FROM transaction " +
+    @Select("SELECT transaction_date AS date, COALESCE(SUM(amount), 0) AS total FROM transaction " +
             "WHERE user_id = #{userId} AND type = 'EXPENSE' " +
             "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0 " +
-            "GROUP BY transaction_date ORDER BY transaction_date")
+            "GROUP BY transaction_date ORDER BY transaction_date ASC")
     List<Map<String, Object>> sumDailyExpense(@Param("userId") Long userId,
                                               @Param("startDate") LocalDate startDate,
                                               @Param("endDate") LocalDate endDate);
 
-    @Select("SELECT DATE_FORMAT(transaction_date, '%Y-%m') as month, " +
-            "COALESCE(SUM(CASE WHEN type='INCOME' THEN amount ELSE 0 END), 0) as income, " +
-            "COALESCE(SUM(CASE WHEN type='EXPENSE' THEN amount ELSE 0 END), 0) as expense " +
-            "FROM transaction WHERE user_id = #{userId} AND deleted = 0 " +
-            "AND transaction_date BETWEEN #{startDate} AND #{endDate} " +
-            "GROUP BY DATE_FORMAT(transaction_date, '%Y-%m') ORDER BY month")
-    List<Map<String, Object>> sumMonthlyIncomeExpense(@Param("userId") Long userId,
-                                                       @Param("startDate") LocalDate startDate,
-                                                       @Param("endDate") LocalDate endDate);
-
     @Select("SELECT * FROM transaction WHERE user_id = #{userId} AND type = 'EXPENSE' " +
-            "AND amount >= #{minAmount} AND deleted = 0 " +
-            "AND transaction_date BETWEEN #{startDate} AND #{endDate} " +
-            "ORDER BY amount DESC")
+            "AND amount >= #{amount} AND transaction_date BETWEEN #{startDate} AND #{endDate} " +
+            "AND deleted = 0 ORDER BY amount DESC, transaction_date DESC")
     List<Transaction> selectExpensesAboveAmount(@Param("userId") Long userId,
-                                                 @Param("minAmount") BigDecimal minAmount,
-                                                 @Param("startDate") LocalDate startDate,
-                                                 @Param("endDate") LocalDate endDate);
+                                                @Param("amount") BigDecimal amount,
+                                                @Param("startDate") LocalDate startDate,
+                                                @Param("endDate") LocalDate endDate);
+
+    @Select("SELECT * FROM transaction WHERE user_id = #{userId} AND deleted = 0 " +
+            "ORDER BY transaction_date DESC, created_at DESC LIMIT #{limit}")
+    List<Transaction> findRecentByUserId(@Param("userId") Long userId, @Param("limit") int limit);
+
+    @Select("SELECT * FROM transaction WHERE user_id = #{userId} AND deleted = 0 " +
+            "AND transaction_date BETWEEN #{startDate} AND #{endDate} " +
+            "ORDER BY transaction_date DESC, created_at DESC")
+    List<Transaction> findByUserAndDateRange(@Param("userId") Long userId,
+                                              @Param("startDate") LocalDate startDate,
+                                              @Param("endDate") LocalDate endDate);
+
+    default List<Transaction> selectByUserAndDateRange(Long userId, LocalDate startDate, LocalDate endDate) {
+        return findByUserAndDateRange(userId, startDate, endDate);
+    }
 }
