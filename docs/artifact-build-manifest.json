@@ -1,0 +1,68 @@
+{
+  "output": "E:\\桌面\\smart_finance_agent\\docs\\opening_report_finance_agent_presentations_plugin.pptx",
+  "outputBytes": 38648,
+  "slideCount": 5,
+  "slideSize": {
+    "width": 1280,
+    "height": 720
+  },
+  "previewDir": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview",
+  "previewPaths": [
+    "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview\\slide-01.png",
+    "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview\\slide-02.png",
+    "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview\\slide-03.png",
+    "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview\\slide-04.png",
+    "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\preview\\slide-05.png"
+  ],
+  "layoutDir": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout",
+  "layoutResults": [
+    {
+      "layoutPath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout\\slide-01.layout.json"
+    },
+    {
+      "layoutPath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout\\slide-02.layout.json"
+    },
+    {
+      "layoutPath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout\\slide-03.layout.json"
+    },
+    {
+      "layoutPath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout\\slide-04.layout.json"
+    },
+    {
+      "layoutPath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\layout\\slide-05.layout.json"
+    }
+  ],
+  "contactSheet": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\qa\\contact-sheet.png",
+  "slides": [
+    {
+      "index": 1,
+      "requestedSlideNumber": 1,
+      "modulePath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\slides\\slide-01.mjs",
+      "exportName": "slide01"
+    },
+    {
+      "index": 2,
+      "requestedSlideNumber": 2,
+      "modulePath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\slides\\slide-02.mjs",
+      "exportName": "slide02"
+    },
+    {
+      "index": 3,
+      "requestedSlideNumber": 3,
+      "modulePath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\slides\\slide-03.mjs",
+      "exportName": "slide03"
+    },
+    {
+      "index": 4,
+      "requestedSlideNumber": 4,
+      "modulePath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\slides\\slide-04.mjs",
+      "exportName": "slide04"
+    },
+    {
+      "index": 5,
+      "requestedSlideNumber": 5,
+      "modulePath": "E:\\桌面\\smart_finance_agent\\outputs\\manual-20260608-finance\\presentations\\opening-report\\slides\\slide-05.mjs",
+      "exportName": "slide05"
+    }
+  ]
+}

@@ -20,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 public class ChatServiceImpl implements ChatService {
 
     private static final long SSE_TIMEOUT = 125_000L;
+    private static final int MEMORY_MESSAGE_LIMIT = 12;
     private static final String FALLBACK_RESPONSE = "抱歉，我现在暂时无法处理你的请求，请稍后再试。";
 
     private final ReActAgentService reactAgentService;
@@ -32,10 +33,11 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public String chat(Long userId, String message) {
+        List<ChatMessage> recentHistory = loadRecentHistory(userId);
         saveMessage(userId, "USER", message);
         String response;
         try {
-            response = reactAgentService.run(userId, message).getFinalAnswer();
+            response = reactAgentService.run(userId, message, recentHistory).getFinalAnswer();
         } catch (Exception e) {
             log.error("ReActAgent call failed: userId={}, message={}", userId, message, e);
             response = FALLBACK_RESPONSE;
@@ -47,11 +49,12 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public SseEmitter streamReactChat(Long userId, String message) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
+        List<ChatMessage> recentHistory = loadRecentHistory(userId);
         saveMessage(userId, "USER", message);
 
         CompletableFuture.runAsync(() -> {
             try {
-                var result = reactAgentService.run(userId, message, new ReActAgentService.ReActEventListener() {
+                var result = reactAgentService.run(userId, message, recentHistory, new ReActAgentService.ReActEventListener() {
                     @Override
                     public void onStepStarted(int stepNumber, String summary, String tool) {
                         sendEvent(emitter, "step_started", Map.of(
@@ -99,6 +102,20 @@ public class ChatServiceImpl implements ChatService {
             emitter.send(SseEmitter.event().name(eventName).data(payload));
         } catch (Exception e) {
             throw new IllegalStateException("SSE send failed", e);
+        }
+    }
+
+    private List<ChatMessage> loadRecentHistory(Long userId) {
+        try {
+            List<ChatMessage> messages = chatMessageMapper.selectRecentByUser(userId, MEMORY_MESSAGE_LIMIT);
+            List<ChatMessage> ordered = new ArrayList<>();
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                ordered.add(messages.get(i));
+            }
+            return ordered;
+        } catch (Exception e) {
+            log.warn("Load chat history failed: userId={}", userId, e);
+            return List.of();
         }
     }
 

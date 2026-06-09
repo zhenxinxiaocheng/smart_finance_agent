@@ -33,6 +33,12 @@ const routes = [
         meta: { title: '消费记录' }
       },
       {
+        path: 'bill-import',
+        name: 'BillImport',
+        component: () => import('../views/BillImport.vue'),
+        meta: { title: '账单导入' }
+      },
+      {
         path: 'chat',
         name: 'Chat',
         component: () => import('../views/ChatView.vue'),

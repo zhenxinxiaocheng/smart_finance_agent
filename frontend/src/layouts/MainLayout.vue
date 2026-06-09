@@ -87,6 +87,7 @@ const activeMenu = computed(() => route.path)
 const currentTitle = computed(() => route.meta?.title || '统计')
 
 const navItems = [
+  { path: '/bill-import', label: '账单导入', icon: 'UploadFilled' },
   { path: '/statistics', label: '统计', icon: 'Odometer' },
   { path: '/transactions', label: '消费记录', icon: 'List' },
   { path: '/chat', label: '智能助手', icon: 'ChatDotSquare' }

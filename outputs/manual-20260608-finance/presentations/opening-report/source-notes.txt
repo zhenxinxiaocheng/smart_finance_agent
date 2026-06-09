@@ -1,0 +1,7 @@
+Source story synthesized from user-provided project context:
+- Existing project: smart finance agent with transaction management, budget warning, statistics, RAG, and explicit ReAct Agent.
+- New course requirement: AI and machine learning final project opening report, around CNN + transfer learning image classification.
+- User positioning: personal finance data exists but is scattered across payment platforms and multiple bank cards. Manual bookkeeping is accurate but not convenient enough for sustained use.
+- Proposed integration: bill image classification and OCR as a real data-entry layer; RAG and ReAct finance Agent as the analysis layer.
+
+No external logos, screenshots, personal bank data, or proprietary visual assets are used.

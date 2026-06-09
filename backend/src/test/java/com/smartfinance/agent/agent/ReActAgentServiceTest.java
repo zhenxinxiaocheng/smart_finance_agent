@@ -9,6 +9,7 @@ import dev.langchain4j.model.output.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -129,6 +130,53 @@ class ReActAgentServiceTest {
 
         assertFalse(result.getSteps().get(0).isSuccess());
         assertEquals("预算工具暂时不可用，我稍后再帮你查。", result.getFinalAnswer());
+    }
+
+    @Test
+    void run_withRecentHistory_shouldInjectHistoryAndKeepCurrentMessageOnce() {
+        com.smartfinance.agent.entity.ChatMessage userHistory = new com.smartfinance.agent.entity.ChatMessage();
+        userHistory.setRole("USER");
+        userHistory.setContent("我这个月花了多少");
+
+        com.smartfinance.agent.entity.ChatMessage assistantHistory = new com.smartfinance.agent.entity.ChatMessage();
+        assistantHistory.setRole("ASSISTANT");
+        assistantHistory.setContent("x".repeat(1100));
+
+        com.smartfinance.agent.entity.ChatMessage emptyHistory = new com.smartfinance.agent.entity.ChatMessage();
+        emptyHistory.setRole("USER");
+        emptyHistory.setContent("   ");
+
+        com.smartfinance.agent.entity.ChatMessage unknownRole = new com.smartfinance.agent.entity.ChatMessage();
+        unknownRole.setRole("SYSTEM");
+        unknownRole.setContent("不要注入");
+
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"我会结合刚才的支出问题继续分析。"}
+                """));
+
+        service.run(1L, "那上个月呢", List.of(userHistory, assistantHistory, emptyHistory, unknownRole));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).generate(captor.capture());
+
+        String joined = captor.getValue().toString();
+        assertTrue(joined.contains("历史用户消息"));
+        assertTrue(joined.contains("我这个月花了多少"));
+        assertTrue(joined.contains("历史助手回复"));
+        assertTrue(joined.contains("..."));
+        assertFalse(joined.contains("不要注入"));
+        assertEquals(1, countOccurrences(joined, "那上个月呢"));
+    }
+
+    private int countOccurrences(String text, String target) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(target, index)) >= 0) {
+            count++;
+            index += target.length();
+        }
+        return count;
     }
 
     private Response<AiMessage> response(String text) {
