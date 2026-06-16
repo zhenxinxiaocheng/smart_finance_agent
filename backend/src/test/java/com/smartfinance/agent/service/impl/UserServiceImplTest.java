@@ -2,6 +2,7 @@ package com.smartfinance.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.entity.User;
+import com.smartfinance.agent.mapper.ExpenseCategoryMapper;
 import com.smartfinance.agent.mapper.UserMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -22,6 +23,9 @@ class UserServiceImplTest {
 
     @Mock
     private UserMapper userMapper;
+
+    @Mock
+    private ExpenseCategoryMapper categoryMapper;
 
     @InjectMocks
     private UserServiceImpl userService;

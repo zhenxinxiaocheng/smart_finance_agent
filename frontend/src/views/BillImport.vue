@@ -3,9 +3,9 @@
     <section class="hero">
       <div>
         <h1>账单导入</h1>
-        <p>上传微信、支付宝或银行卡流水截图，由 CNN 判断账单来源，多模态模型抽取交易内容，确认后再写入正式消费记录。</p>
+        <p>上传微信、支付宝或银行卡流水截图，由多模态大模型识别账单来源并抽取交易内容，确认后再写入正式消费记录。</p>
       </div>
-      <el-tag type="primary" size="large">CNN分类 + 多模态抽取</el-tag>
+      <el-tag type="primary" size="large">多模态账单识别</el-tag>
     </section>
 
     <section class="upload-panel">
@@ -40,7 +40,7 @@
           <el-tag :type="billTypeTag">{{ billTypeLabel(result.billType) }}</el-tag>
         </div>
         <div class="summary-row">
-          <span>CNN置信度</span>
+          <span>识别置信度</span>
           <el-progress :percentage="confidencePercent" :status="confidenceStatus" />
         </div>
         <div class="summary-row">
@@ -58,7 +58,7 @@
       </div>
 
       <div class="vision-panel">
-        <div class="panel-title">多模态文本抽取摘要</div>
+        <div class="panel-title">多模态识别摘要</div>
         <pre>{{ result.ocrText || emptyVisionSummary }}</pre>
       </div>
     </section>
@@ -113,7 +113,7 @@
 
     <el-empty
       v-else-if="result && !loading"
-      description="当前识别结果没有候选交易。CNN 低置信度、非账单图片或多模态抽取失败时会出现这种情况。"
+      description="当前识别结果没有候选交易。非账单图片、低置信度或多模态抽取失败时会出现这种情况。"
     />
   </div>
 </template>
@@ -148,15 +148,15 @@ const billTypeTag = computed(() => {
 })
 
 const emptyVisionSummary = computed(() => {
-  if (!result.value) return '暂无多模态文本抽取摘要。'
+  if (!result.value) return '暂无多模态识别摘要。'
   if (result.value.billType === 'NON_BILL') {
-    return 'CNN 判断这张图片不是账单，未生成交易摘要。请上传微信、支付宝或银行卡流水截图。'
+    return '模型判断这张图片不是可导入账单，未生成交易摘要。请上传微信、支付宝或银行卡流水截图。'
   }
   if (result.value.billType === 'LOW_QUALITY') {
-    return 'CNN 判断图片质量或尺寸不足，系统未继续生成候选交易。请上传更清晰的截图。'
+    return '图片质量或尺寸不足，系统未生成候选交易。请上传更清晰的截图。'
   }
   if (result.value.billType === 'ANALYSIS_FAILED') {
-    return 'CNN 分类模型未就绪或推理失败。请先训练 ResNet-18 模型并配置 BILL_CNN_MODEL_PATH。'
+    return '多模态账单识别失败。请检查 DashScope API Key、模型配置或稍后重试。'
   }
   return '多模态模型未返回文本摘要，但可能仍生成了候选交易；请检查下方候选记录。'
 })
@@ -329,7 +329,7 @@ function billTypeLabel(type) {
   color: var(--text-primary);
   background: var(--bg);
   border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Consol, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .candidate-header {

@@ -57,5 +57,5 @@ search:
 bill:
   upload-dir: ${BILL_UPLOAD_DIR:uploads/bills}
   ai:
-    analyze-url: ${BILL_AI_ANALYZE_URL:http://127.0.0.1:8090/api/ai/bill/analyze}
+    endpoint: ${DASHSCOPE_VL_ENDPOINT:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
     multimodal-model: ${DASHSCOPE_VL_MODEL:qwen3.5-omni-plus-2026-03-15}
