@@ -48,7 +48,7 @@ langchain4j:
       temperature: 0.8
       top-p: 0.9
     embedding-model:
-      model-name: text-embedding-v3
+      model-name: gte-rerank-v2
 
 # 联网搜索配置
 search:
