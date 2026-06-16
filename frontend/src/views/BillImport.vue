@@ -32,37 +32,6 @@
       </div>
     </section>
 
-    <section v-if="result" class="result-grid">
-      <div class="summary-panel">
-        <div class="panel-title">识别结果</div>
-        <div class="summary-row">
-          <span>账单类型</span>
-          <el-tag :type="billTypeTag">{{ billTypeLabel(result.billType) }}</el-tag>
-        </div>
-        <div class="summary-row">
-          <span>识别置信度</span>
-          <el-progress :percentage="confidencePercent" :status="confidenceStatus" />
-        </div>
-        <div class="summary-row">
-          <span>状态</span>
-          <el-tag>{{ result.status }}</el-tag>
-        </div>
-        <el-alert
-          v-if="result.warnings"
-          class="warning"
-          :title="result.warnings"
-          type="warning"
-          show-icon
-          :closable="false"
-        />
-      </div>
-
-      <div class="vision-panel">
-        <div class="panel-title">多模态识别摘要</div>
-        <pre>{{ result.ocrText || emptyVisionSummary }}</pre>
-      </div>
-    </section>
-
     <section v-if="candidates.length" class="candidate-panel">
       <div class="candidate-header">
         <div>
@@ -113,7 +82,7 @@
 
     <el-empty
       v-else-if="result && !loading"
-      description="当前识别结果没有候选交易。非账单图片、低置信度或多模态抽取失败时会出现这种情况。"
+      description="当前没有候选交易。非账单图片、低置信度或多模态抽取失败时会出现这种情况。"
     />
   </div>
 </template>
@@ -128,38 +97,6 @@ const loading = ref(false)
 const confirming = ref(false)
 const result = ref(null)
 const candidates = ref([])
-
-const confidencePercent = computed(() => {
-  const value = Number(result.value?.confidence || 0)
-  return Math.round(Math.max(0, Math.min(1, value)) * 100)
-})
-
-const confidenceStatus = computed(() => {
-  if (confidencePercent.value >= 80) return 'success'
-  if (confidencePercent.value < 60) return 'warning'
-  return ''
-})
-
-const billTypeTag = computed(() => {
-  const type = result.value?.billType
-  if (type === 'NON_BILL' || type === 'LOW_QUALITY' || type === 'ANALYSIS_FAILED') return 'danger'
-  if (confidencePercent.value < 60) return 'warning'
-  return 'success'
-})
-
-const emptyVisionSummary = computed(() => {
-  if (!result.value) return '暂无多模态识别摘要。'
-  if (result.value.billType === 'NON_BILL') {
-    return '模型判断这张图片不是可导入账单，未生成交易摘要。请上传微信、支付宝或银行卡流水截图。'
-  }
-  if (result.value.billType === 'LOW_QUALITY') {
-    return '图片质量或尺寸不足，系统未生成候选交易。请上传更清晰的截图。'
-  }
-  if (result.value.billType === 'ANALYSIS_FAILED') {
-    return '多模态账单识别失败。请检查 DashScope API Key、模型配置或稍后重试。'
-  }
-  return '多模态模型未返回文本摘要，但可能仍生成了候选交易；请检查下方候选记录。'
-})
 
 function handleFileChange(uploadFile) {
   selectedFile.value = uploadFile.raw
@@ -221,18 +158,6 @@ async function confirmImport() {
   }
 }
 
-function billTypeLabel(type) {
-  const labels = {
-    WECHAT: '微信账单',
-    ALIPAY: '支付宝账单',
-    BANK: '银行卡流水',
-    NON_BILL: '非账单图片',
-    LOW_QUALITY: '低质量图片',
-    ANALYSIS_FAILED: '识别失败',
-    UNKNOWN: '未知'
-  }
-  return labels[type] || type || '未知'
-}
 </script>
 
 <style scoped>
@@ -244,8 +169,6 @@ function billTypeLabel(type) {
 
 .hero,
 .upload-panel,
-.summary-panel,
-.vision-panel,
 .candidate-panel {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -292,44 +215,11 @@ function billTypeLabel(type) {
   border-radius: 6px;
 }
 
-.result-grid {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 20px;
-}
-
 .panel-title {
   margin-bottom: 16px;
   font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
-}
-
-.summary-row {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  color: var(--text-secondary);
-}
-
-.warning {
-  margin-top: 16px;
-}
-
-.vision-panel pre {
-  min-height: 120px;
-  max-height: 240px;
-  margin: 0;
-  padding: 14px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-primary);
-  background: var(--bg);
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .candidate-header {
@@ -353,8 +243,5 @@ function billTypeLabel(type) {
     flex-direction: column;
   }
 
-  .result-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

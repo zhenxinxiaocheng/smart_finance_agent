@@ -2,6 +2,7 @@ package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
+import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -39,6 +40,8 @@ class ReActAgentServiceTest {
     private FinancialMonitor financialMonitor;
     @Mock
     private AnalysisRecordMapper analysisRecordMapper;
+    @Mock
+    private FinancialProfileService financialProfileService;
 
     private ReActAgentService service;
 
@@ -46,10 +49,11 @@ class ReActAgentServiceTest {
     void setUp() {
         when(toolRegistry.manifest()).thenReturn("- get_total_expense: test tool");
         when(financialMonitor.hasPendingAlerts(1L)).thenReturn(false);
+        lenient().when(financialProfileService.buildAgentContext(1L)).thenReturn("");
         lenient().when(agentVerifier.verify(any(), any(), anyList()))
                 .thenReturn(new AgentVerifier.VerificationResult(true, null, List.of()));
         service = new ReActAgentService(chatModel, toolRegistry, agentVerifier, financialMonitor,
-                analysisRecordMapper, new ObjectMapper());
+                analysisRecordMapper, new ObjectMapper(), financialProfileService);
     }
 
     @Test
@@ -167,6 +171,24 @@ class ReActAgentServiceTest {
         assertTrue(joined.contains("..."));
         assertFalse(joined.contains("不要注入"));
         assertEquals(1, countOccurrences(joined, "那上个月呢"));
+    }
+
+    @Test
+    void run_withFinancialProfile_shouldInjectProfileContext() {
+        when(financialProfileService.buildAgentContext(1L))
+                .thenReturn("用户长期财务画像：\n风险偏好：保守\n月度总预算目标：1800.00 元");
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"我会按你的保守风险偏好给建议。"}
+                """));
+
+        service.run(1L, "给我省钱建议");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).generate(captor.capture());
+        String joined = captor.getValue().toString();
+        assertTrue(joined.contains("用户主动维护的长期财务画像"));
+        assertTrue(joined.contains("风险偏好：保守"));
     }
 
     private int countOccurrences(String text, String target) {

@@ -97,7 +97,47 @@
               v-else
               class="message-bubble ai-bubble"
             >
+              <details v-if="msg.steps?.length" class="agent-steps">
+                <summary>
+                  <span>{{ stepsSummary(msg.steps) }}</span>
+                  <span class="steps-caret">展开</span>
+                </summary>
+                <div class="steps-list">
+                  <div
+                    v-for="step in msg.steps"
+                    :key="step.stepNumber"
+                    class="agent-step"
+                    :class="step.status"
+                  >
+                    <span class="step-index">{{ step.stepNumber }}</span>
+                    <span class="step-summary">{{ step.summary }}</span>
+                    <span class="step-state">{{ stepLabel(step.status) }}</span>
+                  </div>
+                </div>
+              </details>
               <span v-html="renderMarkdown(msg.content)"></span>
+              <div v-if="msg.pendingActions?.length" class="pending-actions">
+                <div
+                  v-for="action in msg.pendingActions"
+                  :key="action.id"
+                  class="pending-action-card"
+                  :class="(action.status || '').toLowerCase()"
+                >
+                  <div class="pending-copy">
+                    <div class="pending-title">{{ action.title || '待确认操作' }}</div>
+                    <div class="pending-summary">{{ action.summary }}</div>
+                  </div>
+                  <div v-if="action.status === 'PENDING'" class="pending-buttons">
+                    <button class="pending-btn primary" :disabled="action.confirming" @click="confirmPendingAction(action)">
+                      {{ action.confirming ? '处理中' : '确认执行' }}
+                    </button>
+                    <button class="pending-btn ghost" :disabled="action.confirming" @click="cancelPendingAction(action)">取消</button>
+                  </div>
+                  <div v-else class="pending-status">
+                    {{ action.status === 'CONFIRMED' ? '已执行' : '已取消' }}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -130,7 +170,39 @@
           <div class="message-content">
             <div class="message-label">智财Agent</div>
             <div class="message-bubble ai-bubble typing-bubble">
+              <details v-if="activeSteps.length" class="agent-steps" open>
+                <summary>
+                  <span>{{ stepsSummary(activeSteps) }}</span>
+                  <span class="steps-caret">收起</span>
+                </summary>
+                <div class="steps-list">
+                  <div
+                    v-for="step in activeSteps"
+                    :key="step.stepNumber"
+                    class="agent-step"
+                    :class="step.status"
+                  >
+                    <span class="step-index">{{ step.stepNumber }}</span>
+                    <span class="step-summary">{{ step.summary }}</span>
+                    <span class="step-state">{{ stepLabel(step.status) }}</span>
+                  </div>
+                </div>
+              </details>
               <span v-html="renderMarkdown(typingDisplay)"></span>
+              <div v-if="activePendingActions.length" class="pending-actions">
+                <div
+                  v-for="action in activePendingActions"
+                  :key="action.id"
+                  class="pending-action-card"
+                  :class="(action.status || '').toLowerCase()"
+                >
+                  <div class="pending-copy">
+                    <div class="pending-title">{{ action.title || '待确认操作' }}</div>
+                    <div class="pending-summary">{{ action.summary }}</div>
+                  </div>
+                  <div class="pending-status">等待回复完成</div>
+                </div>
+              </div>
               <span class="typing-cursor" v-if="isTyping">|</span>
               <span class="typing-dots" v-else>
                 <span>.</span><span>.</span><span>.</span>
@@ -185,8 +257,10 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { sendChatAPI, getChatHistoryAPI } from '../api/chat'
+import { streamReactChatAPI, getChatHistoryAPI } from '../api/chat'
 import { getUnreadAlertsAPI } from '../api/alert'
+import { listPendingActionsAPI, confirmPendingActionAPI, cancelPendingActionAPI } from '../api/pendingAction'
+import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -204,8 +278,11 @@ const showTypingAnimation = ref(false)
 const typingDisplay = ref('')
 const isTyping = ref(false)
 const historyLoading = ref(true)
+const activeSteps = ref([])
+const activePendingActions = ref([])
 let typingTimer = null
 let alertTimer = null
+let chatAbortController = null
 
 const suggestions = [
   '我这个月消费情况如何？',
@@ -263,18 +340,29 @@ function scrollToBottom() {
 function typeText(text, index = 0) {
   if (index < text.length) {
     isTyping.value = true
-    typingDisplay.value += text[index]
+    const chunkSize = text[index] === '\n' ? 1 : 6
+    const nextIndex = Math.min(index + chunkSize, text.length)
+    typingDisplay.value += text.slice(index, nextIndex)
     // 减少滚动频率，提升性能
-    if (index % 5 === 0 || text[index] === '\n') {
+    if (index % 24 === 0 || text[index] === '\n') {
       scrollToBottom()
     }
-    const delay = text[index] === '\n' ? 80 : 20 + Math.random() * 15
-    typingTimer = setTimeout(() => typeText(text, index + 1), delay)
+    const delay = text[index] === '\n' ? 24 : 8
+    typingTimer = setTimeout(() => typeText(text, nextIndex), delay)
   } else {
     isTyping.value = false
-    messages.value.push({ role: 'ASSISTANT', content: text })
+    const finishedSteps = activeSteps.value.map(step => ({ ...step }))
+    const finishedPendingActions = activePendingActions.value.map(action => ({ ...action }))
+    messages.value.push({
+      role: 'ASSISTANT',
+      content: text,
+      steps: finishedSteps,
+      pendingActions: finishedPendingActions
+    })
     showTypingAnimation.value = false
     typingDisplay.value = ''
+    activeSteps.value = []
+    activePendingActions.value = []
     loading.value = false
     scrollToBottom()
   }
@@ -296,32 +384,132 @@ async function handleSend() {
   loading.value = true
   showTypingAnimation.value = true
   typingDisplay.value = ''
+  activeSteps.value = []
+  activePendingActions.value = []
+  chatAbortController = new AbortController()
+  let terminalEventReceived = false
 
   try {
-    const res = await sendChatAPI({ message: text })
-    if (res.code === 200) {
-      const response = res.data.response
-      await new Promise(resolve => setTimeout(resolve, 300))
-      typeText(response)
-    } else {
-      showTypingAnimation.value = false
-      typingDisplay.value = ''
-      messages.value.push({
-        role: 'ASSISTANT',
-        content: '抱歉，我暂时无法处理你的请求，请稍后再试。'
-      })
-      loading.value = false
-      scrollToBottom()
+    await streamReactChatAPI({ message: text }, {
+      step_started: payload => {
+        upsertStep({
+          stepNumber: payload.stepNumber,
+          summary: payload.summary || '正在分析',
+          tool: payload.tool,
+          status: 'running'
+        })
+      },
+      step_finished: payload => {
+        upsertStep({
+          stepNumber: payload.stepNumber,
+          status: payload.success ? 'done' : 'failed'
+        })
+      },
+      final: async payload => {
+        terminalEventReceived = true
+        await new Promise(resolve => setTimeout(resolve, 200))
+        typeText(payload.response || '')
+      },
+      pending_actions: payload => {
+        applyPendingActions(payload.actions || [])
+      },
+      error: payload => {
+        terminalEventReceived = true
+        finishWithError(payload.message)
+      }
+    }, chatAbortController.signal)
+    if (!terminalEventReceived && loading.value) {
+      finishWithError('连接已结束，但没有收到完整回复，请稍后再试。')
     }
   } catch {
-    showTypingAnimation.value = false
-    typingDisplay.value = ''
-    messages.value.push({
-      role: 'ASSISTANT',
-      content: '抱歉，我暂时无法处理你的请求，请稍后再试。'
-    })
-    loading.value = false
-    scrollToBottom()
+    if (!chatAbortController?.signal.aborted) {
+      finishWithError()
+    }
+  } finally {
+    chatAbortController = null
+  }
+}
+
+function upsertStep(step) {
+  const index = activeSteps.value.findIndex(item => item.stepNumber === step.stepNumber)
+  if (index >= 0) {
+    const nextStep = { ...activeSteps.value[index], ...step }
+    if (!step.summary) {
+      nextStep.summary = activeSteps.value[index].summary
+    }
+    activeSteps.value[index] = nextStep
+  } else {
+    activeSteps.value.push(step)
+  }
+  scrollToBottom()
+}
+
+function applyPendingActions(actions) {
+  const normalizedActions = Array.isArray(actions) ? actions.map(action => ({ ...action })) : []
+  if (showTypingAnimation.value) {
+    activePendingActions.value = normalizedActions
+  } else {
+    const lastAssistant = [...messages.value].reverse().find(message => message.role === 'ASSISTANT')
+    if (lastAssistant) {
+      lastAssistant.pendingActions = normalizedActions
+    }
+  }
+  scrollToBottom()
+}
+
+function stepLabel(status) {
+  if (status === 'done') return '完成'
+  if (status === 'failed') return '失败'
+  return '执行中'
+}
+
+function stepsSummary(steps) {
+  const total = steps?.length || 0
+  const running = steps?.some(step => step.status === 'running')
+  const failed = steps?.filter(step => step.status === 'failed').length || 0
+  if (running) return `Agent 正在执行 ${total} 个步骤`
+  if (failed) return `Agent 完成 ${total} 个步骤，其中 ${failed} 个失败`
+  return `Agent 已完成 ${total} 个步骤`
+}
+
+function finishWithError(message = '抱歉，我暂时无法处理你的请求，请稍后再试。') {
+  const finishedSteps = activeSteps.value.map(step => ({ ...step }))
+  const finishedPendingActions = activePendingActions.value.map(action => ({ ...action }))
+  showTypingAnimation.value = false
+  typingDisplay.value = ''
+  activeSteps.value = []
+  activePendingActions.value = []
+  messages.value.push({
+    role: 'ASSISTANT',
+    content: message,
+    steps: finishedSteps,
+    pendingActions: finishedPendingActions
+  })
+  loading.value = false
+  scrollToBottom()
+}
+
+async function confirmPendingAction(action) {
+  if (!action || action.status !== 'PENDING') return
+  action.confirming = true
+  try {
+    const res = await confirmPendingActionAPI(action.id)
+    Object.assign(action, res.data || {}, { confirming: false })
+    ElMessage.success('已执行')
+  } catch {
+    action.confirming = false
+  }
+}
+
+async function cancelPendingAction(action) {
+  if (!action || action.status !== 'PENDING') return
+  action.confirming = true
+  try {
+    const res = await cancelPendingActionAPI(action.id)
+    Object.assign(action, res.data || {}, { confirming: false })
+    ElMessage.success('已取消')
+  } catch {
+    action.confirming = false
   }
 }
 
@@ -340,11 +528,23 @@ async function loadHistory() {
         content: m.content
       }))
     }
+    await loadPendingActions()
   } catch (err) {
     console.error('加载聊天历史失败:', err)
   } finally {
     historyLoading.value = false
   }
+}
+
+async function loadPendingActions() {
+  const res = await listPendingActionsAPI()
+  const actions = Array.isArray(res.data) ? res.data : []
+  if (!actions.length) return
+  messages.value.push({
+    role: 'ASSISTANT',
+    content: '还有操作等待你确认，确认后才会真正写入系统。',
+    pendingActions: actions
+  })
 }
 
 async function fetchAlerts() {
@@ -360,12 +560,18 @@ async function fetchAlerts() {
 }
 
 function clearChat() {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
   if (typingTimer) {
     clearTimeout(typingTimer)
     typingTimer = null
   }
   showTypingAnimation.value = false
   typingDisplay.value = ''
+  activeSteps.value = []
+  activePendingActions.value = []
   isTyping.value = false
   loading.value = false
   messages.value = []
@@ -379,6 +585,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
   if (typingTimer) {
     clearTimeout(typingTimer)
     typingTimer = null
@@ -612,6 +822,197 @@ watch(messages, () => {
 .typing-bubble {
   min-height: 28px;
   transition: all 0.1s ease-out;
+}
+
+.agent-steps {
+  margin-bottom: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.agent-steps summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 8px 10px;
+  color: #1e40af;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.agent-steps summary::-webkit-details-marker {
+  display: none;
+}
+
+.steps-caret {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.agent-steps[open] .steps-caret {
+  color: #2563eb;
+}
+
+.agent-steps:not([open]) .steps-caret::after {
+  content: "⌄";
+  margin-left: 4px;
+}
+
+.agent-steps[open] .steps-caret::after {
+  content: "⌃";
+  margin-left: 4px;
+}
+
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
+.agent-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.agent-step.done {
+  color: #166534;
+}
+
+.agent-step.failed {
+  color: #991b1b;
+}
+
+.step-index {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-step.done .step-index {
+  background: #16a34a;
+}
+
+.agent-step.failed .step-index {
+  background: #dc2626;
+}
+
+.step-summary {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-state {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.pending-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pending-action-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.pending-action-card.confirmed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.pending-action-card.cancelled {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  opacity: 0.78;
+}
+
+.pending-copy {
+  min-width: 0;
+}
+
+.pending-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pending-summary {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-buttons {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.pending-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pending-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.pending-btn.primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.pending-btn.ghost {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.pending-status {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .typing-bubble :deep(*),

@@ -8,6 +8,7 @@ import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.dto.ReActStepRecord;
 import com.smartfinance.agent.entity.AnalysisRecord;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
+import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -36,19 +37,22 @@ public class ReActAgentService {
     private final FinancialMonitor financialMonitor;
     private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
+    private final FinancialProfileService financialProfileService;
 
     public ReActAgentService(ChatLanguageModel chatModel,
                              ToolRegistry toolRegistry,
                              AgentVerifier agentVerifier,
                              FinancialMonitor financialMonitor,
                              AnalysisRecordMapper analysisRecordMapper,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             FinancialProfileService financialProfileService) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.agentVerifier = agentVerifier;
         this.financialMonitor = financialMonitor;
         this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
+        this.financialProfileService = financialProfileService;
     }
 
     public ReActResult run(Long userId, String userMessage) {
@@ -79,6 +83,14 @@ public class ReActAgentService {
             if (pending != null && !pending.isBlank()) {
                 messages.add(UserMessage.from("系统提醒：该用户有这些未处理的预算提醒，请在必要时纳入回答，但不要直接暴露内部字段。\n" + pending));
             }
+        }
+
+        String profileContext = financialProfileService.buildAgentContext(userId);
+        if (profileContext != null && !profileContext.isBlank()) {
+            messages.add(UserMessage.from("""
+                    系统资料：下面是用户主动维护的长期财务画像。回答预算、省钱、储蓄、风险相关问题时必须优先参考；不要声称这是实时流水。
+                    %s
+                    """.formatted(profileContext)));
         }
 
         appendConversationHistory(messages, recentHistory);

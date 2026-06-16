@@ -33,6 +33,12 @@ const routes = [
         meta: { title: '消费记录' }
       },
       {
+        path: 'profile',
+        name: 'FinancialProfile',
+        component: () => import('../views/FinancialProfile.vue'),
+        meta: { title: '财务画像' }
+      },
+      {
         path: 'bill-import',
         name: 'BillImport',
         component: () => import('../views/BillImport.vue'),

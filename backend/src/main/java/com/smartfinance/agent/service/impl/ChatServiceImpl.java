@@ -5,6 +5,7 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.ChatService;
+import com.smartfinance.agent.service.PendingActionService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -25,10 +26,14 @@ public class ChatServiceImpl implements ChatService {
 
     private final ReActAgentService reactAgentService;
     private final ChatMessageMapper chatMessageMapper;
+    private final PendingActionService pendingActionService;
 
-    public ChatServiceImpl(ReActAgentService reactAgentService, ChatMessageMapper chatMessageMapper) {
+    public ChatServiceImpl(ReActAgentService reactAgentService,
+                           ChatMessageMapper chatMessageMapper,
+                           PendingActionService pendingActionService) {
         this.reactAgentService = reactAgentService;
         this.chatMessageMapper = chatMessageMapper;
+        this.pendingActionService = pendingActionService;
     }
 
     @Override
@@ -68,7 +73,7 @@ public class ChatServiceImpl implements ChatService {
                     public void onStepFinished(int stepNumber, String summary, boolean success) {
                         sendEvent(emitter, "step_finished", Map.of(
                                 "stepNumber", stepNumber,
-                                "summary", summary,
+                                "summary", success ? "步骤完成" : "步骤失败",
                                 "success", success
                         ));
                     }
@@ -82,6 +87,10 @@ public class ChatServiceImpl implements ChatService {
                     }
                 });
                 saveMessage(userId, "ASSISTANT", result.getFinalAnswer());
+                var pendingActions = pendingActionService.listPending(userId);
+                if (!pendingActions.isEmpty()) {
+                    sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
+                }
                 emitter.complete();
             } catch (Exception e) {
                 log.error("ReAct SSE call failed: userId={}, message={}", userId, message, e);

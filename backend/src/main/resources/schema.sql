@@ -15,6 +15,26 @@ CREATE TABLE IF NOT EXISTS `user`
     INDEX `idx_created_at` (`created_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户表';
 
+-- 用户长期财务画像表
+CREATE TABLE IF NOT EXISTS `financial_profile`
+(
+    `id`                    BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`               BIGINT        NOT NULL COMMENT '用户ID',
+    `life_stage`            VARCHAR(50)   NULL     COMMENT '身份阶段',
+    `monthly_income`        DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '月收入',
+    `fixed_expense`         DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '固定支出',
+    `risk_preference`       VARCHAR(30)   NULL     COMMENT '风险偏好',
+    `savings_goal_amount`   DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '储蓄目标金额',
+    `savings_goal_deadline` VARCHAR(7)    NULL     COMMENT '储蓄目标期限yyyy-MM',
+    `monthly_budget_goal`   DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '月度总预算目标',
+    `notes`                 VARCHAR(500)  NULL     COMMENT '补充偏好',
+    `created_at`            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_profile_user` (`user_id`),
+    CONSTRAINT `fk_financial_profile_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户长期财务画像表';
+
 -- 交易记录表
 CREATE TABLE IF NOT EXISTS `transaction`
 (
@@ -68,6 +88,22 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     INDEX `idx_created_at` (`created_at`),
     CONSTRAINT `fk_chat_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='聊天消息表';
+
+CREATE TABLE IF NOT EXISTS `pending_action`
+(
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`     BIGINT       NOT NULL COMMENT 'User ID',
+    `action_type` VARCHAR(50)  NOT NULL COMMENT 'RECORD_TRANSACTION/SET_BUDGET',
+    `title`       VARCHAR(100) NOT NULL COMMENT 'Display title',
+    `summary`     VARCHAR(500) NOT NULL COMMENT 'Display summary',
+    `payload`     TEXT         NOT NULL COMMENT 'Action payload JSON',
+    `status`      VARCHAR(30)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CONFIRMED/CANCELLED',
+    `created_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    PRIMARY KEY (`id`),
+    INDEX `idx_pending_user_status` (`user_id`, `status`),
+    CONSTRAINT `fk_pending_action_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Pending agent write actions';
 
 
 -- 预算表

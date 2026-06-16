@@ -4,6 +4,7 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
+import com.smartfinance.agent.service.PendingActionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,12 +30,14 @@ class ChatServiceImplTest {
     private ReActAgentService reactAgentService;
     @Mock
     private ChatMessageMapper chatMessageMapper;
+    @Mock
+    private PendingActionService pendingActionService;
 
     private ChatServiceImpl chatService;
 
     @BeforeEach
     void setUp() {
-        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper);
+        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper, pendingActionService);
     }
 
     @Test
