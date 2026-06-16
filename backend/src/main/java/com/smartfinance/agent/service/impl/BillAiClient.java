@@ -3,6 +3,7 @@ package com.smartfinance.agent.service.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.dto.AiBillAnalysisResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -33,6 +34,7 @@ public class BillAiClient {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Autowired
     public BillAiClient(@Value("${langchain4j.dashscope.api-key:}") String apiKey,
                         @Value("${bill.ai.endpoint:" + DEFAULT_ENDPOINT + "}") String endpoint,
                         @Value("${bill.ai.multimodal-model:" + DEFAULT_MODEL + "}") String multimodalModel) {
