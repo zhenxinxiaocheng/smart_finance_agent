@@ -53,3 +53,7 @@ __pycache__/
 raw-dataset/
 .codex-remote-attachments/
 ai-service/dataset/
+outputs/
+tmp/
+~$*.docx
+**/node_modules/

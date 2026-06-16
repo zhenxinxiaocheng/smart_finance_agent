@@ -1,264 +1,177 @@
+# 智财 Agent
 
+个人智能财务代理系统，当前分支为机器学习期末作业成果分支：在原有记账、统计、AI 财务助手和 RAG 知识库能力上，新增“账单截图导入”模块，并使用 CNN 迁移学习模型完成账单来源/质量判别，再由多模态大模型抽取交易内容。
 
-<p align="center">
-  <img src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=A modern fintech logo with a minimalist blue shield and a glowing cyan dollar sign inside, dark blue background, tech style, clean lines, professional financial feel&image_size=square_hd" width="120" alt="logo" />
-</p>
+## 分支说明
 
-<h1 align="center">智财Agent</h1>
-<p align="center"><strong>个人智能财务代理系统</strong></p>
+- 当前分支：`codex/transfer-learning-image-tech`
+- 课程目标：展示 CNN 迁移学习在账单图像分类中的应用。
+- 核心成果：用户上传微信、支付宝或银行卡流水截图后，系统先用本地训练的 CNN 分类器判断图片类型和置信度，再用多模态大模型抽取候选交易，最后由用户确认后写入正式交易记录。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Java-17-blue?style=flat-square&logo=openjdk" />
-  <img src="https://img.shields.io/badge/Spring_Boot-3.2.5-brightgreen?style=flat-square&logo=springboot" />
-  <img src="https://img.shields.io/badge/Vue_3-8.0-4fc08d?style=flat-square&logo=vuedotjs" />
-  <img src="https://img.shields.io/badge/AI-Agent-f472b6?style=flat-square&logo=openai" />
-  <img src="https://img.shields.io/badge/MySQL-8.0-4479a1?style=flat-square&logo=mysql" />
-  <img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" />
-</p>
+## 主要功能
 
----
-
-## 简介
-
-**智财Agent** 是一款基于 **AI Agent** 技术的个人智能财务管理系统。它不仅能帮你记录和管理日常收支，还能像专业理财顾问一样，通过自然语言对话分析你的财务状况，提供个性化的理财建议。
-
-### 核心能力
-
-- **智能记账** — 记录和管理收支明细，多维度筛选和统计
-- **AI 财务顾问** — 通过自然语言对话了解财务状况，获得专业理财建议
-- **消费洞察** — 支出分类分析、月度趋势、储蓄率评估
-- **联网搜索** — 实时获取最新财经资讯和市场动态
-- **RAG 知识库** — 内置理财专业知识库（紧急备用金、资产配置、基金定投、保险规划等）
+- 用户注册、登录与 JWT 鉴权。
+- 收入/支出记录管理、分类筛选、统计图表和仪表盘。
+- 基于 LangChain4j 与 DashScope 的 AI 财务助手。
+- RAG 理财知识库问答和 Tavily 联网搜索。
+- 账单截图导入：
+  - CNN 分类账单来源：微信、支付宝、银行卡流水、非账单图片。
+  - 多模态大模型抽取金额、类型、分类、日期、描述和置信度。
+  - 用户确认候选交易后才写入正式消费记录，避免自动误入账。
 
 ## 技术栈
 
-### 后端
-
-| 技术 | 用途 |
-|------|------|
-| Java 17 | 开发语言 |
-| Spring Boot 3.2.5 | 应用框架 |
-| MyBatis-Plus | ORM 持久层 |
-| MySQL 8.0 | 数据库 |
-| LangChain4j 0.35.0 | AI Agent 框架 |
-| DashScope (通义千问) | 大语言模型 + Embedding |
-| Tavily API | 联网搜索 |
-| JWT | 身份认证 |
-
-### 前端
-
-| 技术 | 用途 |
-|------|------|
-| Vue 3 (Composition API) | 前端框架 |
-| Vite | 构建工具 |
-| Element Plus | UI 组件库 |
-| ECharts + vue-echarts | 数据可视化 |
-| Pinia | 状态管理 |
-| Vue Router | 路由管理 |
-| Axios | HTTP 请求 |
-| marked | Markdown 渲染 |
+| 模块 | 技术 |
+| --- | --- |
+| 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL 8, JWT |
+| AI Agent | LangChain4j, DashScope, RAG, Tavily Search |
+| 前端 | Vue 3, Vite, Element Plus, Pinia, Vue Router, Axios, ECharts |
+| AI 服务 | Python, FastAPI, PyTorch, TorchVision, Pillow |
+| 机器学习 | ResNet-18 迁移学习, CNN 图像分类, Grad-CAM 可解释性辅助 |
 
 ## 项目结构
 
-```
+```text
 smart_finance_agent/
-├── backend/                          # 后端项目
-│   ├── src/main/java/com/smartfinance/agent/
-│   │   ├── agent/                    # AI Agent 层
-│   │   │   ├── FinancialAiService.java     # @AiService 接口（Agent 对话入口）
-│   │   │   ├── FinancialTools.java         # 财务数据查询工具
-│   │   │   └── WebSearchTool.java          # 联网搜索工具
-│   │   ├── config/                   # 配置类
-│   │   │   ├── LangChain4jConfig.java      # LLM 模型配置
-│   │   │   ├── RagConfig.java              # RAG 知识库配置
-│   │   │   └── BatchEmbeddingModel.java    # Embedding 批处理
-│   │   ├── controller/               # REST API 控制器
-│   │   ├── service/                  # 业务逻辑层
-│   │   ├── mapper/                   # MyBatis 数据访问
-│   │   ├── entity/                   # 数据实体
-│   │   ├── dto/                      # 数据传输对象
-│   │   └── common/                   # 通用工具（Result、异常处理等）
-│   └── src/main/resources/
-│       ├── application.yml           # 公共配置
-│       ├── application-local.yml     # ⚠️ 本地敏感配置（不上传 GitHub）
-│       ├── schema.sql                # 数据库表结构（启动时自动创建）
-│       ├── data.sql                  # 测试数据（启动时自动插入）
-│       └── knowledge/                # RAG 理财知识文档库
-└── frontend/                         # 前端项目
-    └── src/
-        ├── views/                    # 页面组件
-        │   ├── Dashboard.vue         # 仪表盘（统计卡片 + 图表）
-        │   ├── Transaction.vue       # 消费记录（表格 + 筛选）
-        │   ├── ChatView.vue          # 智能助手（对话界面）
-        │   ├── Login.vue             # 登录
-        │   └── Register.vue          # 注册
-        ├── layouts/                  # 布局组件
-        ├── api/                      # API 接口封装
-        └── stores/                   # Pinia 状态管理
+├── backend/                 # Spring Boot 后端、业务接口、数据库访问
+├── frontend/                # Vue 3 前端页面
+├── ai-service/              # Python AI 服务：CNN 分类 + 多模态抽取
+│   ├── app/main.py          # 账单分析接口 /api/ai/bill/analyze
+│   ├── training/            # CNN 训练、评估、Grad-CAM 脚本
+│   ├── tests/               # AI 服务单元测试
+│   └── README.md            # AI 服务和训练说明
+├── docs/                    # 课程交付物与演示资料
+└── README.md                # 当前分支总说明
 ```
 
-## 快速开始
+## 本地运行
 
-### 前置条件
+### 1. 准备环境
 
 - JDK 17+
 - Maven 3.8+
 - MySQL 8.0+
 - Node.js 18+
-- npm 9+
+- Python 3.10+
 
-### 1. 克隆项目
-
-```bash
-git clone https://github.com/your-username/smart_finance_agent.git
-cd smart_finance_agent
-```
-
-### 2. 初始化数据库
-
-在 MySQL 中创建数据库（只需这一步，表结构会自动创建）：
+### 2. 配置数据库
 
 ```sql
-CREATE DATABASE IF NOT EXISTS smart_finance DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS smart_finance
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
 ```
 
-项目启动时，Spring Boot 会自动执行 `schema.sql` 创建表结构，并执行 `data.sql` 插入测试数据（含一个测试用户 `test_user`，密码 `123456`）。如果表已存在，不会重复创建，可放心反复启动。
+复制本地配置模板并填写数据库密码、JWT 密钥、DashScope Key、Tavily Key：
 
-### 3. 配置本地密钥
-
-```bash
-# 复制密钥模板
+```powershell
 copy env.example backend\src\main\resources\application-local.yml
 ```
 
-编辑 `application-local.yml`，填入你的真实密钥：
+### 3. 启动后端
 
-```yaml
-spring:
-  datasource:
-    password: 你的数据库密码
-jwt:
-  secret: 你的JWT密钥（任意长字符串）
-langchain4j:
-  dashscope:
-    api-key: sk-你的DashScope API Key    # 从 https://dashscope.aliyuncs.com 获取
-search:
-  api-key: tvly-你的Tavily API Key       # 从 https://app.tavily.com 获取（可选）
-```
-
-### 4. 启动后端
-
-```bash
+```powershell
 cd backend
 mvn spring-boot:run
 ```
 
-后端默认运行在 `http://localhost:8080`。
+默认地址：`http://localhost:8080`。
 
-### 5. 启动前端
+### 4. 启动前端
 
-```bash
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-前端默认运行在 `http://localhost:3000`。
+默认地址：`http://localhost:3000`。
 
-### 6. 登录使用
+### 5. 启动 AI 服务
 
-打开浏览器访问 `http://localhost:3000`，注册账号后即可开始使用。
-
-> 也可使用内置测试账号：**用户名** `test_user` / **密码** `123456`（含预置的测试消费数据，方便体验 AI 分析功能）
-
-## 功能预览
-
-###   仪表盘
-
-- 4 张大号统计卡片：总收入、总支出、结余、储蓄率
-- 环形饼图：支出分类分布
-- 折线趋势图：月度收支变化（支持 30天 / 90天 / 全年切换）
-- 最近交易列表
-
-###   智能助手
-
-> 向 AI Agent 提问，获取专业的财务分析
-
-**示例问题：**
-
-| 问题类型 | 示例 |
-|---------|------|
-| 财务概览 | "我这个月花了多少钱？" |
-| 支出分析 | "哪类消费最多？帮我分析一下" |
-| 理财建议 | "我的储蓄率怎么样？有什么建议？" |
-| 紧急备用金 | "帮我分析一下紧急备用金是否充足" |
-| 资产配置 | "我今年28岁，风险偏好稳健，怎么配资产？" |
-| 联网搜索 | "最近有什么财经新闻？" |
-
-###   消费记录
-
-- 多维度筛选：类型、分类、日期范围
-- 收入/支出颜色区分
-- 新增/编辑/删除记录
-- 分页浏览
-
-## AI Agent 架构
-
-```
-用户提问
-   │
-   ▼
-┌─────────────────────────────┐
-│   FinancialAiService        │  ← @AiService 接口
-│   (系统提示词 + 记忆)        │
-└─────────────┬───────────────┘
-              │
-      ┌───────┴───────┐
-      │               │
-      ▼               ▼
-┌──────────┐   ┌──────────┐
-│ Tool 调用 │   │ RAG 检索 │
-│          │   │          │
-│ 财务工具  │   │ 理财知识  │
-│ 搜索工具  │   │ 文档库    │
-└──────────┘   └──────────┘
-      │               │
-      ▼               ▼
-  ┌─────────────────────┐
-  │   LLM (通义千问)     │
-  │   推理 + 生成回复    │
-  └─────────┬───────────┘
-            ▼
-        返回结果
+```powershell
+cd ai-service
+python -m venv .venv-ai
+.\.venv-ai\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8090
 ```
 
-### 关键组件
+关键环境变量：
 
-- **@AiService** — `FinancialAiService.java` 定义 Agent 的行为和系统提示词
-- **@Tool** — `FinancialTools.java` 提供查询财务数据的工具方法
-- **RAG** — `RagConfig.java` 配置 Embedding 模型和向量检索
-- **Memory** — `MessageWindowChatMemory` 维护对话历史（每个用户独立）
-- **搜索** — `WebSearchTool.java` 调用 Tavily API 获取实时信息
+```text
+DASHSCOPE_API_KEY=你的 DashScope API Key
+BILL_CNN_MODEL_PATH=models/bill_resnet18.pt
+BILL_CNN_CONFIDENCE_THRESHOLD=0.60
+```
 
-## 配置参考
+## CNN 训练说明
 
-### application.yml
+账单分类模型位于 `ai-service/training/`，数据集默认按类别拆分：
 
-| 配置项 | 说明 | 默认值 |
-|-------|------|--------|
-| `server.port` | 后端端口 | 8080 |
-| `spring.datasource.url` | 数据库连接地址 | MySQL localhost |
-| `spring.sql.init.mode` | 启动时自动执行 SQL 脚本 | always |
-| `spring.sql.init.continue-on-error` | SQL 执行出错时继续启动 | true |
-| `jwt.expiration` | Token 过期时间(ms) | 86400000 |
-| `langchain4j.dashscope.chat-model.model-name` | AI 模型 | qwen3.5-plus |
-| `langchain4j.dashscope.chat-model.temperature` | 模型温度 | 0.8 |
-| `langchain4j.dashscope.embedding-model.model-name` | 嵌入模型 | text-embedding-v3 |
+```text
+dataset/
+├── train/
+│   ├── wechat/
+│   ├── alipay/
+│   ├── bank/
+│   └── non_bill/
+└── val/
+    ├── wechat/
+    ├── alipay/
+    ├── bank/
+    └── non_bill/
+```
 
-### 前端代理配置
+训练 ResNet-18 基线模型：
 
-`vite.config.js` 中配置了 API 代理到 `http://localhost:8080`。
+```powershell
+cd ai-service
+python training/train_resnet18.py --data-dir dataset --output models/bill_resnet18.pt --epochs 10 --freeze-backbone
+```
 
-## 许可
+进一步微调：
 
-[MIT License](LICENSE)
+```powershell
+python training/train_resnet18.py --data-dir dataset --output models/bill_resnet18_finetune.pt --epochs 10
+```
+
+训练完成后将模型路径配置为 `BILL_CNN_MODEL_PATH`，AI 服务会在账单导入时加载该模型。
+
+## 账单导入流程
+
+1. 前端上传账单截图到后端 `/api/bills/import`。
+2. 后端保存原始图片并调用 Python AI 服务。
+3. AI 服务先执行 CNN 分类，得到 `billType` 和 `confidence`。
+4. 当 CNN 结果可用且置信度达标时，AI 服务调用多模态模型抽取候选交易。
+5. 后端保存识别记录和候选交易。
+6. 用户在前端检查并确认候选交易。
+7. 后端将确认项写入正式交易表。
+
+## 测试
+
+后端测试：
+
+```powershell
+cd backend
+mvn test
+```
+
+前端构建：
+
+```powershell
+cd frontend
+npm run build
+```
+
+AI 服务测试：
+
+```powershell
+cd ai-service
+pytest
+```
+
+## 说明
+
+- `application-local.yml`、模型文件、训练数据、上传图片和本地输出产物不提交到仓库。
+- 该分支保留机器学习课程相关实现；后续软件过程与项目管理课程会在新分支中移除 CNN 与 Python AI 服务，并将账单识别改为后端直接调用多模态大模型。
