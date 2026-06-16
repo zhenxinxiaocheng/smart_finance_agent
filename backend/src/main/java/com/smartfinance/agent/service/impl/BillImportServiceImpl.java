@@ -59,6 +59,7 @@ public class BillImportServiceImpl implements BillImportService {
 
         String storedPath = storeFile(userId, file);
         AiBillAnalysisResponse ai = billAiClient.analyze(file);
+        ai = reconcileContradictoryAnalysis(ai);
 
         BillImportRecord record = new BillImportRecord();
         record.setUserId(userId);
@@ -207,6 +208,28 @@ public class BillImportServiceImpl implements BillImportService {
         if ("NON_BILL".equals(billType) || "LOW_QUALITY".equals(billType)) return "REJECTED";
         if (confidence == null || confidence.compareTo(LOW_CONFIDENCE) < 0) return "LOW_CONFIDENCE";
         return "ANALYZED";
+    }
+
+    private AiBillAnalysisResponse reconcileContradictoryAnalysis(AiBillAnalysisResponse ai) {
+        if (ai == null || !"NON_BILL".equals(ai.getBillType()) || !hasValidCandidates(ai.getCandidates())) {
+            return ai;
+        }
+        ai.setBillType("UNKNOWN");
+        List<String> warnings = ai.getWarnings() == null ? new ArrayList<>() : new ArrayList<>(ai.getWarnings());
+        warnings.add("模型同时识别出候选交易，已根据候选交易改为可确认导入，请人工核对后再入账。");
+        ai.setWarnings(warnings);
+        return ai;
+    }
+
+    private boolean hasValidCandidates(List<AiCandidateTransaction> candidates) {
+        if (candidates == null) {
+            return false;
+        }
+        return candidates.stream().anyMatch(candidate ->
+                candidate != null
+                        && candidate.getAmount() != null
+                        && candidate.getAmount().compareTo(BigDecimal.ZERO) > 0
+        );
     }
 
     private String joinWarnings(AiBillAnalysisResponse ai) {

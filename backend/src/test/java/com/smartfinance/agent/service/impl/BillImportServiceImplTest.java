@@ -120,6 +120,25 @@ class BillImportServiceImplTest {
     }
 
     @Test
+    void importBill_whenModelMarksNonBillButExtractsCandidates_shouldPersistAsUnknownAndKeepCandidates() throws Exception {
+        mockUploadFile();
+        AtomicReference<BillImportRecord> savedRecord = new AtomicReference<>();
+        List<BillCandidateTransaction> savedCandidates = new ArrayList<>();
+        mockRecordPersistence(savedRecord);
+        mockCandidatePersistence(savedCandidates);
+        AiBillAnalysisResponse analysis = analysis("NON_BILL", "0.87", List.of(candidate("15.00"), candidate("76.35")));
+        analysis.setOcrText("收支记录页面，包含多笔交易。");
+        when(billAiClient.analyze(file)).thenReturn(analysis);
+
+        BillImportResult result = billImportService.importBill(1L, file);
+
+        assertThat(result.getStatus()).isEqualTo("ANALYZED");
+        assertThat(result.getBillType()).isEqualTo("UNKNOWN");
+        assertThat(result.getCandidates()).hasSize(2);
+        assertThat(savedRecord.get().getWarnings()).contains("已根据候选交易改为可确认导入");
+    }
+
+    @Test
     void confirm_shouldWriteSelectedCandidatesToTransactionTable() {
         BillImportRecord record = new BillImportRecord();
         record.setId(100L);

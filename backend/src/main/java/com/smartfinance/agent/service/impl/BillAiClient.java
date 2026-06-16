@@ -15,6 +15,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +93,7 @@ public class BillAiClient {
                                                 "text", """
                                                         请返回 JSON：
                                                         {"billType":"WECHAT|ALIPAY|BANK|NON_BILL|LOW_QUALITY|UNKNOWN","confidence":0.0,"ocrText":"图片中与交易有关的文本摘要","candidates":[{"amount":35.00,"type":"EXPENSE|INCOME","category":"餐饮/交通/购物/工资/投资理财/教育培训/其他","description":"简短交易描述","transactionDate":"YYYY-MM-DD","confidence":0.0}],"warnings":["低置信度、图片模糊、信息缺失等提示"]}
+                                                        如果图片是收支列表、交易流水、商户金额列表或记账软件导出的交易截图，只要能抽取候选交易，就不要返回 NON_BILL；来源无法归类时返回 UNKNOWN。
                                                         金额只抽取确定的交易金额，不要把余额、优惠、积分当作交易金额。
                                                         """
                                         ),
@@ -160,7 +162,7 @@ public class BillAiClient {
             response.setCandidates(List.of());
         }
         if (response.getWarnings() == null) {
-            response.setWarnings(List.of());
+            response.setWarnings(new ArrayList<>());
         }
         return response;
     }
