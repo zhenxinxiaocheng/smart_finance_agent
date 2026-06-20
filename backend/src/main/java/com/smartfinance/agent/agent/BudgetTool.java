@@ -3,7 +3,9 @@ package com.smartfinance.agent.agent;
 import com.smartfinance.agent.common.UserIdContext;
 import com.smartfinance.agent.entity.Budget;
 import com.smartfinance.agent.entity.BudgetAlert;
+import com.smartfinance.agent.entity.PendingAction;
 import com.smartfinance.agent.service.BudgetService;
+import com.smartfinance.agent.service.PendingActionService;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import lombok.extern.slf4j.Slf4j;
@@ -19,15 +21,20 @@ import java.util.Map;
 @Component
 public class BudgetTool {
     private final BudgetService budgetService;
-    public BudgetTool(BudgetService budgetService) { this.budgetService = budgetService; }
+    private final PendingActionService pendingActionService;
+    public BudgetTool(BudgetService budgetService, PendingActionService pendingActionService) {
+        this.budgetService = budgetService;
+        this.pendingActionService = pendingActionService;
+    }
 
     @Tool("Set monthly budget for a category")
     public String setBudget(@P("Category name") String category, @P("Amount") BigDecimal amount, @P("Month yyyy-MM") String month) {
         Long userId = UserIdContext.get();
         if (userId == null) return "Cannot get user info";
         if (month == null || month.isBlank()) month = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM"));
-        budgetService.setBudget(userId, category, month, amount, null);
-        return String.format("Set budget for %s %s: %.2f", month, category, amount);
+        PendingAction action = pendingActionService.prepareBudget(userId, category, month, amount);
+        return String.format("已生成待确认预算设置，请用户确认后再生效：%s %s %.2f 元。待确认ID：%d",
+                month, category, amount, action.getId());
     }
 
     @Tool("Check budget status for a month")

@@ -12,8 +12,8 @@ import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.dashscope.QwenEmbeddingModel;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.service.AiServices;
@@ -44,6 +44,10 @@ public class RagConfig {
 
     @Bean
     public EmbeddingModel qwenEmbeddingModel() {
+        if (apiKey == null || apiKey.isBlank()) {
+            log.warn("DASHSCOPE_API_KEY is empty; embedding model will use local fallback");
+            return new FallbackEmbeddingModel();
+        }
         QwenEmbeddingModel model = QwenEmbeddingModel.builder()
                 .apiKey(apiKey)
                 .modelName(embeddingModelName)
@@ -98,7 +102,7 @@ public class RagConfig {
 
     @Bean
     @Lazy
-    public FinancialAiService ragFinancialAiService(OpenAiChatModel chatModel,
+    public FinancialAiService ragFinancialAiService(ChatLanguageModel chatModel,
                                                      FinancialTools financialTools,
                                                      TransactionRecorder transactionRecorder,
                                                      WebSearchTool webSearchTool,
@@ -106,9 +110,19 @@ public class RagConfig {
                                                      ContentRetriever contentRetriever,
                                                      EmbeddingStoreIngestor ingestor,
                                                      List<Document> knowledgeDocuments) {
+        if (chatModel instanceof FallbackChatLanguageModel) {
+            return (memoryId, message) -> "AI 服务暂未配置可用的 DashScope API Key。账单导入、交易记录和统计功能仍可正常使用；如需使用智能助手，请先配置 DASHSCOPE_API_KEY。";
+        }
+
+        boolean ragReady = false;
         if (!knowledgeDocuments.isEmpty()) {
-            ingestor.ingest(knowledgeDocuments);
-            log.info("RAG\u77e5\u8bc6\u5e93\u521d\u59cb\u5316\u5b8c\u6210\uff0c\u5df2\u7d22\u5f15 {} \u4e2a\u6587\u6863", knowledgeDocuments.size());
+            try {
+                ingestor.ingest(knowledgeDocuments);
+                ragReady = true;
+                log.info("RAG\u77e5\u8bc6\u5e93\u521d\u59cb\u5316\u5b8c\u6210\uff0c\u5df2\u7d22\u5f15 {} \u4e2a\u6587\u6863", knowledgeDocuments.size());
+            } catch (Exception e) {
+                log.warn("RAG initialization failed; skip retrieval and keep base chat available: {}", e.getMessage());
+            }
         }
 
         LocalDate now = LocalDate.now();
@@ -243,15 +257,17 @@ public class RagConfig {
             + "- \u5269\u4e0b\u76843750\u522b\u653e\u7740\u4e86\uff0c\u53ef\u4ee5\u8003\u8651\u5b9a\u6295\u6307\u6570\u57fa\u91d1\uff0c\u8ba9\u94b1\u751f\u94b1\n"
             + "- \u987a\u4fbf\u68c0\u67e5\u4e00\u4e0b\u4f60\u7684\u7d27\u6025\u5907\u7528\u91d1\u591f\u4e0d\u591f\uff0c\u6700\u597d\u80fdcover 3-6\u4e2a\u6708\u7684\u751f\u6d3b\u8d39";
 
-        return AiServices.builder(FinancialAiService.class)
+        var builder = AiServices.builder(FinancialAiService.class)
                 .chatLanguageModel(chatModel)
                 .tools(financialTools, transactionRecorder, webSearchTool, budgetTool)
                 .systemMessageProvider(memoryId -> systemPrompt)
                 .chatMemoryProvider(memoryId -> MessageWindowChatMemory.builder()
                         .id(memoryId)
                         .maxMessages(20)
-                        .build())
-                .contentRetriever(contentRetriever)
-                .build();
+                        .build());
+        if (ragReady) {
+            builder.contentRetriever(contentRetriever);
+        }
+        return builder.build();
     }
 }

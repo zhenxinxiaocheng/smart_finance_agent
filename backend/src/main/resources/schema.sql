@@ -15,6 +15,26 @@ CREATE TABLE IF NOT EXISTS `user`
     INDEX `idx_created_at` (`created_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户表';
 
+-- 用户长期财务画像表
+CREATE TABLE IF NOT EXISTS `financial_profile`
+(
+    `id`                    BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`               BIGINT        NOT NULL COMMENT '用户ID',
+    `life_stage`            VARCHAR(50)   NULL     COMMENT '身份阶段',
+    `monthly_income`        DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '月收入',
+    `fixed_expense`         DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '固定支出',
+    `risk_preference`       VARCHAR(30)   NULL     COMMENT '风险偏好',
+    `savings_goal_amount`   DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '储蓄目标金额',
+    `savings_goal_deadline` VARCHAR(7)    NULL     COMMENT '储蓄目标期限yyyy-MM',
+    `monthly_budget_goal`   DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '月度总预算目标',
+    `notes`                 VARCHAR(500)  NULL     COMMENT '补充偏好',
+    `created_at`            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_profile_user` (`user_id`),
+    CONSTRAINT `fk_financial_profile_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户长期财务画像表';
+
 -- 交易记录表
 CREATE TABLE IF NOT EXISTS `transaction`
 (
@@ -69,6 +89,22 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     CONSTRAINT `fk_chat_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='聊天消息表';
 
+CREATE TABLE IF NOT EXISTS `pending_action`
+(
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`     BIGINT       NOT NULL COMMENT 'User ID',
+    `action_type` VARCHAR(50)  NOT NULL COMMENT 'RECORD_TRANSACTION/SET_BUDGET',
+    `title`       VARCHAR(100) NOT NULL COMMENT 'Display title',
+    `summary`     VARCHAR(500) NOT NULL COMMENT 'Display summary',
+    `payload`     TEXT         NOT NULL COMMENT 'Action payload JSON',
+    `status`      VARCHAR(30)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CONFIRMED/CANCELLED',
+    `created_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    PRIMARY KEY (`id`),
+    INDEX `idx_pending_user_status` (`user_id`, `status`),
+    CONSTRAINT `fk_pending_action_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Pending agent write actions';
+
 
 -- 预算表
 CREATE TABLE IF NOT EXISTS `budget`
@@ -111,6 +147,51 @@ CREATE TABLE IF NOT EXISTS `budget_alert`
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='预算预警记录表';
 
 -- Agent分析记录表
+-- Bill image import records
+CREATE TABLE IF NOT EXISTS `bill_import_record`
+(
+    `id`                BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`           BIGINT       NOT NULL COMMENT 'User ID',
+    `original_filename` VARCHAR(255) NULL     COMMENT 'Original uploaded filename',
+    `file_path`         VARCHAR(500) NOT NULL COMMENT 'Stored image path',
+    `bill_type`         VARCHAR(50)  NOT NULL DEFAULT 'UNKNOWN' COMMENT 'WECHAT/ALIPAY/BANK/NON_BILL/etc',
+    `confidence`        DECIMAL(5,4) NOT NULL DEFAULT 0 COMMENT 'Classification confidence',
+    `ocr_text`          TEXT         NULL     COMMENT 'Raw visual text summary',
+    `warnings`          TEXT         NULL     COMMENT 'Analysis warnings',
+    `status`            VARCHAR(30)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/ANALYZED/LOW_CONFIDENCE/REJECTED/FAILED/CONFIRMED',
+    `created_at`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`           TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_bill_user` (`user_id`),
+    INDEX `idx_bill_status` (`user_id`, `status`),
+    CONSTRAINT `fk_bill_import_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Bill image import records';
+
+-- Candidate transactions extracted from bill images
+CREATE TABLE IF NOT EXISTS `bill_candidate_transaction`
+(
+    `id`               BIGINT        NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `bill_import_id`   BIGINT        NOT NULL COMMENT 'Bill import record ID',
+    `user_id`          BIGINT        NOT NULL COMMENT 'User ID',
+    `amount`           DECIMAL(12,2) NOT NULL COMMENT 'Candidate amount',
+    `type`             VARCHAR(10)   NOT NULL DEFAULT 'EXPENSE' COMMENT 'INCOME/EXPENSE',
+    `category`         VARCHAR(50)   NOT NULL DEFAULT '其他' COMMENT 'Candidate category',
+    `description`      VARCHAR(500)  NULL     COMMENT 'Candidate description',
+    `transaction_date` DATE          NOT NULL COMMENT 'Candidate transaction date',
+    `confidence`       DECIMAL(5,4)  NOT NULL DEFAULT 0 COMMENT 'Extraction confidence',
+    `status`           VARCHAR(30)   NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CONFIRMED/IGNORED',
+    `transaction_id`   BIGINT        NULL     COMMENT 'Confirmed transaction ID',
+    `created_at`       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`          TINYINT       NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_candidate_bill` (`bill_import_id`),
+    INDEX `idx_candidate_user` (`user_id`, `status`),
+    CONSTRAINT `fk_candidate_bill` FOREIGN KEY (`bill_import_id`) REFERENCES `bill_import_record` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_candidate_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Bill candidate transactions';
+
 CREATE TABLE IF NOT EXISTS `analysis_record`
 (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',

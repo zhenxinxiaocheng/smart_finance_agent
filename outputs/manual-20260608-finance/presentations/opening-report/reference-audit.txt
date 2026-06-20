@@ -1,0 +1,13 @@
+No source/reference deck was supplied.
+
+Design target:
+- modern fintech academic proposal
+- dark navy / teal / warm orange palette
+- large claims, sparse text, strong diagrams
+- editable PPTX objects rather than rasterized full-slide images
+
+Anti-patterns to avoid:
+- dense document-style bullet pages
+- generic consulting card grid on every slide
+- fake platform logos or imitated brand marks
+- technical labels that are too vague to support the course project

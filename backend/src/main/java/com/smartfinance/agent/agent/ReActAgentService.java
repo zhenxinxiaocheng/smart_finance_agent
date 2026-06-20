@@ -8,6 +8,7 @@ import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.dto.ReActStepRecord;
 import com.smartfinance.agent.entity.AnalysisRecord;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
+import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -26,6 +27,7 @@ import java.util.UUID;
 public class ReActAgentService {
 
     private static final int MAX_STEPS = 6;
+    private static final int MAX_HISTORY_MESSAGE_LENGTH = 1000;
     private static final String FRIENDLY_ERROR = "抱歉，我现在暂时无法完成这次分析，请稍后再试。";
     private static final String MAX_STEP_ANSWER = "我已经做了几轮查询和分析，但这次任务还没有收敛到足够可靠的结论。你可以把问题缩小一点，比如指定月份、分类或要看的指标，我再继续帮你查。";
 
@@ -35,26 +37,40 @@ public class ReActAgentService {
     private final FinancialMonitor financialMonitor;
     private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
+    private final FinancialProfileService financialProfileService;
 
     public ReActAgentService(ChatLanguageModel chatModel,
                              ToolRegistry toolRegistry,
                              AgentVerifier agentVerifier,
                              FinancialMonitor financialMonitor,
                              AnalysisRecordMapper analysisRecordMapper,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             FinancialProfileService financialProfileService) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.agentVerifier = agentVerifier;
         this.financialMonitor = financialMonitor;
         this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
+        this.financialProfileService = financialProfileService;
     }
 
     public ReActResult run(Long userId, String userMessage) {
         return run(userId, userMessage, ReActEventListener.NOOP);
     }
 
+    public ReActResult run(Long userId, String userMessage, List<com.smartfinance.agent.entity.ChatMessage> recentHistory) {
+        return run(userId, userMessage, recentHistory, ReActEventListener.NOOP);
+    }
+
     public ReActResult run(Long userId, String userMessage, ReActEventListener listener) {
+        return run(userId, userMessage, List.of(), listener);
+    }
+
+    public ReActResult run(Long userId,
+                           String userMessage,
+                           List<com.smartfinance.agent.entity.ChatMessage> recentHistory,
+                           ReActEventListener listener) {
         String traceId = UUID.randomUUID().toString();
         List<ReActStepRecord> steps = new ArrayList<>();
         List<String> toolResults = new ArrayList<>();
@@ -68,6 +84,16 @@ public class ReActAgentService {
                 messages.add(UserMessage.from("系统提醒：该用户有这些未处理的预算提醒，请在必要时纳入回答，但不要直接暴露内部字段。\n" + pending));
             }
         }
+
+        String profileContext = financialProfileService.buildAgentContext(userId);
+        if (profileContext != null && !profileContext.isBlank()) {
+            messages.add(UserMessage.from("""
+                    系统资料：下面是用户主动维护的长期财务画像。回答预算、省钱、储蓄、风险相关问题时必须优先参考；不要声称这是实时流水。
+                    %s
+                    """.formatted(profileContext)));
+        }
+
+        appendConversationHistory(messages, recentHistory);
 
         messages.add(UserMessage.from("用户问题：" + userMessage));
 
@@ -138,6 +164,36 @@ public class ReActAgentService {
                 .finalAnswer(finalAnswer)
                 .steps(steps)
                 .build();
+    }
+
+    private void appendConversationHistory(List<ChatMessage> messages,
+                                           List<com.smartfinance.agent.entity.ChatMessage> recentHistory) {
+        if (recentHistory == null || recentHistory.isEmpty()) {
+            return;
+        }
+        messages.add(UserMessage.from("""
+                下面是该用户最近的对话历史，仅用于理解上下文指代。
+                如果用户提到“刚才、之前、继续、上一个、那”等表达，请优先结合这些历史理解。
+                """));
+        for (com.smartfinance.agent.entity.ChatMessage history : recentHistory) {
+            if (history == null || history.getContent() == null || history.getContent().isBlank()) {
+                continue;
+            }
+            String role = history.getRole() == null ? "" : history.getRole().trim().toUpperCase();
+            String content = truncateHistory(history.getContent().trim());
+            if ("USER".equals(role)) {
+                messages.add(UserMessage.from("历史用户消息：" + content));
+            } else if ("ASSISTANT".equals(role)) {
+                messages.add(AiMessage.from("历史助手回复：" + content));
+            }
+        }
+    }
+
+    private String truncateHistory(String content) {
+        if (content.length() <= MAX_HISTORY_MESSAGE_LENGTH) {
+            return content;
+        }
+        return content.substring(0, MAX_HISTORY_MESSAGE_LENGTH) + "...";
     }
 
     private String generate(List<ChatMessage> messages) {
@@ -221,6 +277,9 @@ public class ReActAgentService {
     private String systemPrompt() {
         LocalDate now = LocalDate.now();
         return """
+                你具备短期对话记忆能力，可以参考最近的用户消息和助手最终回复来理解上下文。
+                当用户说“刚才、之前、继续、上一个、那”等表达时，优先结合最近对话历史判断含义；如果历史不足，再诚实说明无法确定。
+
                 你是「智财Agent」的 ReAct 控制模型。当前日期：%s。
 
                 你必须在每轮只输出一个严格 JSON 对象，不要输出 Markdown，不要解释格式，不要暴露 Thought。

@@ -1,0 +1,23 @@
+task mode: create
+primary deck-profile: engineering-platform
+secondary gates: product-platform, academic course proposal
+required proof objects:
+- multi-source finance data problem map
+- end-to-end data-to-agent workflow
+- algorithm and experiment design for CNN transfer learning
+- existing-system vs new-deliverables split
+source/asset requirements:
+- no external logos or brand marks
+- use generic editable shapes/icons only
+- no real personal banking data
+brand authenticity constraints:
+- do not mimic WeChat, Alipay, bank, or card logos
+- use text labels instead of official marks
+profile-specific QA gates:
+- every slide has a clear claim
+- diagrams use accurate technical labels
+- text remains readable in 2-minute classroom presentation
+- deck must not look like a document dump
+known missing inputs:
+- presenter names and group member names are placeholders
+- final dataset class list will be refined after data collection

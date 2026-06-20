@@ -1,0 +1,6 @@
+Project context:
+- Existing smart finance agent system with transaction management, budgets, warnings, charts, RAG, and explicit ReAct Agent.
+- New course module: introduce CNN + transfer learning image classification.
+- User positioning: scattered records across payment platforms and multiple bank cards are inconvenient to unify; bill image recognition provides a richer data entry layer for the finance Agent.
+
+No external brand assets are used.
