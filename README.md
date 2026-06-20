@@ -1,34 +1,25 @@
-# 智财 Agent
+# 智能财务 Agent
 
-个人智能财务代理系统，当前分支面向《软件过程与项目管理》课程，重点展示一个具备清晰模块划分、可测试服务接口、用户确认闭环和可部署前后端结构的财务管理项目。
+一个面向个人记账和财务分析的前后端分离系统。项目提供收支记录、分类管理、统计图表、预算提醒、账单截图导入和 AI 财务助手能力，后端通过 Spring Boot 提供 API，前端通过 Vue 3 提供交互界面。
 
-## 分支说明
+## 功能概览
 
-- 当前分支：`codex/software-process`
-- 课程目标：突出需求分析、模块设计、接口协作、测试验证和项目交付过程。
-- 当前账单识别方案：后端直接调用 DashScope 多模态大模型识别账单截图，生成候选交易；用户确认后才写入正式交易记录。
-
-## 主要功能
-
-- 用户注册、登录与 JWT 鉴权。
-- 收入、支出记录管理。
-- 消费分类、条件筛选和分页浏览。
-- 仪表盘统计：收入、支出、余额、储蓄率、分类占比和趋势图。
-- AI 财务助手：基于 LangChain4j 与 DashScope 进行自然语言财务问答。
-- RAG 理财知识库：支持常见理财知识检索增强回答。
-- 联网搜索：可获取实时财经资讯。
-- 账单截图导入：
-  - 上传微信、支付宝或银行卡流水截图。
-  - 多模态模型判断账单类型并抽取候选交易。
-  - 系统保存识别记录和候选交易。
-  - 用户检查、编辑并确认后，候选交易才进入正式交易表。
+- 用户注册、登录、JWT 鉴权和当前用户信息获取
+- 收入、支出记录的新增、编辑、删除、查询和分类汇总
+- 消费分类管理，支持默认分类和自定义分类
+- 日、月、年维度统计，展示收支趋势、结余和分类占比
+- 财务档案配置，用于描述收入、预算、储蓄目标和风险偏好
+- 预算管理和预算预警
+- AI 财务助手，支持普通对话和 ReAct 工具调用流程
+- RAG 财务知识增强和 Tavily 联网搜索
+- 账单截图导入，支持上传图片、AI 识别候选交易、人工确认后入库
 
 ## 技术栈
 
 | 模块 | 技术 |
 | --- | --- |
-| 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL 8, JWT |
-| AI 能力 | LangChain4j, DashScope, RAG, Tavily Search |
+| 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL, JWT |
+| AI | LangChain4j, DashScope, RAG, Tavily Search |
 | 前端 | Vue 3, Vite, Element Plus, Pinia, Vue Router, Axios, ECharts |
 | 测试 | JUnit 5, Mockito, Spring Boot Test, H2 |
 
@@ -37,28 +28,21 @@
 ```text
 smart_finance_agent/
 ├── backend/                 # Spring Boot 后端
-│   ├── src/main/java/       # 控制器、服务、实体、DTO、Mapper、AI 配置
-│   ├── src/main/resources/  # application.yml、schema.sql、data.sql、知识库
-│   └── src/test/            # 单元测试与 H2 测试资源
+│   ├── src/main/java/       # Controller、Service、Entity、DTO、Mapper、AI Agent
+│   ├── src/main/resources/  # application.yml、schema.sql、data.sql
+│   └── src/test/            # 后端单元测试和集成测试
 ├── frontend/                # Vue 3 前端
-│   └── src/                 # 页面、路由、状态管理、API 封装
-├── docs/                    # 文档与课程交付资料
-└── README.md                # 当前分支说明
+│   ├── src/api/             # API 请求封装
+│   ├── src/components/      # 通用组件
+│   ├── src/router/          # 页面路由
+│   └── src/views/           # 页面视图
+├── env.example              # 本地配置示例
+└── README.md
 ```
-
-## 账单导入流程
-
-1. 用户在前端上传账单截图。
-2. 前端调用后端 `/api/bills/import`。
-3. 后端保存原始图片，并由 `BillAiClient` 调用 DashScope 多模态接口。
-4. 多模态模型返回账单类型、置信度、文本摘要、候选交易和提示信息。
-5. 后端保存识别记录；当置信度达标且存在候选交易时，保存候选交易。
-6. 前端展示候选交易，用户可修改金额、分类、日期、描述和是否导入。
-7. 用户调用 `/api/bills/{id}/confirm` 确认后，后端写入正式交易记录。
 
 ## 本地运行
 
-### 1. 环境要求
+### 环境要求
 
 - JDK 17+
 - Maven 3.8+
@@ -66,7 +50,7 @@ smart_finance_agent/
 - Node.js 18+
 - npm 9+
 
-### 2. 初始化数据库
+### 初始化数据库
 
 ```sql
 CREATE DATABASE IF NOT EXISTS smart_finance
@@ -74,42 +58,56 @@ CREATE DATABASE IF NOT EXISTS smart_finance
   COLLATE utf8mb4_unicode_ci;
 ```
 
-### 3. 配置本地密钥
+后端启动时会读取 `backend/src/main/resources/schema.sql` 和 `data.sql` 初始化表结构和基础数据。
 
-复制配置模板：
+### 配置本地密钥
 
-```powershell
-copy env.example backend\src\main\resources\application-local.yml
+创建文件：
+
+```text
+backend/src/main/resources/application-local.yml
 ```
 
-填写本地配置：
+写入本地配置：
 
 ```yaml
 spring:
   datasource:
     password: 你的数据库密码
+
 jwt:
   secret: 你的 JWT 密钥
+
 langchain4j:
   dashscope:
     api-key: 你的 DashScope API Key
+
 search:
   api-key: 你的 Tavily API Key
+
 bill:
+  upload-dir: uploads/bills
   ai:
+    endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
     multimodal-model: qwen3.5-omni-plus-2026-03-15
 ```
 
-### 4. 启动后端
+其中 Tavily 配置可选；如果不需要联网搜索，可以留空。
+
+### 启动后端
 
 ```powershell
 cd backend
 mvn spring-boot:run
 ```
 
-默认地址：`http://localhost:8080`。
+默认地址：
 
-### 5. 启动前端
+```text
+http://localhost:8080
+```
+
+### 启动前端
 
 ```powershell
 cd frontend
@@ -117,7 +115,47 @@ npm install
 npm run dev
 ```
 
-默认地址：`http://localhost:3000`。
+前端默认端口在 `frontend/vite.config.js` 中配置为 `3000`：
+
+```text
+http://localhost:3000
+```
+
+如果端口被占用，Vite 会自动切换到下一个可用端口。
+
+## 主要页面
+
+- `/login`：登录
+- `/register`：注册
+- `/statistics`：收支统计
+- `/transactions`：交易记录
+- `/profile`：财务档案
+- `/bill-import`：账单导入
+- `/chat`：AI 财务助手
+
+## 主要接口
+
+| 模块 | 接口前缀 | 说明 |
+| --- | --- | --- |
+| 认证 | `/api/auth` | 注册、登录、当前用户 |
+| 交易 | `/api/transactions` | 收支记录和分类汇总 |
+| 分类 | `/api/categories` | 消费分类管理 |
+| 统计/提醒 | `/api/alerts` | 预算提醒读取和已读标记 |
+| 预算 | `/api/budgets` | 预算查询、保存、删除 |
+| 财务档案 | `/api/financial-profile` | 财务资料读取和保存 |
+| 账单导入 | `/api/bills` | 截图上传、识别结果查询、确认入库 |
+| AI 助手 | `/api/chat` | 普通对话、ReAct 流式对话、历史记录 |
+| 待确认动作 | `/api/pending-actions` | AI 生成动作的确认或取消 |
+
+## 账单导入流程
+
+1. 用户在前端上传微信、支付宝或银行卡流水截图。
+2. 前端调用 `POST /api/bills/import`。
+3. 后端保存原始图片，并通过 `BillAiClient` 调用 DashScope 多模态模型。
+4. 模型返回账单类型、置信度、摘要、候选交易和提示信息。
+5. 后端保存识别记录和候选交易。
+6. 用户在前端检查并修改金额、分类、日期、描述和是否导入。
+7. 用户调用 `POST /api/bills/{id}/confirm` 后，系统才写入正式交易记录。
 
 ## 测试与构建
 
@@ -135,27 +173,24 @@ cd frontend
 npm run build
 ```
 
-代码搜索检查：
-
-```powershell
-rg -n "bill.ai.endpoint|bill.ai.multimodal-model" backend/src/main frontend/src README.md
-```
-
-## 配置项
+## 常用配置
 
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `server.port` | 后端端口 | `8080` |
 | `spring.datasource.url` | MySQL 连接地址 | `jdbc:mysql://localhost:3306/smart_finance...` |
-| `langchain4j.dashscope.api-key` | DashScope API Key | 本地配置提供 |
-| `langchain4j.dashscope.chat-model.model-name` | 财务助手文本模型 | `qwen3.6-flash` |
-| `bill.upload-dir` | 账单截图保存目录 | `uploads/bills` |
-| `bill.ai.endpoint` | 多模态兼容接口地址 | DashScope chat completions |
+| `spring.datasource.username` | MySQL 用户名 | `root` |
+| `spring.datasource.password` | MySQL 密码 | 从 `application-local.yml` 读取 |
+| `jwt.secret` | JWT 签名密钥 | 从 `application-local.yml` 读取 |
+| `langchain4j.dashscope.api-key` | DashScope API Key | 从 `application-local.yml` 或环境变量读取 |
+| `langchain4j.dashscope.chat-model.model-name` | 文本对话模型 | `qwen3.6-flash` |
+| `search.api-key` | Tavily Search API Key | 可为空 |
+| `bill.upload-dir` | 账单截图上传目录 | `uploads/bills` |
 | `bill.ai.multimodal-model` | 账单识别多模态模型 | `qwen3.5-omni-plus-2026-03-15` |
 
-## 交付关注点
+## 开发备注
 
-- 模块职责清晰：前端展示、后端业务、AI 调用、数据持久化相互隔离。
-- 接口稳定：账单导入和确认接口保持不变，便于迭代内部实现。
-- 风险控制：识别结果只生成候选交易，用户确认后才入库。
-- 可测试：账单导入服务和多模态客户端均有后端测试覆盖。
+- 当前后端依赖本地 MySQL，启动前请确认数据库服务已运行。
+- `application-local.yml` 用于保存本地密码和 API Key，不应提交到 Git。
+- AI 识别结果只作为候选数据，必须经过用户确认才会写入正式交易表。
+- 前端通过 Vite 代理把 `/api` 请求转发到 `http://localhost:8080`。
