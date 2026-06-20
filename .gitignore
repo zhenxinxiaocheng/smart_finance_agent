@@ -37,23 +37,5 @@ frontend/node_modules/
 frontend/dist/
 frontend/.local
 
-# === Python virtualenvs ===
-ai-service/.venv-ai/
-
-# === Runtime uploads / local ML artifacts ===
-uploads/
-ai-service/data/
-ai-service/models/
-ai-service/outputs/
-__pycache__/
-*.pyc
-
 # === 其他 ===
 .frontend/
-raw-dataset/
-.codex-remote-attachments/
-ai-service/dataset/
-outputs/
-tmp/
-~$*.docx
-**/node_modules/
