@@ -8,6 +8,7 @@ import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.dto.ReActStepRecord;
 import com.smartfinance.agent.entity.AnalysisRecord;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
+import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -38,6 +39,8 @@ public class ReActAgentService {
     private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
     private final FinancialProfileService financialProfileService;
+    private final AgentMemoryService agentMemoryService;
+    private final MemoryExtractor memoryExtractor;
 
     public ReActAgentService(ChatLanguageModel chatModel,
                              ToolRegistry toolRegistry,
@@ -45,7 +48,9 @@ public class ReActAgentService {
                              FinancialMonitor financialMonitor,
                              AnalysisRecordMapper analysisRecordMapper,
                              ObjectMapper objectMapper,
-                             FinancialProfileService financialProfileService) {
+                             FinancialProfileService financialProfileService,
+                             AgentMemoryService agentMemoryService,
+                             MemoryExtractor memoryExtractor) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.agentVerifier = agentVerifier;
@@ -53,6 +58,8 @@ public class ReActAgentService {
         this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
         this.financialProfileService = financialProfileService;
+        this.agentMemoryService = agentMemoryService;
+        this.memoryExtractor = memoryExtractor;
     }
 
     public ReActResult run(Long userId, String userMessage) {
@@ -75,8 +82,9 @@ public class ReActAgentService {
         List<ReActStepRecord> steps = new ArrayList<>();
         List<String> toolResults = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
+        boolean usedTool = false;
 
-        messages.add(SystemMessage.from(systemPrompt()));
+        messages.add(SystemMessage.from(systemPromptV2()));
 
         if (financialMonitor.hasPendingAlerts(userId)) {
             String pending = financialMonitor.getPendingMessage(userId);
@@ -91,6 +99,19 @@ public class ReActAgentService {
                     系统资料：下面是用户主动维护的长期财务画像。回答预算、省钱、储蓄、风险相关问题时必须优先参考；不要声称这是实时流水。
                     %s
                     """.formatted(profileContext)));
+        }
+
+        String memoryContext = agentMemoryService.buildAgentContext(userId);
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            messages.add(UserMessage.from("""
+                    系统资料：下面是用户可编辑的 Agent 长期指令和自动沉淀记忆。
+                    必须优先遵守其中的回答风格、语言偏好、分类偏好和 Agent 使用偏好；如果和当前问题明确要求冲突，以当前问题为准。
+                    %s
+                    """.formatted(memoryContext)));
+        }
+        String languageInstruction = preferredLanguageInstruction(userMessage, memoryContext);
+        if (!languageInstruction.isBlank()) {
+            messages.add(UserMessage.from(languageInstruction));
         }
 
         appendConversationHistory(messages, recentHistory);
@@ -111,7 +132,7 @@ public class ReActAgentService {
             String type = text(decision, "type");
             if ("final".equalsIgnoreCase(type)) {
                 finalAnswer = text(decision, "answer");
-                finalAnswer = verifyAndRepair(userMessage, finalAnswer, toolResults, messages);
+                finalAnswer = verifyAndRepair(userMessage, finalAnswer, toolResults, messages, languageInstruction);
                 break;
             }
 
@@ -125,7 +146,8 @@ public class ReActAgentService {
             JsonNode input = decision.get("input");
 
             listener.onStepStarted(stepNumber, summary, tool);
-            ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId);
+            ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId, traceId);
+            usedTool = true;
             listener.onStepFinished(stepNumber, observation.getSummary(), observation.isSuccess());
 
             ReActStepRecord record = ReActStepRecord.builder()
@@ -149,7 +171,8 @@ public class ReActAgentService {
                     result=%s
 
                     请继续 ReAct。若已有足够信息，输出 final JSON；否则输出下一步 action JSON。
-                    """.formatted(observation.isSuccess(), observation.getSummary(), observation.getRawResult())));
+                    %s
+                    """.formatted(observation.isSuccess(), observation.getSummary(), observation.getRawResult(), languageInstruction)));
         }
 
         if (finalAnswer == null || finalAnswer.isBlank()) {
@@ -157,6 +180,10 @@ public class ReActAgentService {
         }
 
         saveAnalysis(userId, userMessage, traceId, steps, finalAnswer);
+        if (agentMemoryService.isAutoMemoryEnabled(userId)
+                && !(usedTool && agentMemoryService.shouldSkipToolAssistedMemory(userId))) {
+            extractMemory(userId, userMessage, finalAnswer);
+        }
         listener.onFinal(finalAnswer, traceId);
 
         return ReActResult.builder()
@@ -220,10 +247,26 @@ public class ReActAgentService {
         }
     }
 
-    private String verifyAndRepair(String userQuery, String answer, List<String> toolResults, List<ChatMessage> messages) {
+    private String verifyAndRepair(String userQuery,
+                                   String answer,
+                                   List<String> toolResults,
+                                   List<ChatMessage> messages,
+                                   String languageInstruction) {
         AgentVerifier.VerificationResult verification = agentVerifier.verify(userQuery, answer, toolResults);
-        if (verification.passed()) {
+        if (verification.passed() && followsLanguageInstruction(answer, languageInstruction)) {
             return answer;
+        }
+        if (!followsLanguageInstruction(answer, languageInstruction)) {
+            messages.add(UserMessage.from("""
+                    你的上一条 final answer 没有遵守语言要求。
+                    %s
+                    请基于已有 Observation 重新输出 final JSON，只改写 answer 的语言，不要改变事实和数字。
+                    """.formatted(languageInstruction)));
+            JsonNode languageRepaired = parseDecision(generate(messages));
+            if (languageRepaired != null && "final".equalsIgnoreCase(text(languageRepaired, "type"))) {
+                String repairedAnswer = text(languageRepaired, "answer");
+                if (!repairedAnswer.isBlank()) return repairedAnswer;
+            }
         }
         messages.add(UserMessage.from("""
                 你刚才的最终答案未通过校验：%s
@@ -274,6 +317,92 @@ public class ReActAgentService {
         }
     }
 
+    private void extractMemory(Long userId, String userMessage, String finalAnswer) {
+        try {
+            memoryExtractor.extractAndSave(userId, userMessage, finalAnswer);
+        } catch (Exception e) {
+            log.warn("Memory extraction failed: userId={}, error={}", userId, e.getMessage());
+        }
+    }
+
+    private String preferredLanguageInstruction(String userMessage, String memoryContext) {
+        String current = userMessage == null ? "" : userMessage.toLowerCase();
+        String memory = memoryContext == null ? "" : memoryContext.toLowerCase();
+        if (asksForChinese(current)) {
+            return "系统语言要求：最终 answer 必须使用中文。";
+        }
+        if (asksForEnglish(current) || asksForEnglish(memory)) {
+            return "System language requirement: the final answer must be written in English. Keep all facts, amounts, and dates unchanged.";
+        }
+        return "";
+    }
+
+    private boolean followsLanguageInstruction(String answer, String languageInstruction) {
+        if (languageInstruction == null || languageInstruction.isBlank()) {
+            return true;
+        }
+        if (languageInstruction.contains("English")) {
+            return answer != null && !answer.matches(".*[\\u4e00-\\u9fff].*");
+        }
+        return true;
+    }
+
+    private boolean asksForEnglish(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String lower = text.toLowerCase();
+        return lower.contains("english")
+                || text.contains("英语")
+                || text.contains("英文")
+                || text.contains("用英")
+                || text.contains("英語")
+                || lower.contains("respond in en")
+                || lower.contains("reply in en");
+    }
+
+    private boolean asksForChinese(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String lower = text.toLowerCase();
+        return text.contains("中文")
+                || text.contains("汉语")
+                || text.contains("普通话")
+                || text.contains("用中")
+                || lower.contains("chinese");
+    }
+
+    private String systemPromptV2() {
+        LocalDate now = LocalDate.now();
+        return """
+                你具备短期对话记忆能力，可以参考最近的用户消息和助手最终回复来理解上下文。
+                当用户说“刚才、之前、继续、上一个、那个”等表达时，优先结合最近对话历史判断含义；如果历史不足，再诚实说明无法确定。
+
+                你是「智财Agent」的 ReAct 控制模型。当前日期：%s。
+
+                你必须在每轮只输出一个严格 JSON 对象，不要输出 Markdown，不要解释格式，不要暴露 Thought。
+
+                可输出两种 JSON：
+                1) 调用工具：
+                {"type":"action","summary":"给用户看的安全步骤摘要","tool":"工具名","input":{...}}
+                2) 最终回答：
+                {"type":"final","answer":"给用户看的最终回答"}
+
+                规则：
+                - summary 只能写安全摘要，例如“正在查询本月支出”，不要写内部推理或敏感信息。
+                - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
+                - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
+                - 最终答案默认用中文，简洁自然，默认不超过 500 字；如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言。
+                - 如果当前问题和 Agent 长期记忆的语言要求冲突，以当前问题为准。
+                - 股票、基金、行业问题可以给出“偏看好、偏谨慎、可观察”等倾向性建议，但必须说明风险，不能承诺收益，不能使用“稳赚、一定上涨、立即买入”等确定性表达。
+                - 涉及实时行情、新闻、政策、汇率、上市公司近期动态时，必须先调用 search_web，不要凭空编造实时信息。
+
+                可用工具：
+                %s
+                """.formatted(now, toolRegistry.manifest());
+    }
+
     private String systemPrompt() {
         LocalDate now = LocalDate.now();
         return """
@@ -295,7 +424,8 @@ public class ReActAgentService {
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案用中文，简洁自然，默认不超过 500 字。
-                - 不提供具体股票推荐，投资建议仅供参考。
+                - 股票、基金、行业问题可以给出“偏看好、偏谨慎、可观察”等倾向性建议，但必须说明风险，不能承诺收益，不能使用“稳赚、一定上涨、立即买入”等确定性表达。
+                - 涉及实时行情、新闻、政策、汇率、上市公司近期动态时，必须先调用 search_web，不要凭空编造实时信息。
 
                 可用工具：
                 %s

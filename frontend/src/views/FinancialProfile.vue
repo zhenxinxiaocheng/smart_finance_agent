@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h1>财务画像</h1>
-        <p>维护长期财务背景，智能助手会据此调整预算、省钱和风险建议。</p>
+        <p>维护长期财务背景，Agent 会据此调整预算、省钱和风险建议。</p>
       </div>
       <el-button type="primary" size="large" :loading="saving" @click="handleSave">
         保存画像
@@ -99,7 +99,7 @@
               <span>分类预算</span>
               <el-button text type="primary" @click="addCategoryBudget">新增分类预算</el-button>
             </div>
-            <div v-if="!categoryBudgets.length" class="budget-empty">暂未设置分类预算，可按餐饮、购物等分别控制。</div>
+            <div v-if="!categoryBudgets.length" class="empty-box">暂未设置分类预算，可按餐饮、购物等分别控制。</div>
             <div v-for="(item, index) in categoryBudgets" :key="item.key" class="budget-row">
               <el-select v-model="item.category" placeholder="选择分类" class="budget-category">
                 <el-option
@@ -153,16 +153,53 @@
           </div>
         </section>
 
-        <section class="profile-panel agent-panel">
+        <section class="profile-panel memory-panel">
           <div class="section-title">
-            <h2>Agent 会如何使用</h2>
+            <h2>Agent 长期记忆</h2>
+            <span>可直接修改</span>
           </div>
-          <ul>
-            <li>回答省钱建议时，参考月收入、固定支出和月度预算目标。</li>
-            <li>回答储蓄问题时，判断当前消费是否影响目标期限。</li>
-            <li>回答理财问题时，按风险偏好控制建议边界。</li>
-          </ul>
-          <el-button plain type="primary" @click="goChat">去问智能助手</el-button>
+
+          <div class="memory-editor">
+            <label>自定义指令</label>
+            <p>写给 Agent 的长期偏好和工作习惯。当前问题明确要求优先于这里。</p>
+            <el-input
+              v-model="memoryPreferences.customInstructions"
+              type="textarea"
+              :rows="9"
+              maxlength="3000"
+              show-word-limit
+              resize="vertical"
+              placeholder="例如：用中文对话，回答尽量简短；咖啡归为餐饮；股票问题可以给偏看好/偏谨慎/可观察，但要说明风险。"
+            />
+          </div>
+
+          <div class="memory-settings">
+            <div class="memory-setting-row">
+              <div>
+                <strong>启用自动记忆</strong>
+                <span>从普通聊天中沉淀低风险偏好。</span>
+              </div>
+              <el-switch v-model="memoryPreferences.autoMemoryEnabled" />
+            </div>
+            <div class="memory-setting-row">
+              <div>
+                <strong>跳过工具辅助对话</strong>
+                <span>用了查询、搜索、记账等工具的对话不生成记忆。</span>
+              </div>
+              <el-switch v-model="memoryPreferences.skipToolAssistedMemory" />
+            </div>
+            <div class="memory-setting-row danger">
+              <div>
+                <strong>重置记忆</strong>
+                <span>删除所有 Agent 自定义指令和自动沉淀记忆。</span>
+              </div>
+              <el-button type="danger" plain size="small" :loading="memoryResetting" @click="resetMemory">重置</el-button>
+            </div>
+          </div>
+
+          <div class="memory-footer">
+            <el-button type="primary" :loading="memorySaving" @click="saveMemoryPreferences">保存记忆</el-button>
+          </div>
         </section>
 
         <section class="profile-panel alert-panel">
@@ -170,7 +207,7 @@
             <h2>最近预警</h2>
             <span>{{ recentAlerts.length }} 条</span>
           </div>
-          <div v-if="!recentAlerts.length" class="alert-empty">保存预算后，达到阈值或超支时会显示在这里。</div>
+          <div v-if="!recentAlerts.length" class="empty-box">保存预算后，达到阈值或超支时会显示在这里。</div>
           <div v-for="alert in recentAlerts" :key="alert.id" class="alert-item" :class="alert.severity?.toLowerCase()">
             <div class="alert-top">
               <strong>{{ alert.category === 'ALL' ? '总预算' : alert.category }}</strong>
@@ -186,14 +223,17 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { getFinancialProfileAPI, saveFinancialProfileAPI } from '../api/financialProfile'
 import { getBudgetsAPI, saveBudgetAPI, deleteBudgetAPI } from '../api/budget'
 import { getRecentAlertsAPI } from '../api/alert'
 import { listCategoriesAPI } from '../api/category'
+import {
+  getAgentMemoryPreferencesAPI,
+  updateAgentMemoryPreferencesAPI,
+  resetAgentMemoriesAPI
+} from '../api/agentMemory'
 
-const router = useRouter()
 const formRef = ref(null)
 const saving = ref(false)
 const loading = ref(false)
@@ -202,6 +242,8 @@ const categories = ref([])
 const categoryBudgets = ref([])
 const removedBudgetIds = ref([])
 const recentAlerts = ref([])
+const memorySaving = ref(false)
+const memoryResetting = ref(false)
 const totalBudgetId = ref(null)
 const totalBudgetThreshold = ref(80)
 const currentBudgetMonth = ref(currentMonth())
@@ -215,6 +257,12 @@ const form = reactive({
   savingsGoalDeadline: '',
   monthlyBudgetGoal: 0,
   notes: ''
+})
+
+const memoryPreferences = reactive({
+  customInstructions: '',
+  autoMemoryEnabled: true,
+  skipToolAssistedMemory: false
 })
 
 const riskOptions = [
@@ -283,19 +331,27 @@ function applyBudgetData(data) {
     }))
 }
 
+function applyMemoryPreferences(data) {
+  memoryPreferences.customInstructions = data?.customInstructions || ''
+  memoryPreferences.autoMemoryEnabled = data?.autoMemoryEnabled !== false
+  memoryPreferences.skipToolAssistedMemory = Boolean(data?.skipToolAssistedMemory)
+}
+
 async function loadProfile() {
   loading.value = true
   try {
-    const [profileRes, budgetRes, alertRes, categoryRes] = await Promise.all([
+    const [profileRes, budgetRes, alertRes, categoryRes, memoryRes] = await Promise.all([
       getFinancialProfileAPI(),
       getBudgetsAPI(currentBudgetMonth.value),
       getRecentAlertsAPI(5),
-      listCategoriesAPI()
+      listCategoriesAPI(),
+      getAgentMemoryPreferencesAPI()
     ])
     applyProfile(profileRes.data || {})
     applyBudgetData(budgetRes.data || {})
     recentAlerts.value = alertRes.data || []
     categories.value = categoryRes.data || []
+    applyMemoryPreferences(memoryRes.data || {})
   } finally {
     loading.value = false
   }
@@ -318,6 +374,39 @@ async function handleSave() {
     ElMessage.success('财务画像和预算已保存')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveMemoryPreferences() {
+  memorySaving.value = true
+  const submitted = { ...memoryPreferences }
+  try {
+    const res = await updateAgentMemoryPreferencesAPI(submitted)
+    const saved = res.data || {}
+    applyMemoryPreferences({
+      customInstructions: saved.customInstructions ?? submitted.customInstructions,
+      autoMemoryEnabled: saved.autoMemoryEnabled ?? submitted.autoMemoryEnabled,
+      skipToolAssistedMemory: saved.skipToolAssistedMemory ?? submitted.skipToolAssistedMemory
+    })
+    ElMessage.success('Agent 长期记忆已保存')
+  } finally {
+    memorySaving.value = false
+  }
+}
+
+async function resetMemory() {
+  await ElMessageBox.confirm('确定删除所有 Agent 长期记忆吗？财务画像不会被删除。', '重置记忆', {
+    type: 'warning',
+    confirmButtonText: '重置',
+    cancelButtonText: '取消'
+  })
+  memoryResetting.value = true
+  try {
+    await resetAgentMemoriesAPI()
+    applyMemoryPreferences({})
+    ElMessage.success('Agent 长期记忆已重置')
+  } finally {
+    memoryResetting.value = false
   }
 }
 
@@ -377,10 +466,6 @@ function currentMonth() {
   return `${now.getFullYear()}-${month}`
 }
 
-function goChat() {
-  router.push('/chat')
-}
-
 onMounted(loadProfile)
 </script>
 
@@ -413,7 +498,7 @@ onMounted(loadProfile)
 
 .profile-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 380px;
   gap: 20px;
   align-items: start;
 }
@@ -425,6 +510,13 @@ onMounted(loadProfile)
   box-shadow: var(--shadow);
 }
 
+.form-panel,
+.summary-panel,
+.memory-panel,
+.alert-panel {
+  padding: 20px;
+}
+
 .form-panel {
   padding: 24px;
 }
@@ -433,11 +525,6 @@ onMounted(loadProfile)
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.summary-panel,
-.agent-panel {
-  padding: 20px;
 }
 
 .section-title {
@@ -541,12 +628,63 @@ onMounted(loadProfile)
   color: #c2410c;
 }
 
-.agent-panel ul {
-  margin: 0 0 18px;
-  padding-left: 18px;
-  color: var(--text-secondary);
+.memory-editor label {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.memory-editor p {
+  margin: 6px 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.memory-settings {
+  overflow: hidden;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.memory-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.memory-setting-row:last-child {
+  border-bottom: 0;
+}
+
+.memory-setting-row strong {
+  display: block;
+  color: var(--text);
   font-size: 13px;
-  line-height: 1.8;
+}
+
+.memory-setting-row span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.memory-setting-row.danger {
+  background: #fff7f7;
+}
+
+.memory-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .budget-editor {
@@ -563,8 +701,7 @@ onMounted(loadProfile)
   font-weight: 600;
 }
 
-.budget-empty,
-.alert-empty {
+.empty-box {
   padding: 12px;
   border-radius: 8px;
   background: var(--bg);
@@ -584,10 +721,6 @@ onMounted(loadProfile)
 .budget-amount,
 .budget-threshold {
   width: 100%;
-}
-
-.alert-panel {
-  padding: 20px;
 }
 
 .alert-item {
