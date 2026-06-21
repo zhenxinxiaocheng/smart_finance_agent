@@ -2,6 +2,7 @@ package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.smartfinance.agent.common.UserIdContext;
+import com.smartfinance.agent.service.SkillInvocationRecordService;
 import lombok.Builder;
 import lombok.Data;
 import org.springframework.stereotype.Component;
@@ -10,7 +11,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.function.Function;
 
@@ -20,11 +23,14 @@ public class ToolRegistry {
     private static final DateTimeFormatter MONTH_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM");
 
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
+    private final SkillInvocationRecordService skillInvocationRecordService;
 
     public ToolRegistry(FinancialTools financialTools,
                         TransactionRecorder transactionRecorder,
                         WebSearchTool webSearchTool,
-                        BudgetTool budgetTool) {
+                        BudgetTool budgetTool,
+                        SkillInvocationRecordService skillInvocationRecordService) {
+        this.skillInvocationRecordService = skillInvocationRecordService;
         register("get_total_expense", "查询指定日期范围内的总支出。input: {startDate: yyyy-MM-dd, endDate: yyyy-MM-dd}",
                 input -> financialTools.getTotalExpense(text(input, "startDate", monthStart()), text(input, "endDate", today())));
         register("get_total_income", "查询指定日期范围内的总收入。input: {startDate: yyyy-MM-dd, endDate: yyyy-MM-dd}",
@@ -73,7 +79,18 @@ public class ToolRegistry {
 
     public String manifest() {
         StringJoiner joiner = new StringJoiner("\n");
-        tools.forEach((name, tool) -> joiner.add("- " + name + ": " + tool.description()));
+        Set<String> categories = new LinkedHashSet<>();
+        tools.values().forEach(tool -> categories.add(tool.category()));
+        for (String category : categories) {
+            joiner.add("【" + category + "】");
+            tools.forEach((name, tool) -> {
+                if (category.equals(tool.category())) {
+                    joiner.add("- " + name + ": " + tool.description()
+                            + " 风险等级: " + tool.riskLevel()
+                            + " input: " + tool.inputSchemaHint());
+                }
+            });
+        }
         return joiner.toString();
     }
 
@@ -105,8 +122,46 @@ public class ToolRegistry {
         }
     }
 
+    public ToolObservation execute(String toolName, JsonNode input, Long userId, String traceId) {
+        ToolDefinition tool = tools.get(toolName);
+        ToolObservation observation = execute(toolName, input, userId);
+        if (tool != null) {
+            skillInvocationRecordService.record(userId, traceId, toolName, tool.category(), input,
+                    observation.isSuccess(), observation.getSummary(), observation.getRawResult());
+        }
+        return observation;
+    }
+
     private void register(String name, String description, Function<JsonNode, String> executor) {
-        tools.put(name, new ToolDefinition(description, executor));
+        tools.put(name, new ToolDefinition(description, categoryFor(name), riskFor(name), schemaFor(description), executor));
+    }
+
+    private static String categoryFor(String name) {
+        if (name.contains("budget") || name.contains("alert")) {
+            return "预算管理";
+        }
+        if (name.contains("transaction") || name.contains("category")) {
+            return "记账辅助";
+        }
+        if (name.contains("search")) {
+            return "联网搜索";
+        }
+        return "财务查询";
+    }
+
+    private static String riskFor(String name) {
+        if ("record_transaction".equals(name) || "set_budget".equals(name)) {
+            return "需确认";
+        }
+        if ("search_web".equals(name)) {
+            return "外部信息";
+        }
+        return "只读";
+    }
+
+    private static String schemaFor(String description) {
+        int index = description == null ? -1 : description.toLowerCase().indexOf("input:");
+        return index < 0 ? "{}" : description.substring(index + "input:".length()).trim();
     }
 
     private static String text(JsonNode input, String field, String defaultValue) {
@@ -149,7 +204,11 @@ public class ToolRegistry {
         return compacted.length() > 160 ? compacted.substring(0, 160) + "..." : compacted;
     }
 
-    private record ToolDefinition(String description, Function<JsonNode, String> executor) {}
+    private record ToolDefinition(String description,
+                                  String category,
+                                  String riskLevel,
+                                  String inputSchemaHint,
+                                  Function<JsonNode, String> executor) {}
 
     @Data
     @Builder

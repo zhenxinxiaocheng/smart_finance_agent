@@ -36,6 +36,45 @@ CREATE TABLE IF NOT EXISTS `financial_profile`
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户长期财务画像表';
 
 -- 交易记录表
+CREATE TABLE IF NOT EXISTS `agent_memory`
+(
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`      BIGINT       NOT NULL COMMENT 'User ID',
+    `memory_type`  VARCHAR(50)  NOT NULL COMMENT 'CATEGORY_PREFERENCE/RESPONSE_STYLE/ANALYSIS_PREFERENCE/AGENT_PREFERENCE',
+    `memory_key`   VARCHAR(100) NOT NULL COMMENT 'Memory key',
+    `memory_value` TEXT         NOT NULL COMMENT 'Memory value',
+    `confidence`   DOUBLE       NOT NULL DEFAULT 1 COMMENT 'Extraction confidence',
+    `source_query` VARCHAR(500) NULL     COMMENT 'Source user query',
+    `disabled`     TINYINT      NOT NULL DEFAULT 0 COMMENT 'Disabled flag',
+    `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`      TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_agent_memory_key` (`user_id`, `memory_type`, `memory_key`),
+    INDEX `idx_agent_memory_user` (`user_id`, `disabled`, `deleted`),
+    CONSTRAINT `fk_agent_memory_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent lightweight long-term memories';
+
+ALTER TABLE `agent_memory` MODIFY COLUMN `memory_value` TEXT NOT NULL COMMENT 'Memory value';
+
+CREATE TABLE IF NOT EXISTS `skill_invocation_record`
+(
+    `id`         BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`    BIGINT       NOT NULL COMMENT 'User ID',
+    `trace_id`   VARCHAR(64)  NULL     COMMENT 'ReAct trace ID',
+    `skill_name` VARCHAR(100) NOT NULL COMMENT 'Skill/tool name',
+    `category`   VARCHAR(50)  NULL     COMMENT 'Skill category',
+    `input`      TEXT         NULL     COMMENT 'Input JSON',
+    `success`    TINYINT      NOT NULL DEFAULT 0 COMMENT 'Success flag',
+    `summary`    VARCHAR(500) NULL     COMMENT 'Observation summary',
+    `raw_result` TEXT         NULL     COMMENT 'Raw observation',
+    `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    PRIMARY KEY (`id`),
+    INDEX `idx_skill_trace` (`trace_id`),
+    INDEX `idx_skill_user` (`user_id`, `skill_name`),
+    CONSTRAINT `fk_skill_invocation_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent skill invocation records';
+
 CREATE TABLE IF NOT EXISTS `transaction`
 (
     `id`               BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',

@@ -2,6 +2,7 @@ package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
+import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -24,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +44,10 @@ class ReActAgentServiceTest {
     private AnalysisRecordMapper analysisRecordMapper;
     @Mock
     private FinancialProfileService financialProfileService;
+    @Mock
+    private AgentMemoryService agentMemoryService;
+    @Mock
+    private MemoryExtractor memoryExtractor;
 
     private ReActAgentService service;
 
@@ -50,22 +56,25 @@ class ReActAgentServiceTest {
         when(toolRegistry.manifest()).thenReturn("- get_total_expense: test tool");
         when(financialMonitor.hasPendingAlerts(1L)).thenReturn(false);
         lenient().when(financialProfileService.buildAgentContext(1L)).thenReturn("");
+        lenient().when(agentMemoryService.buildAgentContext(1L)).thenReturn("");
+        lenient().when(agentMemoryService.isAutoMemoryEnabled(1L)).thenReturn(true);
+        lenient().when(agentMemoryService.shouldSkipToolAssistedMemory(1L)).thenReturn(false);
         lenient().when(agentVerifier.verify(any(), any(), anyList()))
                 .thenReturn(new AgentVerifier.VerificationResult(true, null, List.of()));
         service = new ReActAgentService(chatModel, toolRegistry, agentVerifier, financialMonitor,
-                analysisRecordMapper, new ObjectMapper(), financialProfileService);
+                analysisRecordMapper, new ObjectMapper(), financialProfileService, agentMemoryService, memoryExtractor);
     }
 
     @Test
     void run_whenModelReturnsAction_shouldExecuteToolAndReturnFinalAnswer() {
         when(chatModel.generate(anyList()))
                 .thenReturn(response("""
-                        {"type":"action","summary":"正在查询本月支出","tool":"get_total_expense","input":{"startDate":"2026-06-01","endDate":"2026-06-07"}}
+                        {"type":"action","summary":"查询本月支出","tool":"get_total_expense","input":{"startDate":"2026-06-01","endDate":"2026-06-07"}}
                         """))
                 .thenReturn(response("""
                         {"type":"final","answer":"本月目前支出 100 元。"}
                         """));
-        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L)))
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(true)
                         .summary("支出 100 元")
@@ -77,8 +86,9 @@ class ReActAgentServiceTest {
         assertEquals("本月目前支出 100 元。", result.getFinalAnswer());
         assertEquals(1, result.getSteps().size());
         assertTrue(result.getSteps().get(0).isSuccess());
-        verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L));
+        verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L), any());
         verify(analysisRecordMapper).insert(any());
+        verify(memoryExtractor).extractAndSave(eq(1L), eq("我这个月花了多少"), any());
     }
 
     @Test
@@ -101,7 +111,7 @@ class ReActAgentServiceTest {
         when(chatModel.generate(anyList())).thenReturn(response("""
                 {"type":"action","summary":"继续查询","tool":"get_total_expense","input":{}}
                 """));
-        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L)))
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(true)
                         .summary("ok")
@@ -118,12 +128,12 @@ class ReActAgentServiceTest {
     void run_whenToolFails_shouldKeepLoopingWithFailedObservation() {
         when(chatModel.generate(anyList()))
                 .thenReturn(response("""
-                        {"type":"action","summary":"正在查询预算","tool":"get_budget_status","input":{}}
+                        {"type":"action","summary":"查询预算","tool":"get_budget_status","input":{}}
                         """))
                 .thenReturn(response("""
                         {"type":"final","answer":"预算工具暂时不可用，我稍后再帮你查。"}
                         """));
-        when(toolRegistry.execute(eq("get_budget_status"), any(), eq(1L)))
+        when(toolRegistry.execute(eq("get_budget_status"), any(), eq(1L), any()))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(false)
                         .summary("工具执行失败")
@@ -189,6 +199,93 @@ class ReActAgentServiceTest {
         String joined = captor.getValue().toString();
         assertTrue(joined.contains("用户主动维护的长期财务画像"));
         assertTrue(joined.contains("风险偏好：保守"));
+    }
+
+    @Test
+    void run_withAgentMemory_shouldInjectMemoryContext() {
+        when(agentMemoryService.buildAgentContext(1L))
+                .thenReturn("用户可编辑的 Agent 长期指令：\n用中文回答，尽量简短\n\n自动沉淀的 Agent 长期记忆：\n- CATEGORY_PREFERENCE/coffee: 咖啡归为餐饮");
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"我会按你的分类偏好处理咖啡消费。"}
+                """));
+
+        service.run(1L, "星巴克怎么分类");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).generate(captor.capture());
+        String joined = captor.getValue().toString();
+        assertTrue(joined.contains("Agent 长期指令"));
+        assertTrue(joined.contains("咖啡归为餐饮"));
+    }
+
+    @Test
+    void run_withLanguageMemory_shouldTellModelToFollowMemoryLanguage() {
+        when(agentMemoryService.buildAgentContext(1L))
+                .thenReturn("用户可编辑的 Agent 长期指令：\n用英语对话");
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"Your spending looks stable so far."}
+                """));
+
+        service.run(1L, "我这个月消费情况如何？");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).generate(captor.capture());
+        String joined = captor.getValue().toString();
+        assertTrue(joined.contains("如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言"));
+        assertTrue(joined.contains("用英语对话"));
+    }
+
+    @Test
+    void run_withEnglishMemory_shouldRepairChineseFinalAnswer() {
+        when(agentMemoryService.buildAgentContext(1L))
+                .thenReturn("用户可编辑的 Agent 长期指令：\n用英语对话");
+        when(chatModel.generate(anyList()))
+                .thenReturn(response("""
+                        {"type":"final","answer":"您的本月消费总体正常。"}
+                        """))
+                .thenReturn(response("""
+                        {"type":"final","answer":"Your monthly spending looks generally normal."}
+                        """));
+
+        var result = service.run(1L, "我这个月消费情况如何？");
+
+        assertEquals("Your monthly spending looks generally normal.", result.getFinalAnswer());
+    }
+
+    @Test
+    void run_whenAutoMemoryDisabled_shouldNotExtractMemory() {
+        when(agentMemoryService.isAutoMemoryEnabled(1L)).thenReturn(false);
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"好的"}
+                """));
+
+        service.run(1L, "以后回答短一点");
+
+        verify(memoryExtractor, never()).extractAndSave(any(), any(), any());
+    }
+
+    @Test
+    void run_whenToolAssistedMemorySkipped_shouldNotExtractMemoryAfterToolCall() {
+        when(agentMemoryService.shouldSkipToolAssistedMemory(1L)).thenReturn(true);
+        when(chatModel.generate(anyList()))
+                .thenReturn(response("""
+                        {"type":"action","summary":"查询支出","tool":"get_total_expense","input":{}}
+                        """))
+                .thenReturn(response("""
+                        {"type":"final","answer":"已查到"}
+                        """));
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
+                .thenReturn(ToolRegistry.ToolObservation.builder()
+                        .success(true)
+                        .summary("ok")
+                        .rawResult("ok")
+                        .build());
+
+        service.run(1L, "查一下支出");
+
+        verify(memoryExtractor, never()).extractAndSave(any(), any(), any());
     }
 
     private int countOccurrences(String text, String target) {
