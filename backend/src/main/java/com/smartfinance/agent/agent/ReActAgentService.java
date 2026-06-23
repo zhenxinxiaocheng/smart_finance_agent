@@ -84,6 +84,7 @@ public class ReActAgentService {
         List<ChatMessage> messages = new ArrayList<>();
         boolean usedTool = false;
 
+        listener.onRunStarted(traceId);
         messages.add(SystemMessage.from(systemPromptV2()));
 
         if (financialMonitor.hasPendingAlerts(userId)) {
@@ -148,7 +149,8 @@ public class ReActAgentService {
             listener.onStepStarted(stepNumber, summary, tool);
             ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId, traceId);
             usedTool = true;
-            listener.onStepFinished(stepNumber, observation.getSummary(), observation.isSuccess());
+            listener.onStepFinished(stepNumber, summary, tool, toJson(input), observation.getSummary(),
+                    observation.isSuccess(), observation.isSuccess() ? null : observation.getSummary());
 
             ReActStepRecord record = ReActStepRecord.builder()
                     .stepNumber(stepNumber)
@@ -458,6 +460,18 @@ public class ReActAgentService {
 
         default void onStepFinished(int stepNumber, String summary, boolean success) {}
 
+        default void onStepFinished(int stepNumber,
+                                    String summary,
+                                    String tool,
+                                    String input,
+                                    String observationSummary,
+                                    boolean success,
+                                    String errorMessage) {
+            onStepFinished(stepNumber, observationSummary, success);
+        }
+
         default void onFinal(String response, String traceId) {}
+
+        default void onRunStarted(String traceId) {}
     }
 }

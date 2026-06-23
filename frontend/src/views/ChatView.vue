@@ -525,7 +525,9 @@ async function loadHistory() {
     if (res.code === 200 && Array.isArray(res.data)) {
       messages.value = res.data.map(m => ({
         role: m.role,
-        content: m.content
+        content: m.content,
+        traceId: m.traceId,
+        steps: Array.isArray(m.steps) ? m.steps : []
       }))
     }
     await loadPendingActions()

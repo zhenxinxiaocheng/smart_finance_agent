@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
+import com.smartfinance.agent.service.AgentRunService;
 import com.smartfinance.agent.service.ChatService;
 import com.smartfinance.agent.service.PendingActionService;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 @Service
@@ -27,27 +29,35 @@ public class ChatServiceImpl implements ChatService {
     private final ReActAgentService reactAgentService;
     private final ChatMessageMapper chatMessageMapper;
     private final PendingActionService pendingActionService;
+    private final AgentRunService agentRunService;
 
     public ChatServiceImpl(ReActAgentService reactAgentService,
                            ChatMessageMapper chatMessageMapper,
-                           PendingActionService pendingActionService) {
+                           PendingActionService pendingActionService,
+                           AgentRunService agentRunService) {
         this.reactAgentService = reactAgentService;
         this.chatMessageMapper = chatMessageMapper;
         this.pendingActionService = pendingActionService;
+        this.agentRunService = agentRunService;
     }
 
     @Override
     public String chat(Long userId, String message) {
         List<ChatMessage> recentHistory = loadRecentHistory(userId);
         saveMessage(userId, "USER", message);
+        AtomicReference<String> traceRef = new AtomicReference<>();
         String response;
         try {
-            response = reactAgentService.run(userId, message, recentHistory).getFinalAnswer();
+            var result = reactAgentService.run(userId, message, recentHistory,
+                    runRecorder(userId, message, traceRef, null));
+            response = result.getFinalAnswer();
+            saveMessage(userId, "ASSISTANT", response, result.getTraceId());
         } catch (Exception e) {
             log.error("ReActAgent call failed: userId={}, message={}", userId, message, e);
             response = FALLBACK_RESPONSE;
+            agentRunService.failRun(traceRef.get(), e.getMessage(), response);
+            saveMessage(userId, "ASSISTANT", response, traceRef.get());
         }
-        saveMessage(userId, "ASSISTANT", response);
         return response;
     }
 
@@ -56,37 +66,13 @@ public class ChatServiceImpl implements ChatService {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
         List<ChatMessage> recentHistory = loadRecentHistory(userId);
         saveMessage(userId, "USER", message);
+        AtomicReference<String> traceRef = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
             try {
-                var result = reactAgentService.run(userId, message, recentHistory, new ReActAgentService.ReActEventListener() {
-                    @Override
-                    public void onStepStarted(int stepNumber, String summary, String tool) {
-                        sendEvent(emitter, "step_started", Map.of(
-                                "stepNumber", stepNumber,
-                                "summary", summary,
-                                "tool", tool
-                        ));
-                    }
-
-                    @Override
-                    public void onStepFinished(int stepNumber, String summary, boolean success) {
-                        sendEvent(emitter, "step_finished", Map.of(
-                                "stepNumber", stepNumber,
-                                "summary", success ? "步骤完成" : "步骤失败",
-                                "success", success
-                        ));
-                    }
-
-                    @Override
-                    public void onFinal(String response, String traceId) {
-                        sendEvent(emitter, "final", Map.of(
-                                "response", response,
-                                "traceId", traceId
-                        ));
-                    }
-                });
-                saveMessage(userId, "ASSISTANT", result.getFinalAnswer());
+                var result = reactAgentService.run(userId, message, recentHistory,
+                        runRecorder(userId, message, traceRef, emitter));
+                saveMessage(userId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());
                 var pendingActions = pendingActionService.listPending(userId);
                 if (!pendingActions.isEmpty()) {
                     sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
@@ -94,16 +80,72 @@ public class ChatServiceImpl implements ChatService {
                 emitter.complete();
             } catch (Exception e) {
                 log.error("ReAct SSE call failed: userId={}, message={}", userId, message, e);
-                saveMessage(userId, "ASSISTANT", FALLBACK_RESPONSE);
+                agentRunService.failRun(traceRef.get(), e.getMessage(), FALLBACK_RESPONSE);
+                saveMessage(userId, "ASSISTANT", FALLBACK_RESPONSE, traceRef.get());
                 sendEvent(emitter, "error", Map.of(
                         "message", FALLBACK_RESPONSE,
-                        "traceId", ""
+                        "traceId", traceRef.get() == null ? "" : traceRef.get()
                 ));
                 emitter.complete();
             }
         });
 
         return emitter;
+    }
+
+    private ReActAgentService.ReActEventListener runRecorder(Long userId,
+                                                             String message,
+                                                             AtomicReference<String> traceRef,
+                                                             SseEmitter emitter) {
+        return new ReActAgentService.ReActEventListener() {
+            @Override
+            public void onRunStarted(String traceId) {
+                traceRef.set(traceId);
+                agentRunService.startRun(userId, traceId, message);
+            }
+
+            @Override
+            public void onStepStarted(int stepNumber, String summary, String tool) {
+                agentRunService.recordStepStarted(userId, traceRef.get(), stepNumber, summary, tool);
+                if (emitter != null) {
+                    sendEvent(emitter, "step_started", Map.of(
+                            "stepNumber", stepNumber,
+                            "summary", summary,
+                            "tool", tool
+                    ));
+                }
+            }
+
+            @Override
+            public void onStepFinished(int stepNumber,
+                                       String summary,
+                                       String tool,
+                                       String input,
+                                       String observationSummary,
+                                       boolean success,
+                                       String errorMessage) {
+                agentRunService.recordStepFinished(userId, traceRef.get(), stepNumber, summary, tool, input,
+                        success, observationSummary, errorMessage);
+                if (emitter != null) {
+                    sendEvent(emitter, "step_finished", Map.of(
+                            "stepNumber", stepNumber,
+                            "summary", success ? "步骤完成" : "步骤失败",
+                            "success", success
+                    ));
+                }
+            }
+
+            @Override
+            public void onFinal(String response, String traceId) {
+                agentRunService.completeRun(traceId, response);
+                if (emitter != null) {
+                    sendEvent(emitter, "final", Map.of(
+                            "response", response,
+                            "traceId", traceId
+                    ));
+                }
+            }
+        };
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Map<String, Object> payload) {
@@ -129,11 +171,18 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private void saveMessage(Long userId, String role, String content) {
+        saveMessage(userId, role, content, null);
+    }
+
+    private void saveMessage(Long userId, String role, String content, String traceId) {
         try {
             ChatMessage msg = new ChatMessage();
             msg.setUserId(userId);
             msg.setRole(role);
             msg.setContent(content);
+            if (traceId != null && !traceId.isBlank()) {
+                msg.setTraceId(traceId);
+            }
             chatMessageMapper.insert(msg);
         } catch (Exception e) {
             log.warn("Save chat message failed: userId={}, role={}", userId, role, e);
@@ -148,13 +197,27 @@ public class ChatServiceImpl implements ChatService {
                         .orderByDesc(ChatMessage::getCreatedAt)
                         .last("LIMIT " + limit));
 
-        List<Map<String, Object>> history = new ArrayList<>();
+        List<ChatMessage> ordered = new ArrayList<>();
         for (int i = messages.size() - 1; i >= 0; i--) {
-            ChatMessage msg = messages.get(i);
+            ordered.add(messages.get(i));
+        }
+
+        List<String> traceIds = ordered.stream()
+                .map(ChatMessage::getTraceId)
+                .filter(traceId -> traceId != null && !traceId.isBlank())
+                .toList();
+        Map<String, List<Map<String, Object>>> stepsByTrace = agentRunService.stepsByTraceIds(traceIds);
+
+        List<Map<String, Object>> history = new ArrayList<>();
+        for (ChatMessage msg : ordered) {
             Map<String, Object> item = new HashMap<>();
             item.put("role", msg.getRole());
             item.put("content", msg.getContent());
             item.put("time", msg.getCreatedAt());
+            if (msg.getTraceId() != null && !msg.getTraceId().isBlank()) {
+                item.put("traceId", msg.getTraceId());
+                item.put("steps", stepsByTrace.getOrDefault(msg.getTraceId(), List.of()));
+            }
             history.add(item);
         }
         return history;

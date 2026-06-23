@@ -74,6 +74,44 @@ CREATE TABLE IF NOT EXISTS `skill_invocation_record`
     INDEX `idx_skill_user` (`user_id`, `skill_name`),
     CONSTRAINT `fk_skill_invocation_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent skill invocation records';
+CREATE TABLE IF NOT EXISTS `agent_run`
+(
+    `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`       BIGINT       NOT NULL COMMENT 'User ID',
+    `trace_id`      VARCHAR(64)  NOT NULL COMMENT 'ReAct trace ID',
+    `query`         TEXT         NOT NULL COMMENT 'Original user query',
+    `final_answer`  TEXT         NULL     COMMENT 'Final assistant answer',
+    `status`        VARCHAR(30)  NOT NULL DEFAULT 'RUNNING' COMMENT 'RUNNING/COMPLETED/FAILED/PARTIAL',
+    `started_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Run start time',
+    `finished_at`   DATETIME     NULL     COMMENT 'Run finish time',
+    `duration_ms`   BIGINT       NULL     COMMENT 'Run duration in milliseconds',
+    `error_message` VARCHAR(500) NULL     COMMENT 'Failure summary',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_agent_run_trace` (`trace_id`),
+    INDEX `idx_agent_run_user` (`user_id`, `started_at`),
+    CONSTRAINT `fk_agent_run_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent run records';
+
+CREATE TABLE IF NOT EXISTS `agent_run_step`
+(
+    `id`                  BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`             BIGINT       NOT NULL COMMENT 'User ID',
+    `trace_id`            VARCHAR(64)  NOT NULL COMMENT 'ReAct trace ID',
+    `step_number`         INT          NOT NULL COMMENT 'Step number in run',
+    `summary`             VARCHAR(500) NULL     COMMENT 'User-visible step summary',
+    `tool_name`           VARCHAR(100) NULL     COMMENT 'Tool/skill name',
+    `input`               TEXT         NULL     COMMENT 'Tool input JSON',
+    `success`             TINYINT      NULL     COMMENT 'Success flag',
+    `observation_summary` VARCHAR(500) NULL     COMMENT 'Observation summary',
+    `error_message`       VARCHAR(500) NULL     COMMENT 'Failure summary',
+    `status`              VARCHAR(30)  NOT NULL DEFAULT 'RUNNING' COMMENT 'RUNNING/COMPLETED/FAILED',
+    `started_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Step start time',
+    `finished_at`         DATETIME     NULL     COMMENT 'Step finish time',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_agent_run_step` (`trace_id`, `step_number`),
+    INDEX `idx_agent_run_step_user` (`user_id`, `trace_id`),
+    CONSTRAINT `fk_agent_run_step_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent run visible steps';
 
 CREATE TABLE IF NOT EXISTS `transaction`
 (
@@ -120,13 +158,18 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     `user_id`    BIGINT       NOT NULL COMMENT '用户ID',
     `role`       VARCHAR(20)  NOT NULL COMMENT '角色(USER-用户,ASSISTANT-AI助手)',
     `content`    TEXT         NOT NULL COMMENT '消息内容',
+    `trace_id`   VARCHAR(64)  NULL     COMMENT 'Assistant trace ID',
     `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `deleted`    TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除(0-正常,1-已删)',
     PRIMARY KEY (`id`),
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_created_at` (`created_at`),
+    INDEX `idx_chat_trace` (`trace_id`),
     CONSTRAINT `fk_chat_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='聊天消息表';
+
+ALTER TABLE `chat_message` ADD COLUMN `trace_id` VARCHAR(64) NULL COMMENT 'Assistant trace ID';
+CREATE INDEX `idx_chat_trace` ON `chat_message` (`trace_id`);
 
 CREATE TABLE IF NOT EXISTS `pending_action`
 (
@@ -247,5 +290,6 @@ CREATE TABLE IF NOT EXISTS `analysis_record`
     PRIMARY KEY (`id`),
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_created_at` (`created_at`),
+    INDEX `idx_chat_trace` (`trace_id`),
     CONSTRAINT `fk_analysis_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent分析记录表';

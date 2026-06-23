@@ -18,6 +18,8 @@ public class ChatMessage {
 
     private String content;
 
+    private String traceId;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
