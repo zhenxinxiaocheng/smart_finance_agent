@@ -24,9 +24,17 @@ public class SkillInvocationRecord {
 
     private String category;
 
+    private String sourceType;
+
+    private String riskLevel;
+
     private String input;
 
     private Integer success;
+
+    private Integer blocked;
+
+    private Long durationMs;
 
     private String summary;
 

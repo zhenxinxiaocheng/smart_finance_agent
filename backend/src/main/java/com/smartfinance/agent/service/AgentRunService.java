@@ -24,4 +24,6 @@ public interface AgentRunService {
                             String errorMessage);
 
     Map<String, List<Map<String, Object>>> stepsByTraceIds(List<String> traceIds);
+
+    Map<String, Object> detail(Long userId, String traceId);
 }

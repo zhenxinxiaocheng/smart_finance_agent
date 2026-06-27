@@ -39,6 +39,12 @@ const routes = [
         meta: { title: '财务画像' }
       },
       {
+        path: 'skills',
+        name: 'AgentSkills',
+        component: () => import('../views/AgentSkills.vue'),
+        meta: { title: 'Agent 技能' }
+      },
+      {
         path: 'bill-import',
         name: 'BillImport',
         component: () => import('../views/BillImport.vue'),

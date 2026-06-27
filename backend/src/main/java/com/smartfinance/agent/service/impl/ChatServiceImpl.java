@@ -7,6 +7,10 @@ import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.AgentRunService;
 import com.smartfinance.agent.service.ChatService;
 import com.smartfinance.agent.service.PendingActionService;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -15,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,15 +35,18 @@ public class ChatServiceImpl implements ChatService {
     private final ChatMessageMapper chatMessageMapper;
     private final PendingActionService pendingActionService;
     private final AgentRunService agentRunService;
+    private final ChatLanguageModel chatModel;
 
     public ChatServiceImpl(ReActAgentService reactAgentService,
                            ChatMessageMapper chatMessageMapper,
                            PendingActionService pendingActionService,
-                           AgentRunService agentRunService) {
+                           AgentRunService agentRunService,
+                           ChatLanguageModel chatModel) {
         this.reactAgentService = reactAgentService;
         this.chatMessageMapper = chatMessageMapper;
         this.pendingActionService = pendingActionService;
         this.agentRunService = agentRunService;
+        this.chatModel = chatModel;
     }
 
     @Override
@@ -48,10 +56,19 @@ public class ChatServiceImpl implements ChatService {
         AtomicReference<String> traceRef = new AtomicReference<>();
         String response;
         try {
-            var result = reactAgentService.run(userId, message, recentHistory,
-                    runRecorder(userId, message, traceRef, null));
-            response = result.getFinalAnswer();
-            saveMessage(userId, "ASSISTANT", response, result.getTraceId());
+            if (shouldUseFastChat(message)) {
+                String traceId = UUID.randomUUID().toString();
+                traceRef.set(traceId);
+                agentRunService.startRun(userId, traceId, message);
+                response = fastChat(message, recentHistory);
+                agentRunService.completeRun(traceId, response);
+                saveMessage(userId, "ASSISTANT", response, traceId);
+            } else {
+                var result = reactAgentService.run(userId, message, recentHistory,
+                        runRecorder(userId, message, traceRef, null));
+                response = result.getFinalAnswer();
+                saveMessage(userId, "ASSISTANT", response, result.getTraceId());
+            }
         } catch (Exception e) {
             log.error("ReActAgent call failed: userId={}, message={}", userId, message, e);
             response = FALLBACK_RESPONSE;
@@ -70,12 +87,25 @@ public class ChatServiceImpl implements ChatService {
 
         CompletableFuture.runAsync(() -> {
             try {
-                var result = reactAgentService.run(userId, message, recentHistory,
-                        runRecorder(userId, message, traceRef, emitter));
-                saveMessage(userId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());
-                var pendingActions = pendingActionService.listPending(userId);
-                if (!pendingActions.isEmpty()) {
-                    sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
+                if (shouldUseFastChat(message)) {
+                    String traceId = UUID.randomUUID().toString();
+                    traceRef.set(traceId);
+                    agentRunService.startRun(userId, traceId, message);
+                    String response = fastChat(message, recentHistory);
+                    agentRunService.completeRun(traceId, response);
+                    saveMessage(userId, "ASSISTANT", response, traceId);
+                    sendEvent(emitter, "final", Map.of(
+                            "response", response,
+                            "traceId", traceId
+                    ));
+                } else {
+                    var result = reactAgentService.run(userId, message, recentHistory,
+                            runRecorder(userId, message, traceRef, emitter));
+                    saveMessage(userId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());
+                    var pendingActions = pendingActionService.listPending(userId);
+                    if (!pendingActions.isEmpty()) {
+                        sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
+                    }
                 }
                 emitter.complete();
             } catch (Exception e) {
@@ -91,6 +121,60 @@ public class ChatServiceImpl implements ChatService {
         });
 
         return emitter;
+    }
+
+    private boolean shouldUseFastChat(String message) {
+        if (message == null || message.isBlank()) {
+            return true;
+        }
+        String text = message.toLowerCase();
+        String[] reactKeywords = {
+                "消费", "支出", "收入", "账", "记账", "花了", "预算", "储蓄", "存款",
+                "流水", "交易", "分类", "统计", "本月", "上月", "今天", "昨天", "明细",
+                "股票", "基金", "行情", "新闻", "汇率", "搜索", "查询", "多少", "分析",
+                "month", "today", "yesterday", "previous", "last", "expense", "income",
+                "spent", "spend", "budget", "transaction", "category", "stock", "fund",
+                "price", "market", "search", "analyze"
+        };
+        for (String keyword : reactKeywords) {
+            if (text.contains(keyword)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String fastChat(String message, List<ChatMessage> recentHistory) {
+        List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from("""
+                You are 智财Agent. Reply in Chinese unless the user asks otherwise.
+                Be concise. Do not claim to have queried financial records, budgets, realtime markets, or tools.
+                If the user asks for account data, bookkeeping, budgets, realtime market data, or calculations that need tools, say briefly that this request should use the agent analysis path.
+                """));
+        appendFastHistory(messages, recentHistory);
+        messages.add(UserMessage.from(message));
+        AiMessage response = chatModel.generate(messages).content();
+        return response == null || response.text() == null ? "" : response.text();
+    }
+
+    private void appendFastHistory(List<dev.langchain4j.data.message.ChatMessage> messages,
+                                   List<ChatMessage> recentHistory) {
+        if (recentHistory == null || recentHistory.isEmpty()) {
+            return;
+        }
+        int start = Math.max(0, recentHistory.size() - 4);
+        for (int i = start; i < recentHistory.size(); i++) {
+            ChatMessage history = recentHistory.get(i);
+            if (history == null || history.getContent() == null || history.getContent().isBlank()) {
+                continue;
+            }
+            String content = history.getContent().trim();
+            if ("USER".equalsIgnoreCase(history.getRole())) {
+                messages.add(UserMessage.from(content));
+            } else if ("ASSISTANT".equalsIgnoreCase(history.getRole())) {
+                messages.add(AiMessage.from(content));
+            }
+        }
     }
 
     private ReActAgentService.ReActEventListener runRecorder(Long userId,

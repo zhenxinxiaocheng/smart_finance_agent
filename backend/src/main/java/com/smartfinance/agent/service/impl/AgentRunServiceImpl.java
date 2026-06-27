@@ -154,6 +154,36 @@ public class AgentRunServiceImpl implements AgentRunService {
         return grouped;
     }
 
+    @Override
+    public Map<String, Object> detail(Long userId, String traceId) {
+        if (userId == null || isBlank(traceId)) {
+            throw new IllegalArgumentException("Agent run not found");
+        }
+        AgentRun run = agentRunMapper.selectOne(new LambdaQueryWrapper<AgentRun>()
+                .eq(AgentRun::getUserId, userId)
+                .eq(AgentRun::getTraceId, traceId)
+                .last("LIMIT 1"));
+        if (run == null) {
+            throw new IllegalArgumentException("Agent run not found");
+        }
+        List<AgentRunStep> steps = agentRunStepMapper.selectList(new LambdaQueryWrapper<AgentRunStep>()
+                .eq(AgentRunStep::getUserId, userId)
+                .eq(AgentRunStep::getTraceId, traceId)
+                .orderByAsc(AgentRunStep::getStepNumber));
+
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("traceId", run.getTraceId());
+        detail.put("query", run.getQuery());
+        detail.put("finalAnswer", run.getFinalAnswer());
+        detail.put("status", run.getStatus());
+        detail.put("startedAt", run.getStartedAt());
+        detail.put("finishedAt", run.getFinishedAt());
+        detail.put("durationMs", run.getDurationMs());
+        detail.put("errorMessage", run.getErrorMessage());
+        detail.put("steps", steps.stream().map(this::toDetailStep).toList());
+        return detail;
+    }
+
     private void finishRun(String traceId, String status, String errorMessage, String finalAnswer) {
         if (isBlank(traceId)) {
             return;
@@ -194,6 +224,15 @@ public class AgentRunServiceImpl implements AgentRunService {
         item.put("success", step.getSuccess() != null && step.getSuccess() == 1);
         item.put("status", toFrontendStatus(step.getStatus(), step.getSuccess()));
         item.put("observationSummary", step.getObservationSummary());
+        return item;
+    }
+
+    private Map<String, Object> toDetailStep(AgentRunStep step) {
+        Map<String, Object> item = toHistoryStep(step);
+        item.put("input", step.getInput());
+        item.put("errorMessage", step.getErrorMessage());
+        item.put("startedAt", step.getStartedAt());
+        item.put("finishedAt", step.getFinishedAt());
         return item;
     }
 

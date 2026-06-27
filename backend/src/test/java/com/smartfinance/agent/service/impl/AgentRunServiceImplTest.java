@@ -12,6 +12,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -93,5 +95,42 @@ class AgentRunServiceImplTest {
                 .containsEntry("tool", "get_total_expense")
                 .containsEntry("status", "done")
                 .containsEntry("success", true);
+    }
+
+    @Test
+    void detail_shouldReturnRunWithOrderedSteps() {
+        AgentRun run = new AgentRun();
+        run.setUserId(1L);
+        run.setTraceId("trace-1");
+        run.setQuery("question");
+        run.setFinalAnswer("answer");
+        run.setStatus("COMPLETED");
+        run.setStartedAt(LocalDateTime.now().minusSeconds(2));
+        run.setFinishedAt(LocalDateTime.now());
+        run.setDurationMs(2000L);
+
+        AgentRunStep step = new AgentRunStep();
+        step.setTraceId("trace-1");
+        step.setStepNumber(1);
+        step.setSummary("Query");
+        step.setToolName("get_total_expense");
+        step.setInput("{}");
+        step.setSuccess(1);
+        step.setStatus("COMPLETED");
+        step.setObservationSummary("ok");
+        when(agentRunMapper.selectOne(any())).thenReturn(run);
+        when(agentRunStepMapper.selectList(any())).thenReturn(List.of(step));
+
+        var detail = service.detail(1L, "trace-1");
+
+        assertThat(detail)
+                .containsEntry("traceId", "trace-1")
+                .containsEntry("query", "question")
+                .containsEntry("finalAnswer", "answer")
+                .containsEntry("status", "COMPLETED");
+        assertThat((List<?>) detail.get("steps")).hasSize(1);
+        Map<?, ?> detailStep = (Map<?, ?>) ((List<?>) detail.get("steps")).get(0);
+        assertThat(detailStep.get("tool")).isEqualTo("get_total_expense");
+        assertThat(detailStep.get("input")).isEqualTo("{}");
     }
 }

@@ -2,6 +2,9 @@ package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.smartfinance.agent.common.UserIdContext;
+import com.smartfinance.agent.dto.AgentSkillDefinition;
+import com.smartfinance.agent.entity.AgentSkill;
+import com.smartfinance.agent.service.AgentSkillService;
 import com.smartfinance.agent.service.SkillInvocationRecordService;
 import lombok.Builder;
 import lombok.Data;
@@ -10,8 +13,10 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -24,13 +29,16 @@ public class ToolRegistry {
 
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private final SkillInvocationRecordService skillInvocationRecordService;
+    private final AgentSkillService agentSkillService;
 
     public ToolRegistry(FinancialTools financialTools,
                         TransactionRecorder transactionRecorder,
                         WebSearchTool webSearchTool,
                         BudgetTool budgetTool,
-                        SkillInvocationRecordService skillInvocationRecordService) {
+                        SkillInvocationRecordService skillInvocationRecordService,
+                        AgentSkillService agentSkillService) {
         this.skillInvocationRecordService = skillInvocationRecordService;
+        this.agentSkillService = agentSkillService;
         register("get_total_expense", "查询指定日期范围内的总支出。input: {startDate: yyyy-MM-dd, endDate: yyyy-MM-dd}",
                 input -> financialTools.getTotalExpense(text(input, "startDate", monthStart()), text(input, "endDate", today())));
         register("get_total_income", "查询指定日期范围内的总收入。input: {startDate: yyyy-MM-dd, endDate: yyyy-MM-dd}",
@@ -78,6 +86,34 @@ public class ToolRegistry {
     }
 
     public String manifest() {
+        return manifest(0L);
+    }
+
+    public String manifest(Long userId) {
+        return agentSkillService.buildEnabledSkillManifest(userId, builtInSkillDefinitions());
+    }
+
+    public Collection<AgentSkillDefinition> builtInSkillDefinitions() {
+        return tools.entrySet().stream()
+                .map(entry -> new AgentSkillDefinition(
+                        entry.getKey(),
+                        entry.getKey(),
+                        entry.getValue().category(),
+                        entry.getValue().description(),
+                        "1.0.0",
+                        "system",
+                        entry.getValue().riskLevel(),
+                        entry.getValue().inputSchemaHint(),
+                        entry.getValue().description(),
+                        List.of(entry.getKey())))
+                .toList();
+    }
+
+    public void syncBuiltInSkills(Long userId) {
+        agentSkillService.syncBuiltInSkills(userId, builtInSkillDefinitions());
+    }
+
+    private String legacyManifest() {
         StringJoiner joiner = new StringJoiner("\n");
         Set<String> categories = new LinkedHashSet<>();
         tools.values().forEach(tool -> categories.add(tool.category()));
@@ -95,6 +131,14 @@ public class ToolRegistry {
     }
 
     public ToolObservation execute(String toolName, JsonNode input, Long userId) {
+        return execute(toolName, input, userId, null);
+    }
+
+    public ToolObservation execute(String toolName, JsonNode input, Long userId, String traceId) {
+        return execute(toolName, input, userId, traceId, null);
+    }
+
+    public ToolObservation execute(String toolName, JsonNode input, Long userId, String traceId, String requestedSkillKey) {
         ToolDefinition tool = tools.get(toolName);
         if (tool == null) {
             return ToolObservation.builder()
@@ -103,33 +147,83 @@ public class ToolRegistry {
                     .rawResult("Unknown tool: " + toolName + ". Available tools: " + String.join(", ", tools.keySet()))
                     .build();
         }
+
+        syncBuiltInSkills(userId);
+        JsonNode safeInput = input == null || input.isNull() ? MissingNodeHolder.EMPTY : input;
+        AgentSkill invocationSkill;
+        try {
+            invocationSkill = agentSkillService.resolveInvocationSkill(userId, toolName, requestedSkillKey);
+        } catch (Exception e) {
+            String skillName = requestedSkillKey == null || requestedSkillKey.isBlank() ? toolName : requestedSkillKey.trim();
+            String summary = "Skill rejected: " + e.getMessage();
+            skillInvocationRecordService.record(userId, traceId, skillName, tool.category(), "UNKNOWN",
+                    tool.riskLevel(), safeInput, false, true, 0L, summary, summary);
+            return ToolObservation.builder()
+                    .success(false)
+                    .summary(summary)
+                    .rawResult(summary)
+                    .build();
+        }
+        SkillRuntimeInfo runtimeInfo = runtimeInfo(invocationSkill, toolName, tool);
+        if (!isRuntimeEnabled(invocationSkill)) {
+            String summary = "Skill disabled: " + runtimeInfo.skillName();
+            skillInvocationRecordService.record(userId, traceId, runtimeInfo.skillName(), runtimeInfo.category(),
+                    runtimeInfo.sourceType(), runtimeInfo.riskLevel(), safeInput, false, true, 0L, summary, summary);
+            return ToolObservation.builder()
+                    .success(false)
+                    .summary(summary)
+                    .rawResult(summary)
+                    .build();
+        }
+
+        long started = System.currentTimeMillis();
         try {
             UserIdContext.set(userId);
-            String result = tool.executor().apply(input == null || input.isNull() ? MissingNodeHolder.EMPTY : input);
-            return ToolObservation.builder()
+            String result = tool.executor().apply(safeInput);
+            long durationMs = System.currentTimeMillis() - started;
+            ToolObservation observation = ToolObservation.builder()
                     .success(true)
                     .summary(compact(result))
                     .rawResult(result)
                     .build();
+            skillInvocationRecordService.record(userId, traceId, runtimeInfo.skillName(), runtimeInfo.category(),
+                    runtimeInfo.sourceType(), runtimeInfo.riskLevel(), safeInput, true, false, durationMs,
+                    observation.getSummary(), result);
+            return observation;
         } catch (Exception e) {
+            long durationMs = System.currentTimeMillis() - started;
+            String summary = "工具执行失败：" + e.getMessage();
+            String raw = e.getClass().getSimpleName() + ": " + e.getMessage();
+            skillInvocationRecordService.record(userId, traceId, runtimeInfo.skillName(), runtimeInfo.category(),
+                    runtimeInfo.sourceType(), runtimeInfo.riskLevel(), safeInput, false, false, durationMs, summary, raw);
             return ToolObservation.builder()
                     .success(false)
-                    .summary("工具执行失败：" + e.getMessage())
-                    .rawResult(e.getClass().getSimpleName() + ": " + e.getMessage())
+                    .summary(summary)
+                    .rawResult(raw)
                     .build();
         } finally {
             UserIdContext.clear();
         }
     }
 
-    public ToolObservation execute(String toolName, JsonNode input, Long userId, String traceId) {
-        ToolDefinition tool = tools.get(toolName);
-        ToolObservation observation = execute(toolName, input, userId);
-        if (tool != null) {
-            skillInvocationRecordService.record(userId, traceId, toolName, tool.category(), input,
-                    observation.isSuccess(), observation.getSummary(), observation.getRawResult());
+    private SkillRuntimeInfo runtimeInfo(AgentSkill invocationSkill, String toolName, ToolDefinition tool) {
+        if (invocationSkill == null) {
+            return new SkillRuntimeInfo(toolName, tool.category(), "BUILT_IN", tool.riskLevel());
         }
-        return observation;
+        return new SkillRuntimeInfo(
+                fallback(invocationSkill.getSkillKey(), toolName),
+                fallback(invocationSkill.getCategory(), tool.category()),
+                fallback(invocationSkill.getSourceType(), "UNKNOWN"),
+                fallback(invocationSkill.getRiskLevel(), tool.riskLevel())
+        );
+    }
+
+    private boolean isRuntimeEnabled(AgentSkill skill) {
+        return skill == null || skill.getEnabled() == null || skill.getEnabled() == 1;
+    }
+
+    private static String fallback(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private void register(String name, String description, Function<JsonNode, String> executor) {
@@ -151,12 +245,12 @@ public class ToolRegistry {
 
     private static String riskFor(String name) {
         if ("record_transaction".equals(name) || "set_budget".equals(name)) {
-            return "需确认";
+            return "REQUIRES_CONFIRMATION";
         }
         if ("search_web".equals(name)) {
-            return "外部信息";
+            return "EXTERNAL_INFORMATION";
         }
-        return "只读";
+        return "READ_ONLY";
     }
 
     private static String schemaFor(String description) {
@@ -209,6 +303,8 @@ public class ToolRegistry {
                                   String riskLevel,
                                   String inputSchemaHint,
                                   Function<JsonNode, String> executor) {}
+
+    private record SkillRuntimeInfo(String skillName, String category, String sourceType, String riskLevel) {}
 
     @Data
     @Builder

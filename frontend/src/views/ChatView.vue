@@ -100,7 +100,17 @@
               <details v-if="msg.steps?.length" class="agent-steps">
                 <summary>
                   <span>{{ stepsSummary(msg.steps) }}</span>
-                  <span class="steps-caret">展开</span>
+                  <span class="steps-actions">
+                    <button
+                      v-if="msg.traceId"
+                      class="trace-link"
+                      type="button"
+                      @click.stop.prevent="openRunTrace(msg)"
+                    >
+                      运行详情
+                    </button>
+                    <span class="steps-caret">展开</span>
+                  </span>
                 </summary>
                 <div class="steps-list">
                   <div
@@ -252,12 +262,73 @@
         <p class="input-hint">智财Agent · 消费分析 + 理财顾问 · 试试说「分析一下我的消费结构」</p>
       </div>
     </div>
+
+    <el-drawer
+      v-model="traceDrawerVisible"
+      title="Agent 运行详情"
+      direction="rtl"
+      size="540px"
+      class="trace-drawer"
+    >
+      <div v-if="traceLoading" class="trace-empty">加载中...</div>
+      <div v-else-if="!traceDetail" class="trace-empty">暂无运行详情</div>
+      <div v-else class="trace-detail">
+        <section class="trace-section trace-overview">
+          <div class="trace-title-row">
+            <h3>{{ statusLabel(traceDetail.status) }}</h3>
+            <span>{{ formatDuration(traceDetail.durationMs) }}</span>
+          </div>
+          <p>{{ traceDetail.query }}</p>
+          <code>{{ traceDetail.traceId }}</code>
+        </section>
+
+        <section class="trace-section">
+          <h3>执行步骤</h3>
+          <div v-if="!traceDetail.steps?.length" class="trace-empty small">暂无步骤</div>
+          <div v-else class="trace-step-list">
+            <article v-for="step in traceDetail.steps" :key="step.stepNumber" class="trace-step-card">
+              <div class="trace-step-head">
+                <span>{{ step.stepNumber }}. {{ step.tool || 'Agent' }}</span>
+                <strong :class="step.success ? 'ok' : 'fail'">{{ stepLabel(step.status) }}</strong>
+              </div>
+              <p>{{ step.summary || '无摘要' }}</p>
+              <details v-if="step.input" class="trace-raw">
+                <summary>输入</summary>
+                <pre>{{ formatRaw(step.input) }}</pre>
+              </details>
+              <details v-if="step.observationSummary || step.errorMessage" class="trace-raw">
+                <summary>{{ step.errorMessage ? '错误' : '观察结果' }}</summary>
+                <pre>{{ step.errorMessage || step.observationSummary }}</pre>
+              </details>
+            </article>
+          </div>
+        </section>
+
+        <section class="trace-section">
+          <h3>Skill 调用</h3>
+          <div v-if="!traceDetail.skillInvocations?.length" class="trace-empty small">暂无 Skill 调用</div>
+          <div v-else class="skill-invocation-list">
+            <article v-for="item in traceDetail.skillInvocations" :key="item.id" class="skill-invocation-card">
+              <div class="trace-step-head">
+                <span>{{ item.skillName }}</span>
+                <strong :class="item.success ? 'ok' : 'fail'">
+                  {{ item.blocked ? '已拦截' : item.success ? '成功' : '失败' }}
+                </strong>
+              </div>
+              <p>{{ item.summary || '无摘要' }}</p>
+              <time>{{ formatTime(item.createdAt) }}</time>
+            </article>
+          </div>
+        </section>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { streamReactChatAPI, getChatHistoryAPI } from '../api/chat'
+import { getAgentRunDetailAPI } from '../api/agentRuns'
 import { getUnreadAlertsAPI } from '../api/alert'
 import { listPendingActionsAPI, confirmPendingActionAPI, cancelPendingActionAPI } from '../api/pendingAction'
 import { ElMessage } from 'element-plus'
@@ -280,6 +351,9 @@ const isTyping = ref(false)
 const historyLoading = ref(true)
 const activeSteps = ref([])
 const activePendingActions = ref([])
+const traceDrawerVisible = ref(false)
+const traceLoading = ref(false)
+const traceDetail = ref(null)
 let typingTimer = null
 let alertTimer = null
 let chatAbortController = null
@@ -337,18 +411,18 @@ function scrollToBottom() {
   })
 }
 
-function typeText(text, index = 0) {
+function typeText(text, traceId, index = 0) {
   if (index < text.length) {
     isTyping.value = true
-    const chunkSize = text[index] === '\n' ? 1 : 6
+    const chunkSize = text[index] === '\n' ? 1 : 28
     const nextIndex = Math.min(index + chunkSize, text.length)
     typingDisplay.value += text.slice(index, nextIndex)
     // 减少滚动频率，提升性能
     if (index % 24 === 0 || text[index] === '\n') {
       scrollToBottom()
     }
-    const delay = text[index] === '\n' ? 24 : 8
-    typingTimer = setTimeout(() => typeText(text, nextIndex), delay)
+    const delay = text[index] === '\n' ? 8 : 1
+    typingTimer = setTimeout(() => typeText(text, traceId, nextIndex), delay)
   } else {
     isTyping.value = false
     const finishedSteps = activeSteps.value.map(step => ({ ...step }))
@@ -356,6 +430,7 @@ function typeText(text, index = 0) {
     messages.value.push({
       role: 'ASSISTANT',
       content: text,
+      traceId,
       steps: finishedSteps,
       pendingActions: finishedPendingActions
     })
@@ -407,8 +482,7 @@ async function handleSend() {
       },
       final: async payload => {
         terminalEventReceived = true
-        await new Promise(resolve => setTimeout(resolve, 200))
-        typeText(payload.response || '')
+        typeText(payload.response || '', payload.traceId)
       },
       pending_actions: payload => {
         applyPendingActions(payload.actions || [])
@@ -604,6 +678,51 @@ onUnmounted(() => {
 watch(messages, () => {
   scrollToBottom()
 }, { deep: true })
+
+async function openRunTrace(message) {
+  if (!message?.traceId) return
+  traceDrawerVisible.value = true
+  traceLoading.value = true
+  traceDetail.value = null
+  try {
+    const res = await getAgentRunDetailAPI(message.traceId)
+    traceDetail.value = res.data || null
+  } catch {
+    ElMessage.error('运行详情加载失败')
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+function statusLabel(status) {
+  if (status === 'COMPLETED') return '已完成'
+  if (status === 'FAILED') return '失败'
+  if (status === 'RUNNING') return '运行中'
+  return status || '未知状态'
+}
+
+function formatDuration(value) {
+  const ms = Number(value || 0)
+  if (!ms) return ''
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatRaw(value) {
+  if (value == null) return ''
+  if (typeof value !== 'string') {
+    return JSON.stringify(value, null, 2)
+  }
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
+}
+
+function formatTime(value) {
+  return value ? String(value).slice(0, 19) : ''
+}
 </script>
 
 <style scoped>
@@ -856,6 +975,29 @@ watch(messages, () => {
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
+}
+
+.steps-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.trace-link {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #fff;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.trace-link:hover {
+  background: #eff6ff;
 }
 
 .agent-steps[open] .steps-caret {
@@ -1322,5 +1464,135 @@ watch(messages, () => {
   display: block;
   content: "";
   margin-top: 2px;
+}
+
+:deep(.trace-drawer .el-drawer__body) {
+  padding: 0;
+  background: #f8fafc;
+}
+
+.trace-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.trace-section {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.trace-section h3 {
+  margin: 0 0 10px;
+  color: #172033;
+  font-size: 15px;
+}
+
+.trace-overview p,
+.trace-step-card p,
+.skill-invocation-card p {
+  margin: 0 0 10px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.trace-overview code {
+  display: block;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  padding: 8px;
+}
+
+.trace-title-row,
+.trace-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trace-title-row span,
+.trace-step-head strong,
+.skill-invocation-card time {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trace-step-list,
+.skill-invocation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trace-step-card,
+.skill-invocation-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.trace-step-head span {
+  overflow: hidden;
+  color: #172033;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-step-head .ok {
+  color: #16a34a;
+}
+
+.trace-step-head .fail {
+  color: #dc2626;
+}
+
+.trace-raw {
+  border-top: 1px solid #e2e8f0;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.trace-raw summary {
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trace-raw pre {
+  overflow: auto;
+  max-height: 220px;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.trace-empty {
+  color: #64748b;
+  font-size: 13px;
+  padding: 18px;
+  text-align: center;
+}
+
+.trace-empty.small {
+  padding: 8px;
 }
 </style>

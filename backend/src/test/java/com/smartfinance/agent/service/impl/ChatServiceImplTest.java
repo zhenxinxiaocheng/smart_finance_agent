@@ -6,6 +6,9 @@ import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.AgentRunService;
 import com.smartfinance.agent.service.PendingActionService;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,12 +41,14 @@ class ChatServiceImplTest {
     private PendingActionService pendingActionService;
     @Mock
     private AgentRunService agentRunService;
+    @Mock
+    private ChatLanguageModel chatModel;
 
     private ChatServiceImpl chatService;
 
     @BeforeEach
     void setUp() {
-        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper, pendingActionService, agentRunService);
+        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper, pendingActionService, agentRunService, chatModel);
     }
 
     @Test
@@ -103,6 +109,20 @@ class ChatServiceImplTest {
         assertEquals("ASSISTANT", history.get(1).get("role"));
         assertEquals("trace-2", history.get(1).get("traceId"));
         assertTrue(history.get(1).get("steps") instanceof List<?>);
+    }
+
+    @Test
+    void chat_shouldUseFastPathForPlainConversation() {
+        when(chatMessageMapper.selectRecentByUser(1L, 12)).thenReturn(List.of());
+        when(chatModel.generate(org.mockito.ArgumentMatchers.<List<dev.langchain4j.data.message.ChatMessage>>any()))
+                .thenReturn(Response.from(AiMessage.from("我是智财Agent。")));
+
+        String response = chatService.chat(1L, "介绍一下你自己");
+
+        assertEquals("我是智财Agent。", response);
+        verify(reactAgentService, never()).run(eq(1L), any(), org.mockito.ArgumentMatchers.<List<ChatMessage>>any(), any());
+        verify(agentRunService).startRun(eq(1L), any(), eq("介绍一下你自己"));
+        verify(agentRunService).completeRun(any(), eq("我是智财Agent。"));
     }
 
     private ChatMessage message(String role, String content) {

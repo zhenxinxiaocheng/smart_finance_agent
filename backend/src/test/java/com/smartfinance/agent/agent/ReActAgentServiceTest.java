@@ -53,7 +53,7 @@ class ReActAgentServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(toolRegistry.manifest()).thenReturn("- get_total_expense: test tool");
+        when(toolRegistry.manifest(1L)).thenReturn("- get_total_expense: test tool");
         when(financialMonitor.hasPendingAlerts(1L)).thenReturn(false);
         lenient().when(financialProfileService.buildAgentContext(1L)).thenReturn("");
         lenient().when(agentMemoryService.buildAgentContext(1L)).thenReturn("");
@@ -74,7 +74,7 @@ class ReActAgentServiceTest {
                 .thenReturn(response("""
                         {"type":"final","answer":"本月目前支出 100 元。"}
                         """));
-        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any(), eq("")))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(true)
                         .summary("支出 100 元")
@@ -86,7 +86,7 @@ class ReActAgentServiceTest {
         assertEquals("本月目前支出 100 元。", result.getFinalAnswer());
         assertEquals(1, result.getSteps().size());
         assertTrue(result.getSteps().get(0).isSuccess());
-        verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L), any());
+        verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L), any(), eq(""));
         verify(analysisRecordMapper).insert(any());
         verify(memoryExtractor).extractAndSave(eq(1L), eq("我这个月花了多少"), any());
     }
@@ -111,7 +111,7 @@ class ReActAgentServiceTest {
         when(chatModel.generate(anyList())).thenReturn(response("""
                 {"type":"action","summary":"继续查询","tool":"get_total_expense","input":{}}
                 """));
-        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any(), eq("")))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(true)
                         .summary("ok")
@@ -133,7 +133,7 @@ class ReActAgentServiceTest {
                 .thenReturn(response("""
                         {"type":"final","answer":"预算工具暂时不可用，我稍后再帮你查。"}
                         """));
-        when(toolRegistry.execute(eq("get_budget_status"), any(), eq(1L), any()))
+        when(toolRegistry.execute(eq("get_budget_status"), any(), eq(1L), any(), eq("")))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(false)
                         .summary("工具执行失败")
@@ -145,6 +145,29 @@ class ReActAgentServiceTest {
         assertFalse(result.getSteps().get(0).isSuccess());
         assertEquals("预算工具暂时不可用，我稍后再帮你查。", result.getFinalAnswer());
     }
+
+    @Test
+    void run_whenActionContainsSkill_shouldPassSkillToToolRegistry() {
+        when(chatModel.generate(anyList()))
+                .thenReturn(response("""
+                        {"type":"action","summary":"按月度复盘技能查询","skill":"monthly-review","tool":"get_monthly_summary","input":{"year":2026,"month":6}}
+                        """))
+                .thenReturn(response("""
+                        {"type":"final","answer":"6 月复盘完成。"}
+                        """));
+        when(toolRegistry.execute(eq("get_monthly_summary"), any(), eq(1L), any(), eq("monthly-review")))
+                .thenReturn(ToolRegistry.ToolObservation.builder()
+                        .success(true)
+                        .summary("monthly summary")
+                        .rawResult("monthly summary")
+                        .build());
+
+        var result = service.run(1L, "按复盘技能看看 6 月");
+
+        assertEquals("6 月复盘完成。", result.getFinalAnswer());
+        verify(toolRegistry).execute(eq("get_monthly_summary"), any(), eq(1L), any(), eq("monthly-review"));
+    }
+
 
     @Test
     void run_withRecentHistory_shouldInjectHistoryAndKeepCurrentMessageOnce() {
@@ -276,7 +299,7 @@ class ReActAgentServiceTest {
                 .thenReturn(response("""
                         {"type":"final","answer":"已查到"}
                         """));
-        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any()))
+        when(toolRegistry.execute(eq("get_total_expense"), any(), eq(1L), any(), eq("")))
                 .thenReturn(ToolRegistry.ToolObservation.builder()
                         .success(true)
                         .summary("ok")

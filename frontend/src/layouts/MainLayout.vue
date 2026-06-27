@@ -91,6 +91,7 @@ const navItems = [
   { path: '/statistics', label: '统计', icon: 'Odometer' },
   { path: '/transactions', label: '消费记录', icon: 'List' },
   { path: '/profile', label: '财务画像', icon: 'User' },
+  { path: '/skills', label: 'Agent 技能', icon: 'Operation' },
   { path: '/chat', label: '智能助手', icon: 'ChatDotSquare' }
 ]
 

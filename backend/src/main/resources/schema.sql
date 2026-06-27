@@ -57,6 +57,35 @@ CREATE TABLE IF NOT EXISTS `agent_memory`
 
 ALTER TABLE `agent_memory` MODIFY COLUMN `memory_value` TEXT NOT NULL COMMENT 'Memory value';
 
+CREATE TABLE IF NOT EXISTS `agent_skill`
+(
+    `id`               BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`          BIGINT       NOT NULL COMMENT 'User ID',
+    `skill_key`        VARCHAR(120) NOT NULL COMMENT 'Stable skill key',
+    `name`             VARCHAR(120) NOT NULL COMMENT 'Display name',
+    `description`      VARCHAR(500) NULL     COMMENT 'Skill description',
+    `version`          VARCHAR(50)  NULL     COMMENT 'Skill version',
+    `author`           VARCHAR(120) NULL     COMMENT 'Skill author',
+    `category`         VARCHAR(80)  NULL     COMMENT 'Skill category',
+    `risk_level`       VARCHAR(50)  NULL     COMMENT 'READ_ONLY/EXTERNAL_INFORMATION/REQUIRES_CONFIRMATION',
+    `input_schema`     VARCHAR(500) NULL     COMMENT 'Input schema hint',
+    `trigger_text`     VARCHAR(500) NULL     COMMENT 'Trigger hint',
+    `instruction_text` TEXT         NULL     COMMENT 'SKILL.md content',
+    `bound_tools`      VARCHAR(500) NULL     COMMENT 'Comma-separated safe bound tools',
+    `source_type`      VARCHAR(50)  NOT NULL COMMENT 'BUILT_IN/GITHUB/LOCAL_ZIP/MARKETPLACE/URL/PRIVATE_REPO',
+    `source_uri`       VARCHAR(500) NOT NULL COMMENT 'Channel-neutral source URI',
+    `source_version`   VARCHAR(100) NULL     COMMENT 'Commit/ref/version',
+    `enabled`          TINYINT      NOT NULL DEFAULT 1 COMMENT 'Enabled flag',
+    `built_in`         TINYINT      NOT NULL DEFAULT 0 COMMENT 'Built-in flag',
+    `deleted`          TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    `created_at`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `uk_agent_skill_source` (`user_id`, `source_type`, `source_uri`(180), `skill_key`),
+    INDEX `idx_agent_skill_user` (`user_id`, `enabled`, `deleted`),
+    CONSTRAINT `fk_agent_skill_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Installable Agent skills';
+
 CREATE TABLE IF NOT EXISTS `skill_invocation_record`
 (
     `id`         BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
@@ -64,8 +93,12 @@ CREATE TABLE IF NOT EXISTS `skill_invocation_record`
     `trace_id`   VARCHAR(64)  NULL     COMMENT 'ReAct trace ID',
     `skill_name` VARCHAR(100) NOT NULL COMMENT 'Skill/tool name',
     `category`   VARCHAR(50)  NULL     COMMENT 'Skill category',
+    `source_type` VARCHAR(50) NULL     COMMENT 'Skill source type',
+    `risk_level` VARCHAR(50)  NULL     COMMENT 'Skill risk level',
     `input`      TEXT         NULL     COMMENT 'Input JSON',
     `success`    TINYINT      NOT NULL DEFAULT 0 COMMENT 'Success flag',
+    `blocked`    TINYINT      NOT NULL DEFAULT 0 COMMENT 'Blocked by policy flag',
+    `duration_ms` BIGINT      NULL     COMMENT 'Execution duration in milliseconds',
     `summary`    VARCHAR(500) NULL     COMMENT 'Observation summary',
     `raw_result` TEXT         NULL     COMMENT 'Raw observation',
     `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
@@ -74,6 +107,11 @@ CREATE TABLE IF NOT EXISTS `skill_invocation_record`
     INDEX `idx_skill_user` (`user_id`, `skill_name`),
     CONSTRAINT `fk_skill_invocation_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent skill invocation records';
+
+ALTER TABLE `skill_invocation_record` ADD COLUMN `source_type` VARCHAR(50) NULL COMMENT 'Skill source type';
+ALTER TABLE `skill_invocation_record` ADD COLUMN `risk_level` VARCHAR(50) NULL COMMENT 'Skill risk level';
+ALTER TABLE `skill_invocation_record` ADD COLUMN `blocked` TINYINT NOT NULL DEFAULT 0 COMMENT 'Blocked by policy flag';
+ALTER TABLE `skill_invocation_record` ADD COLUMN `duration_ms` BIGINT NULL COMMENT 'Execution duration in milliseconds';
 CREATE TABLE IF NOT EXISTS `agent_run`
 (
     `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',

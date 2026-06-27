@@ -85,7 +85,7 @@ public class ReActAgentService {
         boolean usedTool = false;
 
         listener.onRunStarted(traceId);
-        messages.add(SystemMessage.from(systemPromptV2()));
+        messages.add(SystemMessage.from(systemPromptV2(userId)));
 
         if (financialMonitor.hasPendingAlerts(userId)) {
             String pending = financialMonitor.getPendingMessage(userId);
@@ -143,11 +143,12 @@ public class ReActAgentService {
             }
 
             String tool = text(decision, "tool");
+            String skill = text(decision, "skill");
             String summary = sanitizeSummary(text(decision, "summary"), tool);
             JsonNode input = decision.get("input");
 
             listener.onStepStarted(stepNumber, summary, tool);
-            ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId, traceId);
+            ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId, traceId, skill);
             usedTool = true;
             listener.onStepFinished(stepNumber, summary, tool, toJson(input), observation.getSummary(),
                     observation.isSuccess(), observation.isSuccess() ? null : observation.getSummary());
@@ -375,7 +376,7 @@ public class ReActAgentService {
                 || lower.contains("chinese");
     }
 
-    private String systemPromptV2() {
+    private String systemPromptV2(Long userId) {
         LocalDate now = LocalDate.now();
         return """
                 你具备短期对话记忆能力，可以参考最近的用户消息和助手最终回复来理解上下文。
@@ -387,12 +388,14 @@ public class ReActAgentService {
 
                 可输出两种 JSON：
                 1) 调用工具：
-                {"type":"action","summary":"给用户看的安全步骤摘要","tool":"工具名","input":{...}}
+                {"type":"action","summary":"给用户看的安全步骤摘要","skill":"可选Skill名","tool":"工具名","input":{...}}
                 2) 最终回答：
                 {"type":"final","answer":"给用户看的最终回答"}
 
                 规则：
                 - summary 只能写安全摘要，例如“正在查询本月支出”，不要写内部推理或敏感信息。
+                - 如果你是根据某个 Skill 的说明决定调用工具，必须在 action JSON 中写入 "skill":"该 Skill 的 skill_key"；如果只是直接使用内置工具，可以省略 skill。
+                - skill 不能替代 tool；实际执行仍只能调用 tool 字段里的安全工具。
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案默认用中文，简洁自然，默认不超过 500 字；如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言。
@@ -400,9 +403,9 @@ public class ReActAgentService {
                 - 股票、基金、行业问题可以给出“偏看好、偏谨慎、可观察”等倾向性建议，但必须说明风险，不能承诺收益，不能使用“稳赚、一定上涨、立即买入”等确定性表达。
                 - 涉及实时行情、新闻、政策、汇率、上市公司近期动态时，必须先调用 search_web，不要凭空编造实时信息。
 
-                可用工具：
+                可用 Skills：
                 %s
-                """.formatted(now, toolRegistry.manifest());
+                """.formatted(now, toolRegistry.manifest(userId));
     }
 
     private String systemPrompt() {
@@ -417,7 +420,7 @@ public class ReActAgentService {
 
                 可输出两种 JSON：
                 1) 调用工具：
-                {"type":"action","summary":"给用户看的安全步骤摘要","tool":"工具名","input":{...}}
+                {"type":"action","summary":"给用户看的安全步骤摘要","skill":"可选Skill名","tool":"工具名","input":{...}}
                 2) 最终回答：
                 {"type":"final","answer":"给用户看的最终中文回答"}
 
