@@ -3,6 +3,8 @@ package com.smartfinance.agent.service.impl;
 import com.smartfinance.agent.entity.PendingAction;
 import com.smartfinance.agent.entity.Transaction;
 import com.smartfinance.agent.mapper.PendingActionMapper;
+import com.smartfinance.agent.dto.CustomSkillDraftRequest;
+import com.smartfinance.agent.service.AgentSkillService;
 import com.smartfinance.agent.service.BudgetService;
 import com.smartfinance.agent.service.TransactionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,6 +34,8 @@ class PendingActionServiceImplTest {
     private TransactionService transactionService;
     @Mock
     private BudgetService budgetService;
+    @Mock
+    private AgentSkillService agentSkillService;
 
     private PendingActionServiceImpl pendingActionService;
 
@@ -41,6 +45,7 @@ class PendingActionServiceImplTest {
                 pendingActionMapper,
                 transactionService,
                 budgetService,
+                agentSkillService,
                 new ObjectMapper()
         );
     }
@@ -105,5 +110,32 @@ class PendingActionServiceImplTest {
 
         assertThat(confirmed.getStatus()).isEqualTo("CONFIRMED");
         verify(budgetService).setBudget(1L, "餐饮", "2026-06", new BigDecimal("800.00"), null);
+    }
+    @Test
+    void prepareCustomSkill_shouldCreatePendingAction_thenConfirmInstallsSkill() {
+        AtomicReference<PendingAction> savedAction = new AtomicReference<>();
+        doAnswer(invocation -> {
+            PendingAction action = invocation.getArgument(0);
+            action.setId(30L);
+            savedAction.set(action);
+            return 1;
+        }).when(pendingActionMapper).insert(any(PendingAction.class));
+        when(pendingActionMapper.selectById(30L)).thenAnswer(invocation -> savedAction.get());
+        CustomSkillDraftRequest request = new CustomSkillDraftRequest();
+        request.setName("Stock Search First");
+        request.setDescription("Search before stock analysis");
+        request.setTriggerText("stock analysis");
+        request.setInstructionText("Always search web first.");
+        request.setBoundTools(java.util.List.of("search_web"));
+
+        PendingAction prepared = pendingActionService.prepareCustomSkill(1L, request);
+
+        assertThat(prepared.getActionType()).isEqualTo("INSTALL_CUSTOM_SKILL");
+        verify(agentSkillService, never()).installCustomSkill(any(), any());
+
+        PendingAction confirmed = pendingActionService.confirm(1L, 30L);
+
+        assertThat(confirmed.getStatus()).isEqualTo("CONFIRMED");
+        verify(agentSkillService).installCustomSkill(org.mockito.Mockito.eq(1L), any(CustomSkillDraftRequest.class));
     }
 }

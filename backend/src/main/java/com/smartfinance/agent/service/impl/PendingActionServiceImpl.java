@@ -3,8 +3,10 @@ package com.smartfinance.agent.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.dto.CustomSkillDraftRequest;
 import com.smartfinance.agent.entity.PendingAction;
 import com.smartfinance.agent.mapper.PendingActionMapper;
+import com.smartfinance.agent.service.AgentSkillService;
 import com.smartfinance.agent.service.BudgetService;
 import com.smartfinance.agent.service.PendingActionService;
 import com.smartfinance.agent.service.TransactionService;
@@ -27,15 +29,18 @@ public class PendingActionServiceImpl implements PendingActionService {
     private final PendingActionMapper pendingActionMapper;
     private final TransactionService transactionService;
     private final BudgetService budgetService;
+    private final AgentSkillService agentSkillService;
     private final ObjectMapper objectMapper;
 
     public PendingActionServiceImpl(PendingActionMapper pendingActionMapper,
                                     TransactionService transactionService,
                                     BudgetService budgetService,
+                                    AgentSkillService agentSkillService,
                                     ObjectMapper objectMapper) {
         this.pendingActionMapper = pendingActionMapper;
         this.transactionService = transactionService;
         this.budgetService = budgetService;
+        this.agentSkillService = agentSkillService;
         this.objectMapper = objectMapper;
     }
 
@@ -47,7 +52,7 @@ public class PendingActionServiceImpl implements PendingActionService {
                                             String description,
                                             LocalDate transactionDate) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("amount", amount);
+        payload.put("amount", amount == null ? "0" : amount.toPlainString());
         payload.put("type", type);
         payload.put("category", category);
         payload.put("description", description);
@@ -70,13 +75,29 @@ public class PendingActionServiceImpl implements PendingActionService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("category", category);
         payload.put("month", month);
-        payload.put("amount", amount);
+        payload.put("amount", amount == null ? "0" : amount.toPlainString());
 
         PendingAction action = new PendingAction();
         action.setUserId(userId);
         action.setActionType("SET_BUDGET");
         action.setTitle("确认设置预算");
         action.setSummary("%s · %s · %s 元".formatted(month, category, amount));
+        action.setPayload(toJson(payload));
+        action.setStatus(STATUS_PENDING);
+        pendingActionMapper.insert(action);
+        return action;
+    }
+
+    @Override
+    public PendingAction prepareCustomSkill(Long userId, CustomSkillDraftRequest request) {
+        Map<String, Object> payload = objectMapper.convertValue(request, new TypeReference<>() {});
+        PendingAction action = new PendingAction();
+        action.setUserId(userId);
+        action.setActionType("INSTALL_CUSTOM_SKILL");
+        action.setTitle("确认安装自定义 Skill");
+        action.setSummary("%s · %s".formatted(
+                defaultText(request.getName(), "Custom Skill"),
+                defaultText(request.getDescription(), "用户通过对话创建的 Skill")));
         action.setPayload(toJson(payload));
         action.setStatus(STATUS_PENDING);
         pendingActionMapper.insert(action);
@@ -95,22 +116,29 @@ public class PendingActionServiceImpl implements PendingActionService {
     @Transactional
     public PendingAction confirm(Long userId, Long actionId) {
         PendingAction action = loadPendingAction(userId, actionId);
-        Map<String, String> payload = readPayload(action.getPayload());
+        Map<String, Object> payload = readPayload(action.getPayload());
+        if ("INSTALL_CUSTOM_SKILL".equals(action.getActionType())) {
+            CustomSkillDraftRequest request = objectMapper.convertValue(payload, CustomSkillDraftRequest.class);
+            agentSkillService.installCustomSkill(userId, request);
+            action.setStatus(STATUS_CONFIRMED);
+            pendingActionMapper.updateById(action);
+            return action;
+        }
         if ("RECORD_TRANSACTION".equals(action.getActionType())) {
             transactionService.add(
                     userId,
-                    new BigDecimal(payload.get("amount")),
-                    payload.get("type"),
-                    payload.get("category"),
-                    payload.get("description"),
-                    LocalDate.parse(payload.get("transactionDate"))
+                    new BigDecimal(text(payload, "amount")),
+                    text(payload, "type"),
+                    text(payload, "category"),
+                    text(payload, "description"),
+                    LocalDate.parse(text(payload, "transactionDate"))
             );
         } else if ("SET_BUDGET".equals(action.getActionType())) {
             budgetService.setBudget(
                     userId,
-                    payload.get("category"),
-                    payload.get("month"),
-                    new BigDecimal(payload.get("amount")),
+                    text(payload, "category"),
+                    text(payload, "month"),
+                    new BigDecimal(text(payload, "amount")),
                     null
             );
         } else {
@@ -141,7 +169,7 @@ public class PendingActionServiceImpl implements PendingActionService {
         return action;
     }
 
-    private Map<String, String> readPayload(String payload) {
+    private Map<String, Object> readPayload(String payload) {
         try {
             return objectMapper.readValue(payload, new TypeReference<>() {});
         } catch (Exception e) {
@@ -159,5 +187,10 @@ public class PendingActionServiceImpl implements PendingActionService {
 
     private static String defaultText(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String text(Map<String, Object> payload, String key) {
+        Object value = payload.get(key);
+        return value == null ? "" : String.valueOf(value);
     }
 }

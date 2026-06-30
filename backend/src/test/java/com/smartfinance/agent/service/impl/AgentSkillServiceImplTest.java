@@ -3,6 +3,7 @@ package com.smartfinance.agent.service.impl;
 import com.smartfinance.agent.agent.SkillPackageParser;
 import com.smartfinance.agent.dto.AgentSkillDefinition;
 import com.smartfinance.agent.dto.AgentSkillInstallRequest;
+import com.smartfinance.agent.dto.CustomSkillDraftRequest;
 import com.smartfinance.agent.dto.ParsedSkillPackage;
 import com.smartfinance.agent.entity.AgentSkill;
 import com.smartfinance.agent.mapper.AgentSkillMapper;
@@ -134,6 +135,42 @@ class AgentSkillServiceImplTest {
         assertThatThrownBy(() -> service.resolveInvocationSkill(1L, "search_web", "pdf-helper"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not bound");
+    }
+
+    @Test
+    void resolveInvocationSkill_shouldFallbackToToolWhenRequestedSkillIsUnknown() {
+        AgentSkill builtInSearch = skill("search_web", "Web Search", 1);
+        builtInSearch.setSourceType("BUILT_IN");
+        builtInSearch.setBoundTools("search_web");
+        when(mapper.selectByUserAndKey(1L, "联网搜索")).thenReturn(null);
+        when(mapper.selectByUserAndKey(1L, "search_web")).thenReturn(builtInSearch);
+
+        AgentSkill resolved = service.resolveInvocationSkill(1L, "search_web", "联网搜索");
+
+        assertThat(resolved.getSkillKey()).isEqualTo("search_web");
+    }
+
+    @Test
+    void installCustomSkill_shouldUpsertCustomSkillAndFilterUnknownTools() {
+        CustomSkillDraftRequest request = new CustomSkillDraftRequest();
+        request.setSkillKey("stock-search-first");
+        request.setName("Stock Search First");
+        request.setDescription("Search before stock analysis");
+        request.setTriggerText("stock questions");
+        request.setInstructionText("Always call search_web before giving stock opinions.");
+        request.setBoundTools(List.of("search_web", "unsafe_tool"));
+        request.setCategory("Investing");
+        request.setRiskLevel("READ_ONLY");
+        when(mapper.selectByUserAndSource(1L, "CUSTOM", "custom:stock-search-first", "stock-search-first"))
+                .thenReturn(null);
+
+        AgentSkill installed = service.installCustomSkill(1L, request);
+
+        assertThat(installed.getSourceType()).isEqualTo("CUSTOM");
+        assertThat(installed.getSourceUri()).isEqualTo("custom:stock-search-first");
+        assertThat(installed.getBoundTools()).isEqualTo("search_web");
+        assertThat(installed.getRiskLevel()).isEqualTo("EXTERNAL_INFORMATION");
+        verify(mapper).insert(any(AgentSkill.class));
     }
 
     private AgentSkill skill(String key, String name, int enabled) {

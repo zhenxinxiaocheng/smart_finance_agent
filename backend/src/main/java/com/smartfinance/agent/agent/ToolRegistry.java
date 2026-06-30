@@ -17,6 +17,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -26,6 +27,41 @@ import java.util.function.Function;
 public class ToolRegistry {
 
     private static final DateTimeFormatter MONTH_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM");
+    private static final Map<String, String> TOOL_ALIASES = Map.ofEntries(
+            Map.entry("web_search", "search_web"),
+            Map.entry("search", "search_web"),
+            Map.entry("\u8054\u7f51\u641c\u7d22", "search_web"),
+            Map.entry("\u7f51\u7edc\u641c\u7d22", "search_web"),
+            Map.entry("\u5b9e\u65f6\u641c\u7d22", "search_web"),
+            Map.entry("\u641c\u7d22", "search_web"),
+            Map.entry("\u67e5\u8be2\u603b\u652f\u51fa", "get_total_expense"),
+            Map.entry("\u603b\u652f\u51fa", "get_total_expense"),
+            Map.entry("\u67e5\u8be2\u603b\u6536\u5165", "get_total_income"),
+            Map.entry("\u603b\u6536\u5165", "get_total_income"),
+            Map.entry("\u652f\u51fa\u5206\u7c7b", "get_expense_by_category"),
+            Map.entry("\u5206\u7c7b\u652f\u51fa", "get_expense_by_category"),
+            Map.entry("\u6700\u8fd1\u4ea4\u6613", "get_recent_transactions"),
+            Map.entry("\u4ea4\u6613\u8bb0\u5f55", "get_recent_transactions"),
+            Map.entry("\u6708\u5ea6\u603b\u7ed3", "get_monthly_summary"),
+            Map.entry("\u6708\u5ea6\u6458\u8981", "get_monthly_summary"),
+            Map.entry("\u8d22\u52a1\u6982\u89c8", "get_finance_overview"),
+            Map.entry("\u5e94\u6025\u91d1\u5206\u6790", "analyze_emergency_fund"),
+            Map.entry("\u50a8\u84c4\u7387\u8bc4\u4f30", "evaluate_savings_rate"),
+            Map.entry("\u5f02\u5e38\u68c0\u6d4b", "detect_anomalies"),
+            Map.entry("\u6d88\u8d39\u5bf9\u6807", "compare_with_benchmark"),
+            Map.entry("\u9884\u7b97\u89c4\u5212", "budget_planning_wizard"),
+            Map.entry("\u7a0e\u52a1\u4f30\u7b97", "tax_estimation"),
+            Map.entry("\u5206\u7c7b\u5efa\u8bae", "suggest_category"),
+            Map.entry("\u8bb0\u8d26", "record_transaction"),
+            Map.entry("\u8bb0\u5f55\u4ea4\u6613", "record_transaction"),
+            Map.entry("\u8bbe\u7f6e\u9884\u7b97", "set_budget"),
+            Map.entry("\u9884\u7b97\u72b6\u6001", "get_budget_status"),
+            Map.entry("\u9884\u7b97\u9884\u8b66", "check_alerts"),
+            Map.entry("\u9884\u8b66\u5386\u53f2", "get_alert_history"),
+            Map.entry("\u521b\u5efaskill", "create_custom_skill"),
+            Map.entry("\u81ea\u5b9a\u4e49skill", "create_custom_skill"),
+            Map.entry("\u505a\u6210skill", "create_custom_skill")
+    );
 
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private final SkillInvocationRecordService skillInvocationRecordService;
@@ -35,6 +71,7 @@ public class ToolRegistry {
                         TransactionRecorder transactionRecorder,
                         WebSearchTool webSearchTool,
                         BudgetTool budgetTool,
+                        CustomSkillTool customSkillTool,
                         SkillInvocationRecordService skillInvocationRecordService,
                         AgentSkillService agentSkillService) {
         this.skillInvocationRecordService = skillInvocationRecordService;
@@ -83,6 +120,15 @@ public class ToolRegistry {
                 input -> budgetTool.getAlertHistory(integer(input, "limit", 5)));
         register("search_web", "搜索实时财经、汇率、市场新闻。input: {query}",
                 input -> webSearchTool.searchWeb(text(input, "query", "")));
+        register("create_custom_skill", "Create a user-defined Skill draft. input: {name, description, triggerText, instructionText, boundTools, category, riskLevel}",
+                input -> customSkillTool.createCustomSkill(
+                        text(input, "name", ""),
+                        text(input, "description", ""),
+                        text(input, "triggerText", ""),
+                        text(input, "instructionText", ""),
+                        stringList(input, "boundTools"),
+                        text(input, "category", "Custom"),
+                        text(input, "riskLevel", "READ_ONLY")));
     }
 
     public String manifest() {
@@ -139,7 +185,8 @@ public class ToolRegistry {
     }
 
     public ToolObservation execute(String toolName, JsonNode input, Long userId, String traceId, String requestedSkillKey) {
-        ToolDefinition tool = tools.get(toolName);
+        String normalizedToolName = canonicalToolName(toolName);
+        ToolDefinition tool = tools.get(normalizedToolName);
         if (tool == null) {
             return ToolObservation.builder()
                     .success(false)
@@ -152,7 +199,7 @@ public class ToolRegistry {
         JsonNode safeInput = input == null || input.isNull() ? MissingNodeHolder.EMPTY : input;
         AgentSkill invocationSkill;
         try {
-            invocationSkill = agentSkillService.resolveInvocationSkill(userId, toolName, requestedSkillKey);
+            invocationSkill = agentSkillService.resolveInvocationSkill(userId, normalizedToolName, requestedSkillKey);
         } catch (Exception e) {
             String skillName = requestedSkillKey == null || requestedSkillKey.isBlank() ? toolName : requestedSkillKey.trim();
             String summary = "Skill rejected: " + e.getMessage();
@@ -164,7 +211,7 @@ public class ToolRegistry {
                     .rawResult(summary)
                     .build();
         }
-        SkillRuntimeInfo runtimeInfo = runtimeInfo(invocationSkill, toolName, tool);
+        SkillRuntimeInfo runtimeInfo = runtimeInfo(invocationSkill, normalizedToolName, tool);
         if (!isRuntimeEnabled(invocationSkill)) {
             String summary = "Skill disabled: " + runtimeInfo.skillName();
             skillInvocationRecordService.record(userId, traceId, runtimeInfo.skillName(), runtimeInfo.category(),
@@ -206,6 +253,17 @@ public class ToolRegistry {
         }
     }
 
+    public String canonicalToolName(String toolName) {
+        if (toolName == null || toolName.isBlank()) {
+            return "";
+        }
+        String trimmed = toolName.trim();
+        if (tools.containsKey(trimmed)) {
+            return trimmed;
+        }
+        return TOOL_ALIASES.getOrDefault(trimmed.toLowerCase(Locale.ROOT), trimmed);
+    }
+
     private SkillRuntimeInfo runtimeInfo(AgentSkill invocationSkill, String toolName, ToolDefinition tool) {
         if (invocationSkill == null) {
             return new SkillRuntimeInfo(toolName, tool.category(), "BUILT_IN", tool.riskLevel());
@@ -231,6 +289,9 @@ public class ToolRegistry {
     }
 
     private static String categoryFor(String name) {
+        if (name.contains("skill")) {
+            return "Skill 管理";
+        }
         if (name.contains("budget") || name.contains("alert")) {
             return "预算管理";
         }
@@ -244,6 +305,9 @@ public class ToolRegistry {
     }
 
     private static String riskFor(String name) {
+        if ("create_custom_skill".equals(name)) {
+            return "REQUIRES_CONFIRMATION";
+        }
         if ("record_transaction".equals(name) || "set_budget".equals(name)) {
             return "REQUIRES_CONFIRMATION";
         }
@@ -278,6 +342,31 @@ public class ToolRegistry {
         } catch (Exception e) {
             return defaultValue;
         }
+    }
+
+    private static List<String> stringList(JsonNode input, String field) {
+        JsonNode node = input.get(field);
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            List<String> values = new java.util.ArrayList<>();
+            node.forEach(item -> {
+                String value = item.asText("");
+                if (!value.isBlank()) {
+                    values.add(value);
+                }
+            });
+            return values;
+        }
+        String value = node.asText("");
+        if (value.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .toList();
     }
 
     private static String today() {

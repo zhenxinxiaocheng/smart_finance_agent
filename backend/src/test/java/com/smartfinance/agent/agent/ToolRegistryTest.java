@@ -27,6 +27,8 @@ class ToolRegistryTest {
     @Mock
     private BudgetTool budgetTool;
     @Mock
+    private CustomSkillTool customSkillTool;
+    @Mock
     private SkillInvocationRecordService skillInvocationRecordService;
     @Mock
     private AgentSkillService agentSkillService;
@@ -35,7 +37,7 @@ class ToolRegistryTest {
 
     @BeforeEach
     void setUp() {
-        registry = new ToolRegistry(financialTools, transactionRecorder, webSearchTool, budgetTool,
+        registry = new ToolRegistry(financialTools, transactionRecorder, webSearchTool, budgetTool, customSkillTool,
                 skillInvocationRecordService, agentSkillService);
     }
 
@@ -112,6 +114,37 @@ class ToolRegistryTest {
         verify(skillInvocationRecordService).record(eq(1L), eq("trace-rejected"),
                 eq("pdf-helper"), eq("联网搜索"), eq("UNKNOWN"), eq("EXTERNAL_INFORMATION"),
                 any(), eq(false), eq(true), eq(0L), any(), any());
+    }
+
+    @Test
+    void execute_shouldNormalizeChineseToolAlias() {
+        when(agentSkillService.resolveInvocationSkill(1L, "search_web", null))
+                .thenReturn(builtInSkill("search_web", "Web Search", "BUILT_IN", "EXTERNAL_INFORMATION", 1));
+        when(webSearchTool.searchWeb(any())).thenReturn("market news");
+
+        ToolRegistry.ToolObservation observation =
+                registry.execute("\u8054\u7f51\u641c\u7d22", null, 1L, "trace-alias");
+
+        assertThat(observation.isSuccess()).isTrue();
+        verify(skillInvocationRecordService).record(eq(1L), eq("trace-alias"),
+                eq("search_web"), eq("Web Search"), eq("BUILT_IN"), eq("EXTERNAL_INFORMATION"),
+                any(), eq(true), eq(false), any(Long.class), any(), eq("market news"));
+    }
+
+    @Test
+    void execute_createCustomSkill_shouldCreatePendingActionAndRecordInvocation() {
+        when(agentSkillService.resolveInvocationSkill(1L, "create_custom_skill", null))
+                .thenReturn(builtInSkill("create_custom_skill", "Skill 管理", "BUILT_IN", "REQUIRES_CONFIRMATION", 1));
+        when(customSkillTool.createCustomSkill(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn("pending custom skill");
+
+        ToolRegistry.ToolObservation observation =
+                registry.execute("create_custom_skill", null, 1L, "trace-custom");
+
+        assertThat(observation.isSuccess()).isTrue();
+        verify(skillInvocationRecordService).record(eq(1L), eq("trace-custom"),
+                eq("create_custom_skill"), eq("Skill 管理"), eq("BUILT_IN"), eq("REQUIRES_CONFIRMATION"),
+                any(), eq(true), eq(false), any(Long.class), any(), eq("pending custom skill"));
     }
 
     private AgentSkill builtInSkill(String key, String category, String sourceType, String riskLevel, int enabled) {

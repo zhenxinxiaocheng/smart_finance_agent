@@ -2,6 +2,7 @@ package com.smartfinance.agent.service;
 
 import com.smartfinance.agent.dto.AgentSkillDefinition;
 import com.smartfinance.agent.dto.AgentSkillInstallRequest;
+import com.smartfinance.agent.dto.CustomSkillDraftRequest;
 import com.smartfinance.agent.entity.AgentSkill;
 
 import java.util.Collection;
@@ -24,6 +25,8 @@ public interface AgentSkillService {
     AgentSkill detail(Long userId, Long id);
 
     AgentSkill install(Long userId, AgentSkillInstallRequest request);
+
+    AgentSkill installCustomSkill(Long userId, CustomSkillDraftRequest request);
 
     AgentSkill setEnabled(Long userId, Long id, boolean enabled);
 

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.smartfinance.agent.agent.SkillPackageParser;
 import com.smartfinance.agent.dto.AgentSkillDefinition;
 import com.smartfinance.agent.dto.AgentSkillInstallRequest;
+import com.smartfinance.agent.dto.CustomSkillDraftRequest;
 import com.smartfinance.agent.dto.ParsedSkillPackage;
 import com.smartfinance.agent.entity.AgentSkill;
 import com.smartfinance.agent.mapper.AgentSkillMapper;
@@ -22,6 +23,28 @@ public class AgentSkillServiceImpl implements AgentSkillService {
 
     private static final String BUILT_IN_SOURCE = "BUILT_IN";
     private static final String BUILT_IN_URI = "builtin";
+    private static final String CUSTOM_SOURCE = "CUSTOM";
+    private static final List<String> SAFE_BOUND_TOOLS = List.of(
+            "get_total_expense",
+            "get_total_income",
+            "get_expense_by_category",
+            "get_recent_transactions",
+            "get_monthly_summary",
+            "get_finance_overview",
+            "analyze_emergency_fund",
+            "evaluate_savings_rate",
+            "detect_anomalies",
+            "compare_with_benchmark",
+            "budget_planning_wizard",
+            "tax_estimation",
+            "suggest_category",
+            "record_transaction",
+            "set_budget",
+            "get_budget_status",
+            "check_alerts",
+            "get_alert_history",
+            "search_web"
+    );
 
     private final AgentSkillMapper mapper;
     private final SkillPackageParser parser;
@@ -123,7 +146,10 @@ public class AgentSkillServiceImpl implements AgentSkillService {
             if (requestedSkillKey == null || requestedSkillKey.isBlank()) {
                 return null;
             }
-            throw new IllegalArgumentException("Skill not found: " + skillKey);
+            skill = mapper.selectByUserAndKey(userId, toolName.trim());
+            if (skill == null) {
+                return null;
+            }
         }
         if (value(skill.getDeleted()) == 1) {
             throw new IllegalArgumentException("Skill deleted: " + skillKey);
@@ -191,6 +217,38 @@ public class AgentSkillServiceImpl implements AgentSkillService {
     }
 
     @Override
+    public AgentSkill installCustomSkill(Long userId, CustomSkillDraftRequest request) {
+        String skillKey = normalizeSkillKey(request.getSkillKey(), request.getName());
+        String sourceUri = "custom:" + skillKey;
+        AgentSkill existing = mapper.selectByUserAndSource(userId, CUSTOM_SOURCE, sourceUri, skillKey);
+        AgentSkill skill = existing == null ? new AgentSkill() : existing;
+        skill.setUserId(userId);
+        skill.setSkillKey(skillKey);
+        skill.setName(clean(request.getName(), skillKey));
+        skill.setDescription(clean(request.getDescription(), ""));
+        skill.setVersion("1.0.0");
+        skill.setAuthor("user");
+        skill.setCategory(clean(request.getCategory(), "Custom"));
+        skill.setRiskLevel(normalizeRisk(request.getRiskLevel(), request.getBoundTools()));
+        skill.setInputSchema("{}");
+        skill.setTriggerText(clean(request.getTriggerText(), ""));
+        skill.setInstructionText(buildInstructionText(request));
+        skill.setBoundTools(joinTools(normalizeBoundTools(request.getBoundTools())));
+        skill.setSourceType(CUSTOM_SOURCE);
+        skill.setSourceUri(sourceUri);
+        skill.setSourceVersion("user-defined");
+        skill.setBuiltIn(0);
+        skill.setDeleted(0);
+        skill.setEnabled(1);
+        if (existing == null) {
+            mapper.insert(skill);
+        } else {
+            mapper.updateById(skill);
+        }
+        return skill;
+    }
+
+    @Override
     public AgentSkill setEnabled(Long userId, Long id, boolean enabled) {
         AgentSkill skill = detail(userId, id);
         skill.setEnabled(enabled ? 1 : 0);
@@ -234,6 +292,68 @@ public class AgentSkillServiceImpl implements AgentSkillService {
 
     private String joinTools(List<String> tools) {
         return tools == null ? "" : String.join(",", tools);
+    }
+
+    private List<String> normalizeBoundTools(List<String> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return List.of();
+        }
+        return tools.stream()
+                .map(tool -> tool == null ? "" : tool.trim())
+                .filter(tool -> !tool.isBlank())
+                .filter(SAFE_BOUND_TOOLS::contains)
+                .distinct()
+                .toList();
+    }
+
+    private String normalizeSkillKey(String requestedKey, String name) {
+        String base = requestedKey == null || requestedKey.isBlank() ? name : requestedKey;
+        if (base == null || base.isBlank()) {
+            base = "custom-skill";
+        }
+        String slug = base.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-+|-+$)", "");
+        if (!slug.isBlank()) {
+            return slug.length() <= 80 ? slug : slug.substring(0, 80);
+        }
+        return "custom-skill-" + Integer.toHexString(Math.abs(base.hashCode()));
+    }
+
+    private String normalizeRisk(String requestedRisk, List<String> boundTools) {
+        List<String> tools = normalizeBoundTools(boundTools);
+        if (tools.contains("record_transaction") || tools.contains("set_budget")) {
+            return "REQUIRES_CONFIRMATION";
+        }
+        if (tools.contains("search_web")) {
+            return "EXTERNAL_INFORMATION";
+        }
+        String risk = requestedRisk == null ? "" : requestedRisk.trim().toUpperCase(Locale.ROOT);
+        return switch (risk) {
+            case "EXTERNAL_INFORMATION", "REQUIRES_CONFIRMATION" -> risk;
+            default -> "READ_ONLY";
+        };
+    }
+
+    private String buildInstructionText(CustomSkillDraftRequest request) {
+        String trigger = clean(request.getTriggerText(), "When the user request matches this skill.");
+        String instruction = clean(request.getInstructionText(), clean(request.getDescription(), ""));
+        String tools = joinTools(normalizeBoundTools(request.getBoundTools()));
+        return """
+                # %s
+
+                ## Trigger
+                %s
+
+                ## Behavior
+                %s
+
+                ## Bound Tools
+                %s
+
+                ## Safety
+                Only use the bound tools listed above. Do not execute third-party code.
+                """.formatted(clean(request.getName(), "Custom Skill"), trigger, instruction, tools);
     }
 
     private boolean isBoundToTool(AgentSkill skill, String toolName) {

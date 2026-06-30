@@ -39,6 +39,7 @@ public class TransactionRecorder {
             return "无法获取用户信息，请重新登录后重试";
         }
 
+        type = normalizeType(type);
         List<String> validCategories = categorizationService.getAvailableCategories(type, userId);
         if (!validCategories.contains(category)) {
             SmartCategorizationService.CategorizationResult result =
@@ -74,6 +75,7 @@ public class TransactionRecorder {
             @P("交易类型：EXPENSE/INCOME") String type) {
 
         Long userId = UserIdContext.get();
+        type = normalizeType(type);
         SmartCategorizationService.CategorizationResult result =
                 categorizationService.categorize(userMessage, type, userId);
 
@@ -84,5 +86,25 @@ public class TransactionRecorder {
         }
         sb.append("\n请根据以上推荐选择合适分类，再调用 recordTransaction 生成待确认记账。");
         return sb.toString();
+    }
+    private String normalizeType(String type) {
+        if (type == null || type.isBlank()) {
+            return "EXPENSE";
+        }
+        String value = type.trim();
+        String upper = value.toUpperCase();
+        if ("INCOME".equals(upper)
+                || "\u6536\u5165".equals(value)
+                || "\u8fdb\u8d26".equals(value)
+                || "\u5165\u8d26".equals(value)) {
+            return "INCOME";
+        }
+        if ("EXPENSE".equals(upper)
+                || "\u652f\u51fa".equals(value)
+                || "\u6d88\u8d39".equals(value)
+                || "\u82b1\u8d39".equals(value)) {
+            return "EXPENSE";
+        }
+        return "EXPENSE";
     }
 }
