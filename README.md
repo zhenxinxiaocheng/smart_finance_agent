@@ -6,21 +6,25 @@
 
 ## 演示图
 
+### 登录页
+
+![登录页](frontend/public/readme-login.png)
+
 ### Dashboard 统计页
 
-![Dashboard 统计页](frontend/public/demo-dashboard.svg)
+![Dashboard 统计页](frontend/public/readme-statistics.png)
 
-### 个性化主题设置
+### 财务画像
 
-![个性化主题设置](frontend/public/demo-theme.svg)
+![财务画像](frontend/public/readme-profile.png)
+
+### Agent 技能
+
+![Agent 技能](frontend/public/readme-skills.png)
 
 ### 智能助手
 
-![智能助手](frontend/public/demo-chat.svg)
-
-### 账单导入
-
-![账单导入](frontend/public/demo-bill-import.svg)
+![智能助手](frontend/public/readme-chat.png)
 
 ## 核心能力
 
