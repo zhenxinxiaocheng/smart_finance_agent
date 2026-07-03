@@ -1,0 +1,31 @@
+<svg width="1440" height="860" viewBox="0 0 1440 860" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1440" height="860" fill="#F6F7F8"/>
+  <rect x="0" width="260" height="860" fill="#171717"/>
+  <text x="72" y="36" fill="#F8FAFC" font-family="Inter, Arial" font-size="16" font-weight="800">智财 Agent</text>
+  <text x="20" y="96" fill="#737373" font-family="Inter, Arial" font-size="12" font-weight="700">WORKSPACE</text>
+  <text x="62" y="140" fill="#D4D4D4" font-family="Inter, Arial" font-size="15">统计</text>
+  <rect x="14" y="165" width="226" height="42" rx="10" fill="#252525"/>
+  <text x="62" y="192" fill="#10B981" font-family="Inter, Arial" font-size="15" font-weight="800">账单导入</text>
+  <text x="62" y="242" fill="#D4D4D4" font-family="Inter, Arial" font-size="15">消费记录</text>
+  <rect x="260" y="0" width="1180" height="64" fill="white" stroke="#E5E7EB"/>
+  <text x="320" y="124" fill="#111827" font-family="Inter, Arial" font-size="28" font-weight="800">账单导入</text>
+  <text x="320" y="154" fill="#6B7280" font-family="Inter, Arial" font-size="15">上传微信、支付宝或银行卡流水截图，由多模态大模型识别账单来源并抽取交易内容。</text>
+  <rect x="320" y="190" width="1040" height="286" rx="16" fill="white" stroke="#E5E7EB"/>
+  <text x="344" y="232" fill="#111827" font-family="Inter, Arial" font-size="18" font-weight="800">上传账单截图</text>
+  <text x="344" y="260" fill="#6B7280" font-family="Inter, Arial" font-size="15">支持常见支付流水截图，建议先对姓名、卡号、订单号等隐私信息打码。</text>
+  <rect x="344" y="286" width="992" height="160" rx="14" fill="#FAFAFA" stroke="#D4D4D8" stroke-dasharray="6 6"/>
+  <circle cx="840" cy="350" r="24" fill="#F1F5F9"/>
+  <path d="M840 364V338M829 349l11-11 11 11" stroke="#64748B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="784" y="394" fill="#111827" font-family="Inter, Arial" font-size="16" font-weight="700">点击选择账单截图</text>
+  <text x="744" y="424" fill="#6B7280" font-family="Inter, Arial" font-size="14">图片只用于识别候选交易，确认后才写入正式记录。</text>
+  <rect x="320" y="516" width="500" height="150" rx="16" fill="white" stroke="#E5E7EB"/>
+  <text x="344" y="554" fill="#111827" font-family="Inter, Arial" font-size="18" font-weight="800">识别候选交易</text>
+  <text x="344" y="590" fill="#6B7280" font-family="Inter, Arial" font-size="15">金额、日期、分类和备注可人工校正。</text>
+  <rect x="344" y="616" width="130" height="28" rx="14" fill="#ECFDF5"/>
+  <text x="374" y="635" fill="#00A86B" font-family="Inter, Arial" font-size="13" font-weight="800">待确认</text>
+  <rect x="860" y="516" width="500" height="150" rx="16" fill="white" stroke="#E5E7EB"/>
+  <text x="884" y="554" fill="#111827" font-family="Inter, Arial" font-size="18" font-weight="800">安全写入记录</text>
+  <text x="884" y="590" fill="#6B7280" font-family="Inter, Arial" font-size="15">AI 只生成候选项，用户确认后才入库。</text>
+  <rect x="884" y="616" width="150" height="28" rx="14" fill="#EFF6FF"/>
+  <text x="914" y="635" fill="#2563EB" font-family="Inter, Arial" font-size="13" font-weight="800">人工确认</text>
+</svg>

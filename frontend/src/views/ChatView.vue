@@ -11,8 +11,8 @@
               <path d="M20 22v8" stroke="white" stroke-width="1.5" opacity="0.6"/>
               <defs>
                 <linearGradient id="header-grad" x1="0" y1="0" x2="40" y2="40">
-                  <stop stop-color="#2563eb"/>
-                  <stop offset="1" stop-color="#1d4ed8"/>
+                  <stop stop-color="#0f172a"/>
+                  <stop offset="1" stop-color="#020617"/>
                 </linearGradient>
               </defs>
             </svg>
@@ -26,28 +26,47 @@
           </div>
         </div>
         <div class="header-actions">
-          <el-popover placement="bottom-end" :width="340" trigger="click" popper-class="alert-pop">
-            <template #reference>
-              <button class="action-btn" title="预算预警">
-                <el-badge :value="unreadAlertCount" :hidden="unreadAlertCount===0" :max="99">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
-                </el-badge>
-              </button>
-  </template>
-    <div class="alert-panel" style="min-height:80px">
-      <div style="font-weight:600;font-size:14px;margin-bottom:10px;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:8px">&#x1f514; 预算预警</div>
-      <div v-if="alertList.length===0" style="text-align:center;color:#94a3b8;padding:24px 0;font-size:13px">&#x2705; 暂无预警消息</div>
-      <div v-for="a in alertList" :key="a.id" style="padding:10px 12px;margin-bottom:8px;border-radius:8px;font-size:13px;line-height:1.5" :style="{background:a.severity==='CRITICAL'?'#fef2f2':'#fffbeb',color:a.severity==='CRITICAL'?'#991b1b':'#92400e',border:a.severity==='CRITICAL'?'1px solid #fecaca':'1px solid #fde68a'}">
-        <div style="font-weight:500;margin-bottom:3px">{{ a.message }}</div>
-        <div style="font-size:11px;opacity:0.6">{{ (a.createdAt||'').slice(0,16) }}</div>
-      </div>
-    </div>
-  </el-popover>
-          <button class="action-btn" title="新建对话" @click="clearChat">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3v18M3 12h18"/>
-            </svg>
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="outline" size="sm" title="预算预警" class="relative">
+                <Bell data-icon="inline-start" />
+                预算预警
+                <span
+                  v-if="unreadAlertCount"
+                  class="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-destructive text-[10px] font-semibold text-primary-foreground"
+                >
+                  {{ unreadAlertCount > 99 ? '99+' : unreadAlertCount }}
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-80 p-3">
+              <div class="alert-panel">
+              <div class="alert-panel-head">
+                <span>预算预警</span>
+                <Badge variant="outline">{{ unreadAlertCount }}</Badge>
+              </div>
+              <div v-if="alertList.length===0" class="alert-empty">暂无预警消息</div>
+              <div
+                v-for="a in alertList"
+                :key="a.id"
+                class="alert-item"
+                :class="a.severity === 'CRITICAL' ? 'critical' : 'warning'"
+              >
+                <div class="alert-item-head">
+                  <span>{{ a.message }}</span>
+                  <Badge :variant="a.severity === 'CRITICAL' ? 'destructive' : 'secondary'">
+                    {{ alertSeverityLabel(a.severity) }}
+                  </Badge>
+                </div>
+                <time>{{ (a.createdAt||'').slice(0,16) }}</time>
+              </div>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="outline" size="sm" title="新建对话" @click="clearChat">
+            <Plus data-icon="inline-start" />
+            新建对话
+          </Button>
         </div>
       </header>
 
@@ -77,8 +96,8 @@
                 <path d="M16 17.5v6.5" stroke="white" stroke-width="1.2" opacity="0.6"/>
                 <defs>
                   <linearGradient id="ai-grad" x1="0" y1="0" x2="32" y2="32">
-                    <stop stop-color="#2563eb"/>
-                    <stop offset="1" stop-color="#1d4ed8"/>
+                    <stop stop-color="#0f172a"/>
+                    <stop offset="1" stop-color="#020617"/>
                   </linearGradient>
                 </defs>
               </svg>
@@ -101,14 +120,16 @@
                 <summary>
                   <span>{{ stepsSummary(msg.steps) }}</span>
                   <span class="steps-actions">
-                    <button
+                    <Button
                       v-if="msg.traceId"
                       class="trace-link"
+                      variant="outline"
+                      size="xs"
                       type="button"
                       @click.stop.prevent="openRunTrace(msg)"
                     >
                       运行详情
-                    </button>
+                    </Button>
                     <span class="steps-caret">展开</span>
                   </span>
                 </summary>
@@ -121,7 +142,7 @@
                   >
                     <span class="step-index">{{ step.stepNumber }}</span>
                     <span class="step-summary">{{ step.summary }}</span>
-                    <span class="step-state">{{ stepLabel(step.status) }}</span>
+                    <Badge class="step-state" :variant="stepBadgeVariant(step.status)">{{ stepLabel(step.status) }}</Badge>
                   </div>
                 </div>
               </details>
@@ -138,14 +159,14 @@
                     <div class="pending-summary">{{ action.summary }}</div>
                   </div>
                   <div v-if="action.status === 'PENDING'" class="pending-buttons">
-                    <button class="pending-btn primary" :disabled="action.confirming" @click="confirmPendingAction(action)">
+                    <Button size="xs" :disabled="action.confirming" @click="confirmPendingAction(action)">
                       {{ action.confirming ? '处理中' : '确认执行' }}
-                    </button>
-                    <button class="pending-btn ghost" :disabled="action.confirming" @click="cancelPendingAction(action)">取消</button>
+                    </Button>
+                    <Button variant="outline" size="xs" :disabled="action.confirming" @click="cancelPendingAction(action)">取消</Button>
                   </div>
-                  <div v-else class="pending-status">
+                  <Badge v-else class="pending-status" :variant="action.status === 'CONFIRMED' ? 'secondary' : 'outline'">
                     {{ action.status === 'CONFIRMED' ? '已执行' : '已取消' }}
-                  </div>
+                  </Badge>
                 </div>
               </div>
             </div>
@@ -170,8 +191,8 @@
                 <path d="M9 22V14l7-3.5 7 3.5v8l-7 3.5L9 22z" fill="white" opacity="0.9"/>
                 <defs>
                   <linearGradient id="ai-grad-typing" x1="0" y1="0" x2="32" y2="32">
-                    <stop stop-color="#2563eb"/>
-                    <stop offset="1" stop-color="#1d4ed8"/>
+                    <stop stop-color="#0f172a"/>
+                    <stop offset="1" stop-color="#020617"/>
                   </linearGradient>
                 </defs>
               </svg>
@@ -194,7 +215,7 @@
                   >
                     <span class="step-index">{{ step.stepNumber }}</span>
                     <span class="step-summary">{{ step.summary }}</span>
-                    <span class="step-state">{{ stepLabel(step.status) }}</span>
+                    <Badge class="step-state" :variant="stepBadgeVariant(step.status)">{{ stepLabel(step.status) }}</Badge>
                   </div>
                 </div>
               </details>
@@ -210,7 +231,7 @@
                     <div class="pending-title">{{ action.title || '待确认操作' }}</div>
                     <div class="pending-summary">{{ action.summary }}</div>
                   </div>
-                  <div class="pending-status">等待回复完成</div>
+                  <Badge class="pending-status" variant="outline">等待回复完成</Badge>
                 </div>
               </div>
               <span class="typing-cursor" v-if="isTyping">|</span>
@@ -224,21 +245,23 @@
 
       <div class="suggestions-bar" v-if="messages.length === 0 || !loading">
         <div class="suggestions-scroll">
-          <button
+          <Button
             v-for="(item, index) in suggestions"
             :key="index"
+            variant="outline"
+            size="sm"
             class="suggestion-chip"
             @click="sendSuggestion(item)"
           >
             <span class="chip-icon">{{ suggestionIcons[index] }}</span>
             <span>{{ item }}</span>
-          </button>
+          </Button>
         </div>
       </div>
 
       <div class="input-area-container">
         <div class="input-wrapper">
-          <textarea
+          <Textarea
             v-model="inputMessage"
             class="chat-input"
             :placeholder="loading ? '等待AI回复...' : '输入财务问题，或直接记账...'"
@@ -246,30 +269,27 @@
             rows="1"
             @keydown.enter.prevent="handleSend"
             @input="autoResizeInput"
-          ></textarea>
-          <button
+          />
+          <Button
             class="send-button"
-            :class="{ active: inputMessage.trim() && !loading }"
+            size="icon-lg"
+            :variant="inputMessage.trim() && !loading ? 'default' : 'secondary'"
             :disabled="!inputMessage.trim() || loading"
             @click="handleSend"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
+            <SendHorizontal />
+          </Button>
         </div>
         <p class="input-hint">智财Agent · 消费分析 + 理财顾问 · 试试说「分析一下我的消费结构」</p>
       </div>
     </div>
 
-    <el-drawer
-      v-model="traceDrawerVisible"
-      title="Agent 运行详情"
-      direction="rtl"
-      size="540px"
-      class="trace-drawer"
-    >
+    <Dialog v-model:open="traceDrawerVisible">
+      <DialogContent class="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Agent 运行详情</DialogTitle>
+          <DialogDescription>查看本次 Agent 响应的执行步骤、工具调用和 Skill 调用。</DialogDescription>
+        </DialogHeader>
       <div v-if="traceLoading" class="trace-empty">加载中...</div>
       <div v-else-if="!traceDetail" class="trace-empty">暂无运行详情</div>
       <div v-else class="trace-detail">
@@ -321,17 +341,34 @@
           </div>
         </section>
       </div>
-    </el-drawer>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { Bell, Plus, SendHorizontal } from '@lucide/vue'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { Textarea } from '@/components/ui/textarea'
+import { feedback } from '@/lib/feedback'
 import { streamReactChatAPI, getChatHistoryAPI } from '../api/chat'
 import { getAgentRunDetailAPI } from '../api/agentRuns'
 import { getUnreadAlertsAPI } from '../api/alert'
 import { listPendingActionsAPI, confirmPendingActionAPI, cancelPendingActionAPI } from '../api/pendingAction'
-import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -537,6 +574,16 @@ function stepLabel(status) {
   return '执行中'
 }
 
+function stepBadgeVariant(status) {
+  if (status === 'failed') return 'destructive'
+  if (status === 'done') return 'secondary'
+  return 'outline'
+}
+
+function alertSeverityLabel(severity) {
+  return severity === 'CRITICAL' ? '严重' : '提醒'
+}
+
 function stepsSummary(steps) {
   const total = steps?.length || 0
   const running = steps?.some(step => step.status === 'running')
@@ -569,7 +616,7 @@ async function confirmPendingAction(action) {
   try {
     const res = await confirmPendingActionAPI(action.id)
     Object.assign(action, res.data || {}, { confirming: false })
-    ElMessage.success('已执行')
+    feedback.success('已执行')
   } catch {
     action.confirming = false
   }
@@ -581,7 +628,7 @@ async function cancelPendingAction(action) {
   try {
     const res = await cancelPendingActionAPI(action.id)
     Object.assign(action, res.data || {}, { confirming: false })
-    ElMessage.success('已取消')
+    feedback.success('已取消')
   } catch {
     action.confirming = false
   }
@@ -688,7 +735,7 @@ async function openRunTrace(message) {
     const res = await getAgentRunDetailAPI(message.traceId)
     traceDetail.value = res.data || null
   } catch {
-    ElMessage.error('运行详情加载失败')
+    feedback.error('运行详情加载失败')
   } finally {
     traceLoading.value = false
   }
@@ -727,33 +774,31 @@ function formatTime(value) {
 
 <style scoped>
 .chat-view {
-  height: 100%;
+  height: calc(100vh - 64px - var(--app-page-padding) - var(--app-page-padding));
+  min-height: 560px;
   display: flex;
-  justify-content: center;
-  --primary: #2563eb;
-  --primary-dark: #1d4ed8;
-  --primary-light: #dbeafe;
-  --primary-50: #eff6ff;
-  --accent: #06b6d4;
-  --bg: #f0f4f8;
-  --surface: #ffffff;
-  --text: #1e293b;
-  --text-muted: #64748b;
-  --text-light: #94a3b8;
-  --border: #e2e8f0;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.08), 0 4px 10px rgba(0, 0, 0, 0.04);
-  --radius: 12px;
-  --radius-lg: 20px;
+  flex-direction: column;
+  --chat-panel: var(--card);
+  --chat-panel-foreground: var(--card-foreground);
+  --chat-muted: var(--muted);
+  --chat-muted-foreground: var(--muted-foreground);
+  --chat-border: var(--border);
+  --chat-primary: var(--primary);
+  --chat-primary-foreground: var(--primary-foreground);
+  --chat-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
 }
 
 .chat-container {
   width: 100%;
-  max-width: 900px;
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  overflow: hidden;
+  background: var(--chat-panel);
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--chat-shadow);
   position: relative;
 }
 
@@ -761,33 +806,35 @@ function formatTime(value) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  padding: calc(var(--app-card-padding) * 0.9) var(--app-card-padding);
+  background: var(--chat-panel);
+  border-bottom: 1px solid var(--chat-border);
   flex-shrink: 0;
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 14px;
+  min-width: 0;
+  gap: 12px;
 }
 
 .header-avatar svg {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   display: block;
 }
 
+.header-avatar svg rect,
+.ai-avatar svg rect {
+  fill: var(--chat-primary);
+}
+
 .header-title {
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--chat-panel-foreground);
   margin: 0;
   line-height: 1.3;
 }
@@ -802,7 +849,7 @@ function formatTime(value) {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--text-light);
+  background: var(--chat-muted-foreground);
   transition: all 0.3s;
 }
 
@@ -813,37 +860,84 @@ function formatTime(value) {
 
 .status-text {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
 }
 
 .header-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
-.action-btn {
-  width: 36px;
-  height: 36px;
+.alert-panel {
+  min-height: 80px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--text-muted);
-  transition: all 0.2s;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.action-btn:hover {
-  background: var(--primary-50);
-  color: var(--primary);
+.alert-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--chat-border);
+  color: var(--chat-panel-foreground);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.alert-empty {
+  padding: 22px 0;
+  color: var(--chat-muted-foreground);
+  font-size: 13px;
+  text-align: center;
+}
+
+.alert-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  background: var(--chat-panel);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.alert-item.critical {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.alert-item.warning {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.alert-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--chat-panel-foreground);
+  font-weight: 600;
+}
+
+.alert-item time {
+  color: var(--chat-muted-foreground);
+  font-size: 11px;
 }
 
 .messages-area {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px 24px 8px;
+  padding: var(--app-card-padding);
+  background: color-mix(in oklab, var(--chat-muted) 46%, transparent);
   scroll-behavior: smooth;
 }
 
@@ -856,14 +950,14 @@ function formatTime(value) {
 }
 
 .messages-area::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--chat-border);
   border-radius: 10px;
 }
 
 .message-wrapper {
   display: flex;
   gap: 10px;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
   animation: messageSlideIn 0.35s ease-out;
 }
 
@@ -895,11 +989,11 @@ function formatTime(value) {
 }
 
 .user-avatar svg rect {
-  fill: var(--primary-light);
+  fill: var(--chat-muted);
 }
 
 .message-content {
-  max-width: 75%;
+  max-width: min(78%, 860px);
   display: flex;
   flex-direction: column;
 }
@@ -907,7 +1001,7 @@ function formatTime(value) {
 .message-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
   margin-bottom: 6px;
   letter-spacing: 0.3px;
   text-transform: uppercase;
@@ -918,7 +1012,7 @@ function formatTime(value) {
 }
 
 .message-bubble {
-  padding: 12px 16px;
+  padding: 12px 14px;
   font-size: 14px;
   line-height: 1.55;
   word-wrap: break-word;
@@ -926,18 +1020,18 @@ function formatTime(value) {
 }
 
 .ai-bubble {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px var(--radius-lg) var(--radius-lg) var(--radius-lg);
-  box-shadow: var(--shadow);
-  color: var(--text);
+  background: var(--chat-panel);
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  box-shadow: var(--chat-shadow);
+  color: var(--chat-panel-foreground);
 }
 
 .user-bubble {
-  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-  border-radius: var(--radius-lg) 4px var(--radius-lg) var(--radius-lg);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.2);
+  background: var(--chat-primary);
+  border-radius: var(--radius);
+  color: var(--chat-primary-foreground);
+  box-shadow: var(--chat-shadow);
 }
 
 .typing-bubble {
@@ -947,9 +1041,9 @@ function formatTime(value) {
 
 .agent-steps {
   margin-bottom: 14px;
-  border: 1px solid #dbeafe;
-  border-radius: 10px;
-  background: #f8fbff;
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  background: var(--chat-muted);
 }
 
 .agent-steps summary {
@@ -959,7 +1053,7 @@ function formatTime(value) {
   gap: 12px;
   min-height: 34px;
   padding: 8px 10px;
-  color: #1e40af;
+  color: var(--chat-panel-foreground);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -971,7 +1065,7 @@ function formatTime(value) {
 }
 
 .steps-caret {
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
@@ -985,10 +1079,10 @@ function formatTime(value) {
 }
 
 .trace-link {
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #fff;
-  color: #2563eb;
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  background: var(--chat-panel);
+  color: var(--chat-panel-foreground);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -997,11 +1091,11 @@ function formatTime(value) {
 }
 
 .trace-link:hover {
-  background: #eff6ff;
+  background: var(--chat-muted);
 }
 
 .agent-steps[open] .steps-caret {
-  color: #2563eb;
+  color: var(--chat-primary);
 }
 
 .agent-steps:not([open]) .steps-caret::after {
@@ -1023,11 +1117,11 @@ function formatTime(value) {
 
 .agent-step {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 44px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   min-width: 0;
-  color: var(--text);
+  color: var(--chat-panel-foreground);
 }
 
 .agent-step.done {
@@ -1045,8 +1139,8 @@ function formatTime(value) {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: var(--primary);
-  color: #fff;
+  background: var(--chat-primary);
+  color: var(--chat-primary-foreground);
   font-size: 11px;
   font-weight: 700;
 }
@@ -1061,16 +1155,14 @@ function formatTime(value) {
 
 .step-summary {
   overflow: hidden;
-  color: var(--text);
+  color: var(--chat-panel-foreground);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .step-state {
-  color: var(--text-muted);
-  font-size: 11px;
-  text-align: right;
+  justify-self: end;
 }
 
 .pending-actions {
@@ -1086,9 +1178,9 @@ function formatTime(value) {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  background: #f8fbff;
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  background: var(--chat-muted);
 }
 
 .pending-action-card.confirmed {
@@ -1107,7 +1199,7 @@ function formatTime(value) {
 }
 
 .pending-title {
-  color: var(--text);
+  color: var(--chat-panel-foreground);
   font-size: 13px;
   font-weight: 700;
 }
@@ -1115,7 +1207,7 @@ function formatTime(value) {
 .pending-summary {
   margin-top: 3px;
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1127,36 +1219,8 @@ function formatTime(value) {
   gap: 6px;
 }
 
-.pending-btn {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.pending-btn:disabled {
-  cursor: wait;
-  opacity: 0.7;
-}
-
-.pending-btn.primary {
-  background: var(--primary);
-  color: #fff;
-}
-
-.pending-btn.ghost {
-  border-color: var(--border);
-  background: var(--surface);
-  color: var(--text-muted);
-}
-
 .pending-status {
   flex-shrink: 0;
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
 .typing-bubble :deep(*),
@@ -1166,7 +1230,7 @@ function formatTime(value) {
 
 .typing-cursor {
   animation: cursorBlink 0.8s step-end infinite;
-  color: var(--primary);
+  color: var(--chat-primary);
   font-weight: 300;
   margin-left: 2px;
 }
@@ -1179,7 +1243,7 @@ function formatTime(value) {
   animation: dotPulse 1.4s infinite;
   font-size: 20px;
   font-weight: 700;
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
 }
 
 .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -1197,7 +1261,7 @@ function formatTime(value) {
   align-items: center;
   justify-content: center;
   height: 100%;
-  min-height: 400px;
+  min-height: 360px;
   text-align: center;
   padding: 40px 20px;
 }
@@ -1208,10 +1272,10 @@ function formatTime(value) {
 }
 
 .empty-icon-bg {
-  width: 80px;
-  height: 80px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-light), #c7d2fe);
+  background: var(--chat-muted);
   animation: pulseGlow 2s ease-in-out infinite;
 }
 
@@ -1231,30 +1295,32 @@ function formatTime(value) {
 .empty-title {
   font-size: 20px;
   font-weight: 700;
-  color: var(--text);
+  color: var(--chat-panel-foreground);
   margin: 0 0 8px;
 }
 
 .empty-desc {
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--chat-muted-foreground);
   margin: 0 0 4px;
   max-width: 360px;
 }
 
 .empty-hint {
   font-size: 13px;
-  color: var(--text-light);
+  color: var(--chat-muted-foreground);
   margin: 12px 0 0;
   padding: 8px 16px;
-  background: var(--surface);
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  background: var(--chat-panel);
+  border-radius: var(--radius);
+  border: 1px solid var(--chat-border);
 }
 
 .suggestions-bar {
   flex-shrink: 0;
-  padding: 8px 24px 4px;
+  padding: 10px var(--app-card-padding) 6px;
+  background: var(--chat-panel);
+  border-top: 1px solid var(--chat-border);
   overflow: hidden;
 }
 
@@ -1272,26 +1338,7 @@ function formatTime(value) {
 }
 
 .suggestion-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--surface);
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text);
-  white-space: nowrap;
-  transition: all 0.2s;
   flex-shrink: 0;
-}
-
-.suggestion-chip:hover {
-  border-color: var(--primary);
-  background: var(--primary-50);
-  color: var(--primary);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);
 }
 
 .chip-icon {
@@ -1300,24 +1347,25 @@ function formatTime(value) {
 
 .input-area-container {
   flex-shrink: 0;
-  padding: 8px 24px 16px;
+  padding: 8px var(--app-card-padding) calc(var(--app-card-padding) * 0.9);
+  background: var(--chat-panel);
 }
 
 .input-wrapper {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 8px 8px 8px 18px;
-  box-shadow: var(--shadow);
+  background: var(--background);
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  padding: 7px 7px 7px 14px;
+  box-shadow: var(--chat-shadow);
   transition: all 0.2s;
 }
 
 .input-wrapper:focus-within {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1), var(--shadow);
+  border-color: var(--chat-primary);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--chat-primary) 18%, transparent), var(--chat-shadow);
 }
 
 .chat-input {
@@ -1326,7 +1374,7 @@ function formatTime(value) {
   outline: none;
   font-size: 14px;
   font-family: inherit;
-  color: var(--text);
+  color: var(--foreground);
   background: transparent;
   resize: none;
   line-height: 1.6;
@@ -1335,7 +1383,7 @@ function formatTime(value) {
 }
 
 .chat-input::placeholder {
-  color: var(--text-light);
+  color: var(--chat-muted-foreground);
 }
 
 .chat-input:disabled {
@@ -1344,40 +1392,13 @@ function formatTime(value) {
 }
 
 .send-button {
-  width: 42px;
-  height: 42px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 12px;
-  background: var(--border);
-  color: var(--text-light);
-  cursor: not-allowed;
-  transition: all 0.2s;
   flex-shrink: 0;
-}
-
-.send-button.active {
-  background: var(--primary);
-  color: #fff;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
-}
-
-.send-button.active:hover {
-  background: var(--primary-dark);
-  transform: scale(1.05);
-}
-
-.send-button.active:active {
-  transform: scale(0.95);
 }
 
 .input-hint {
   text-align: center;
   font-size: 11px;
-  color: var(--text-light);
+  color: var(--chat-muted-foreground);
   margin: 8px 0 0;
   letter-spacing: 0.2px;
 }
@@ -1396,18 +1417,18 @@ function formatTime(value) {
 :deep(.md-table-wrap th),
 :deep(.md-table-wrap td) {
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--chat-border);
   text-align: left;
 }
 
 :deep(.md-table-wrap th) {
-  background: var(--primary-50);
+  background: var(--chat-muted);
   font-weight: 600;
-  color: var(--text);
+  color: var(--chat-panel-foreground);
 }
 
 :deep(.ai-bubble strong) {
-  color: var(--primary);
+  color: var(--chat-primary);
 }
 
 :deep(.user-bubble strong) {
@@ -1416,11 +1437,11 @@ function formatTime(value) {
 }
 
 :deep(.ai-bubble code) {
-  background: var(--primary-50);
+  background: var(--chat-muted);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 13px;
-  color: var(--primary-dark);
+  color: var(--chat-panel-foreground);
 }
 
 :deep(.user-bubble code) {
@@ -1466,11 +1487,6 @@ function formatTime(value) {
   margin-top: 2px;
 }
 
-:deep(.trace-drawer .el-drawer__body) {
-  padding: 0;
-  background: #f8fafc;
-}
-
 .trace-detail {
   display: flex;
   flex-direction: column;
@@ -1503,9 +1519,9 @@ function formatTime(value) {
 .trace-overview code {
   display: block;
   overflow-wrap: anywhere;
-  border-radius: 6px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  border-radius: var(--radius);
+  background: var(--muted);
+  color: var(--foreground);
   font-size: 12px;
   padding: 8px;
 }
@@ -1536,15 +1552,15 @@ function formatTime(value) {
 
 .trace-step-card,
 .skill-invocation-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
+  border: 1px solid var(--chat-border);
+  border-radius: var(--radius);
+  background: var(--muted);
   padding: 12px;
 }
 
 .trace-step-head span {
   overflow: hidden;
-  color: #172033;
+  color: var(--foreground);
   font-size: 13px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -1566,7 +1582,7 @@ function formatTime(value) {
 }
 
 .trace-raw summary {
-  color: #2563eb;
+  color: var(--primary);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
@@ -1575,7 +1591,7 @@ function formatTime(value) {
 .trace-raw pre {
   overflow: auto;
   max-height: 220px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: #0f172a;
   color: #e2e8f0;
   font-size: 12px;
