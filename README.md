@@ -1,5 +1,269 @@
 # 智财 Agent
 
+智财 Agent 是一个个人智能财务代理系统，覆盖记账、账单导入、统计分析、预算画像、Agent 对话、长期记忆和 Skills 管理。当前前端已经升级为 shadcn-vue / Admin Dashboard 风格：深色侧边栏、紧凑数据卡片、主题色切换、日夜自动模式和开发中功能入口。
+
+项目目标不是只做一个聊天机器人，而是把个人财务工作流逐步 Agent 化：数据写入需要确认，工具调用可追踪，长期偏好可管理，稳定流程可以沉淀为 Skill。
+
+## 演示图
+
+### 登录页
+
+![登录页](frontend/public/readme-login.png)
+
+### Dashboard 统计页
+
+![Dashboard 统计页](frontend/public/readme-statistics.png)
+
+### 财务画像
+
+![财务画像](frontend/public/readme-profile.png)
+
+### Agent 技能
+
+![Agent 技能](frontend/public/readme-skills.png)
+
+### 智能助手
+
+![智能助手](frontend/public/readme-chat.png)
+
+## 核心能力
+
+- 账号注册、登录、JWT 鉴权和当前用户信息获取
+- 收入、支出记录的新增、编辑、删除、分页查询和分类管理
+- 日、月、年统计图表，展示收入、支出、结余、资产走势和分类占比
+- 财务画像配置，维护收入、预算、储蓄目标、风险偏好和长期指令
+- 预算预警和未读通知，支持查看、已读和批量已读
+- 账单截图导入，通过多模态模型识别候选交易，用户确认后才写入正式记录
+- AI 财务助手，支持普通对话、SSE 流式输出、ReAct 工具调用和运行步骤展示
+- Agent 长期记忆，支持用户指令、自动记忆、禁用和重置
+- Agent Skills，支持内置 Skill、外部说明型 Skill、自定义 Skill、启停和调用审计
+- 待确认动作机制，记账、预算设置、自定义 Skill 安装等关键写操作都需要用户确认
+- 股票分析分支已预留，并在侧边栏标注“开发中”
+
+## 前端亮点
+
+- 使用 Vue 3、Vite、Pinia、Vue Router、Tailwind CSS 4 和 Reka UI 组合 shadcn-vue 风格组件
+- Admin Dashboard 式布局：深色侧边栏、顶部工具栏、卡片化主内容区
+- 主题抽屉支持浅色、深色、日夜自动、主题色、显示密度和内容宽度
+- 日夜自动规则：`07:00 - 17:59` 使用浅色，`18:00 - 06:59` 使用深色
+- 主题色支持翡翠绿、蓝色、紫色、玫红、橙色、石板灰
+- 统计图表主题会跟随浅色/深色和主题色变化
+- 移动端侧边栏收缩为图标模式，避免内容被挤压
+
+## 技术栈
+
+| 模块 | 技术 |
+| --- | --- |
+| 前端 | Vue 3, Vite 8, Pinia, Vue Router, Tailwind CSS 4, Reka UI, VueUse, ECharts 6 |
+| UI | shadcn-vue 风格组件、Lucide 图标、主题 token、响应式 Admin Shell |
+| 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL, JWT |
+| AI | LangChain4j, DashScope Chat/Embedding, RAG, Tavily Search |
+| 测试 | JUnit 5, Mockito, Spring Boot Test, H2, Vite build |
+
+## 项目结构
+
+```text
+smart_finance_agent/
+├── backend/                 # Spring Boot 后端
+│   ├── src/main/java/       # Controller、Service、Entity、DTO、Mapper、Agent 工具
+│   ├── src/main/resources/  # application.yml、schema.sql、data.sql
+│   └── src/test/            # 后端测试
+├── frontend/                # Vue 3 前端
+│   ├── public/              # README 演示图和静态资源
+│   ├── src/api/             # API 请求封装
+│   ├── src/components/      # shadcn-vue 风格组件和业务组件
+│   ├── src/composables/     # 外观主题等组合式状态
+│   ├── src/layouts/         # Admin 主布局
+│   ├── src/router/          # 页面路由
+│   └── src/views/           # 页面视图
+├── env.example              # 本地配置示例
+├── start-dev.ps1            # 一键启动前后端脚本
+└── README.md
+```
+
+## 页面路由
+
+| 路由 | 说明 |
+| --- | --- |
+| `/login` | 登录页 |
+| `/register` | 注册页 |
+| `/statistics` | 日、月、年统计 |
+| `/transactions` | 消费记录和分类管理 |
+| `/profile` | 财务画像、预算和长期记忆偏好 |
+| `/skills` | Agent Skills 管理 |
+| `/bill-import` | 账单截图导入和候选交易确认 |
+| `/chat` | 智能助手、ReAct 步骤和待确认动作 |
+
+## 后端接口
+
+| 模块 | 接口前缀 | 说明 |
+| --- | --- | --- |
+| 认证 | `/api/auth` | 注册、登录、当前用户 |
+| 交易 | `/api/transactions` | 收支记录和分类汇总 |
+| 分类 | `/api/categories` | 消费分类管理 |
+| 预算 | `/api/budgets` | 预算查询、保存和删除 |
+| 通知 | `/api/alerts` | 预算提醒、近期提醒和已读标记 |
+| 财务画像 | `/api/financial-profile` | 财务资料读取和保存 |
+| 账单导入 | `/api/bills` | 截图上传、识别记录、确认入库 |
+| AI 助手 | `/api/chat` | 普通对话、ReAct 流式对话、历史记录 |
+| Agent 运行 | `/api/agent-runs` | 按 traceId 查询 Agent 步骤 |
+| Agent 记忆 | `/api/agent-memories` | 长期指令、自动记忆、禁用和重置 |
+| Agent Skills | `/api/agent-skills` | Skill 列表、安装、启停、删除、调用历史 |
+| 待确认动作 | `/api/pending-actions` | AI 生成动作的确认或取消 |
+
+## 本地运行
+
+### 环境要求
+
+- JDK 17+
+- Maven 3.8+
+- MySQL 8.0+
+- Node.js 18+
+- npm 9+
+
+### 初始化数据库
+
+```sql
+CREATE DATABASE IF NOT EXISTS smart_finance
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+```
+
+后端启动时会读取 `backend/src/main/resources/schema.sql` 和 `backend/src/main/resources/data.sql` 初始化表结构和基础数据。
+
+### 配置本地密钥
+
+复制 `env.example` 的内容到：
+
+```text
+backend/src/main/resources/application-local.yml
+```
+
+至少需要配置：
+
+```yaml
+spring:
+  datasource:
+    password: 你的数据库密码
+
+jwt:
+  secret: 你的 JWT 密钥
+
+langchain4j:
+  dashscope:
+    api-key: 你的 DashScope API Key
+
+search:
+  api-key: 你的 Tavily API Key
+```
+
+`search.api-key` 可选；如果不使用联网搜索，可以留空。`application-local.yml` 不应提交到 Git。
+
+### 一键启动
+
+项目根目录提供开发脚本：
+
+```powershell
+.\start-dev.ps1
+```
+
+默认启动：
+
+- 后端：`http://localhost:8080`
+- 前端：`http://127.0.0.1:3000`
+- 日志：`.run-logs/`
+
+也可以指定端口：
+
+```powershell
+.\start-dev.ps1 -BackendPort 8080 -FrontendPort 3000
+```
+
+### 手动启动
+
+后端：
+
+```powershell
+cd backend
+mvn spring-boot:run
+```
+
+前端：
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+## 验证命令
+
+前端构建：
+
+```powershell
+cd frontend
+npm run build
+```
+
+后端测试：
+
+```powershell
+cd backend
+mvn test
+```
+
+后端编译：
+
+```powershell
+cd backend
+mvn clean compile
+```
+
+## Agent 机制
+
+### ReAct 执行流
+
+聊天页使用 `POST /api/chat/react/stream` 进行流式输出。Agent 会按“思考 -> 工具调用 -> 观察结果 -> 最终回答”的方式运行，前端展示步骤、状态、失败原因和最终结果。模型只能选择后端 `ToolRegistry` 中注册的工具。
+
+### 长期记忆
+
+长期记忆分为两类：
+
+- 用户直接维护的长期指令，例如回答风格、偏好和固定约束
+- 系统自动沉淀的低风险偏好，例如分类习惯和回答偏好
+
+资产、密码、API Key、银行卡等敏感信息不会自动沉淀到 Agent 记忆中。
+
+### Skills
+
+Skills 是 Agent 可读取的能力说明和工具绑定，不直接执行第三方脚本。当前支持：
+
+- 内置 Skill：由后端安全工具生成
+- 外部说明型 Skill：通过安装接口纳入管理
+- 自定义 Skill：用户在聊天中描述稳定流程，确认后写入 Skill 列表
+
+禁用后的 Skill 不会进入 prompt，也不能触发绑定工具。
+
+### 待确认动作
+
+所有会改变用户数据的重要动作都需要确认：
+
+- 记录交易
+- 设置预算
+- 安装对话生成的自定义 Skill
+
+Agent 只能生成待确认动作，最终执行权在用户。
+
+## 开发备注
+
+- 前端通过 Vite 代理把 `/api` 请求转发到后端。
+- 账单导入识别结果只作为候选数据，用户确认后才写入正式交易表。
+- 股票分析入口已在侧边栏预留，目前标注为“开发中”。
+- 涉及实时行情、新闻、政策、汇率的问题需要联网检索后再回答。
+- 外部 Skill 当前只读取说明和元数据；如果未来支持脚本型 Skill，需要单独设计沙箱、权限、超时和审计。
+
+<!--
+
 一个面向个人记账、财务分析和 Agent 化实验的前后端分离项目。系统包含收支记录、预算画像、统计图表、账单截图导入、RAG 财务知识库、联网搜索、ReAct 工具调用、长期记忆和可管理 Skills。
 
 当前开发方向是把传统“财务问答助手”逐步改造成更接近 Hermes/Harness Agent 的形态：有长期上下文、有可审计工具、有可启停 Skill、有用户确认边界，并允许用户通过对话把稳定行为流程包装成自定义 Skill。
@@ -268,3 +532,4 @@ npm run build
 - 股票、基金、行业问题允许给倾向性建议，但不能承诺收益；涉及实时行情、新闻、政策、汇率的问题必须先联网搜索。
 - 外部 Skill 当前只读取说明和元数据，不执行第三方脚本；如果以后支持脚本型 Skill，需要单独设计沙箱、权限、超时和审计。
 - 前端通过 Vite 代理把 `/api` 请求转发到 `http://localhost:8080`。
+-->

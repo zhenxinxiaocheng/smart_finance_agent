@@ -1,221 +1,259 @@
 <template>
-  <div class="profile-page">
-    <div class="page-header">
-      <div>
-        <h1>财务画像</h1>
-        <p>维护长期财务背景，Agent 会据此调整预算、省钱和风险建议。</p>
+  <div class="mx-auto flex max-w-[1180px] flex-col gap-5">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <div class="min-w-0">
+        <h1 class="text-2xl font-semibold tracking-normal text-foreground">财务画像</h1>
+        <p class="mt-1 max-w-3xl text-sm text-muted-foreground">
+          维护长期财务背景，Agent 会据此调整预算、省钱和风险建议。
+        </p>
       </div>
-      <el-button type="primary" size="large" :loading="saving" @click="handleSave">
+      <Button :disabled="saving" @click="handleSave">
+        <Loader2 v-if="saving" data-icon="inline-start" class="animate-spin" />
+        <Save v-else data-icon="inline-start" />
         保存画像
-      </el-button>
+      </Button>
     </div>
 
-    <div class="profile-layout">
-      <section class="profile-panel form-panel">
-        <div class="section-title">
-          <h2>基础信息</h2>
-          <span>用于判断建议尺度</span>
-        </div>
-
-        <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="身份阶段" prop="lifeStage">
-                <el-select v-model="form.lifeStage" placeholder="请选择" clearable>
-                  <el-option label="学生" value="学生" />
-                  <el-option label="上班族" value="上班族" />
-                  <el-option label="自由职业" value="自由职业" />
-                  <el-option label="家庭管理者" value="家庭管理者" />
-                </el-select>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="风险偏好" prop="riskPreference">
-                <el-segmented v-model="form.riskPreference" :options="riskOptions" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="月收入" prop="monthlyIncome">
-                <el-input-number v-model="form.monthlyIncome" :min="0" :precision="2" :step="500" controls-position="right" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="固定支出" prop="fixedExpense">
-                <el-input-number v-model="form.fixedExpense" :min="0" :precision="2" :step="100" controls-position="right" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <div class="section-title compact">
-            <h2>长期目标</h2>
-            <span>用于判断当前消费是否影响目标</span>
-          </div>
-
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="储蓄目标金额" prop="savingsGoalAmount">
-                <el-input-number v-model="form.savingsGoalAmount" :min="0" :precision="2" :step="500" controls-position="right" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="目标期限" prop="savingsGoalDeadline">
-                <el-date-picker
-                  v-model="form.savingsGoalDeadline"
-                  type="month"
-                  value-format="YYYY-MM"
-                  placeholder="选择月份"
-                  style="width: 100%"
-                />
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <div class="section-title compact">
-            <h2>本月预算设置</h2>
-            <span>{{ currentBudgetMonth }}</span>
-          </div>
-
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="本月总预算" prop="monthlyBudgetGoal">
-                <el-input-number v-model="form.monthlyBudgetGoal" :min="0" :precision="2" :step="200" controls-position="right" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="总预算预警阈值">
-                <div class="percent-input-wrap">
-                  <el-input-number v-model="totalBudgetThreshold" :min="1" :max="100" :precision="0" :step="5" controls-position="right" />
-                  <span class="percent-suffix">%</span>
+    <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-base">基础信息</CardTitle>
+          <CardDescription>用于判断建议尺度、预算约束和风险表达。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex flex-col gap-5">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div class="flex flex-col gap-2">
+                <Label>身份阶段</Label>
+                <Select v-model="form.lifeStage">
+                  <SelectTrigger>
+                    <SelectValue placeholder="请选择" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="学生">学生</SelectItem>
+                      <SelectItem value="上班族">上班族</SelectItem>
+                      <SelectItem value="自由职业">自由职业</SelectItem>
+                      <SelectItem value="家庭管理者">家庭管理者</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label>风险偏好</Label>
+                <div class="grid w-full grid-cols-3 gap-2">
+                  <Button
+                    v-for="option in riskOptions"
+                    :key="option.value"
+                    type="button"
+                    :variant="form.riskPreference === option.value ? 'default' : 'outline'"
+                    @click="form.riskPreference = option.value"
+                  >
+                    {{ option.label }}
+                  </Button>
                 </div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <div class="budget-editor">
-            <div class="budget-editor-head">
-              <span>分类预算</span>
-              <el-button text type="primary" @click="addCategoryBudget">新增分类预算</el-button>
-            </div>
-            <div v-if="!categoryBudgets.length" class="empty-box">暂未设置分类预算，可按餐饮、购物等分别控制。</div>
-            <div v-for="(item, index) in categoryBudgets" :key="item.key" class="budget-row">
-              <el-select v-model="item.category" placeholder="选择分类" class="budget-category">
-                <el-option
-                  v-for="category in categories"
-                  :key="category.id"
-                  :label="category.name"
-                  :value="category.name"
-                />
-              </el-select>
-              <el-input-number v-model="item.amount" :min="0" :precision="2" :step="100" controls-position="right" class="budget-amount" />
-              <el-input-number v-model="item.alertThreshold" :min="1" :max="100" :precision="0" :step="5" controls-position="right" class="budget-threshold" />
-              <el-button text type="danger" @click="removeCategoryBudget(index)">删除</el-button>
-            </div>
-          </div>
-
-          <el-form-item label="补充偏好">
-            <el-input
-              v-model="form.notes"
-              type="textarea"
-              :rows="4"
-              maxlength="500"
-              show-word-limit
-              placeholder="例如：优先攒应急金；少买数码产品；不接受高风险投资。"
-            />
-          </el-form-item>
-        </el-form>
-      </section>
-
-      <aside class="profile-side">
-        <section class="profile-panel summary-panel">
-          <div class="section-title">
-            <h2>目标概览</h2>
-            <span>{{ hasProfile ? '已配置' : '待完善' }}</span>
-          </div>
-          <div class="metric-list">
-            <div class="metric-row">
-              <span>可支配收入</span>
-              <strong>{{ money(disposableIncome) }}</strong>
-            </div>
-            <div class="metric-row">
-              <span>预算占收入</span>
-              <strong>{{ budgetRatio }}</strong>
-            </div>
-            <div class="metric-row">
-              <span>储蓄目标</span>
-              <strong>{{ money(form.savingsGoalAmount) }}</strong>
-            </div>
-          </div>
-          <div class="risk-strip" :class="form.riskPreference?.toLowerCase()">
-            {{ riskText }}
-          </div>
-        </section>
-
-        <section class="profile-panel memory-panel">
-          <div class="section-title">
-            <h2>Agent 长期记忆</h2>
-            <span>可直接修改</span>
-          </div>
-
-          <div class="memory-editor">
-            <label>自定义指令</label>
-            <p>写给 Agent 的长期偏好和工作习惯。当前问题明确要求优先于这里。</p>
-            <el-input
-              v-model="memoryPreferences.customInstructions"
-              type="textarea"
-              :rows="9"
-              maxlength="3000"
-              show-word-limit
-              resize="vertical"
-              placeholder="例如：用中文对话，回答尽量简短；咖啡归为餐饮；股票问题可以给偏看好/偏谨慎/可观察，但要说明风险。"
-            />
-          </div>
-
-          <div class="memory-settings">
-            <div class="memory-setting-row">
-              <div>
-                <strong>启用自动记忆</strong>
-                <span>从普通聊天中沉淀低风险偏好。</span>
               </div>
-              <el-switch v-model="memoryPreferences.autoMemoryEnabled" />
-            </div>
-            <div class="memory-setting-row">
-              <div>
-                <strong>跳过工具辅助对话</strong>
-                <span>用了查询、搜索、记账等工具的对话不生成记忆。</span>
+              <div class="flex flex-col gap-2">
+                <Label>月收入</Label>
+                <Input v-model.number="form.monthlyIncome" min="0" step="500" type="number" />
               </div>
-              <el-switch v-model="memoryPreferences.skipToolAssistedMemory" />
-            </div>
-            <div class="memory-setting-row danger">
-              <div>
-                <strong>重置记忆</strong>
-                <span>删除所有 Agent 自定义指令和自动沉淀记忆。</span>
+              <div class="flex flex-col gap-2">
+                <Label>固定支出</Label>
+                <Input v-model.number="form.fixedExpense" min="0" step="100" type="number" />
               </div>
-              <el-button type="danger" plain size="small" :loading="memoryResetting" @click="resetMemory">重置</el-button>
+            </div>
+
+            <Separator class="my-5" />
+
+            <div class="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 class="text-base font-semibold">长期目标</h2>
+                <p class="text-sm text-muted-foreground">用于判断当前消费是否影响目标。</p>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <div class="flex flex-col gap-2">
+                <Label>储蓄目标金额</Label>
+                <Input v-model.number="form.savingsGoalAmount" min="0" step="500" type="number" />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label>目标期限</Label>
+                <Input v-model="form.savingsGoalDeadline" type="month" />
+              </div>
+            </div>
+
+            <Separator class="my-5" />
+
+            <div class="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 class="text-base font-semibold">本月预算设置</h2>
+                <p class="text-sm text-muted-foreground">{{ currentBudgetMonth }}</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" @click="addCategoryBudget">
+                <Plus data-icon="inline-start" />
+                新增分类预算
+              </Button>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <div class="flex flex-col gap-2">
+                <Label>本月总预算</Label>
+                <Input v-model.number="form.monthlyBudgetGoal" min="0" step="200" type="number" />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label>总预算预警阈值</Label>
+                <div class="relative">
+                  <Input v-model.number="totalBudgetThreshold" class="pr-9" max="100" min="1" step="5" type="number" />
+                  <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-5 rounded-lg border p-3">
+              <Alert v-if="!categoryBudgets.length">
+                <AlertTitle>暂未设置分类预算</AlertTitle>
+                <AlertDescription>可按餐饮、购物等分别控制预算。</AlertDescription>
+              </Alert>
+              <div v-else class="flex flex-col gap-3">
+                <div v-for="(item, index) in categoryBudgets" :key="item.key" class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_130px_auto] md:items-center">
+                  <Select v-model="item.category">
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择分类" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem v-for="category in categories" :key="category.id" :value="category.name">
+                          {{ category.name }}
+                        </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <Input v-model.number="item.amount" min="0" step="100" type="number" />
+                  <div class="relative">
+                    <Input v-model.number="item.alertThreshold" class="pr-9" max="100" min="1" step="5" type="number" />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">%</span>
+                  </div>
+                  <Button type="button" variant="destructive" size="icon-sm" @click="removeCategoryBudget(index)">
+                    <Trash2 />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-2">
+              <Label>补充偏好</Label>
+              <Textarea
+                v-model="form.notes"
+                rows="4"
+                maxlength="500"
+                placeholder="例如：优先攒应急金；少买数码产品；不接受高风险投资。"
+              />
             </div>
           </div>
+        </CardContent>
+      </Card>
 
-          <div class="memory-footer">
-            <el-button type="primary" :loading="memorySaving" @click="saveMemoryPreferences">保存记忆</el-button>
-          </div>
-        </section>
-
-        <section class="profile-panel alert-panel">
-          <div class="section-title">
-            <h2>最近预警</h2>
-            <span>{{ recentAlerts.length }} 条</span>
-          </div>
-          <div v-if="!recentAlerts.length" class="empty-box">保存预算后，达到阈值或超支时会显示在这里。</div>
-          <div v-for="alert in recentAlerts" :key="alert.id" class="alert-item" :class="alert.severity?.toLowerCase()">
-            <div class="alert-top">
-              <strong>{{ alert.category === 'ALL' ? '总预算' : alert.category }}</strong>
-              <span>{{ alertLabel(alert) }}</span>
+      <aside class="flex flex-col gap-4">
+        <Card>
+          <CardHeader class="flex flex-row items-start justify-between gap-3">
+            <div>
+              <CardTitle class="text-base">目标概览</CardTitle>
+              <CardDescription>{{ hasProfile ? '已配置' : '待完善' }}</CardDescription>
             </div>
-            <p>{{ alert.message }}</p>
-          </div>
-        </section>
+            <Badge variant="secondary">{{ riskLabel(form.riskPreference) }}</Badge>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-3">
+            <div class="grid gap-2">
+              <div class="flex items-center justify-between rounded-lg border p-3">
+                <span class="text-sm text-muted-foreground">可支配收入</span>
+                <strong class="text-sm">{{ money(disposableIncome) }}</strong>
+              </div>
+              <div class="flex items-center justify-between rounded-lg border p-3">
+                <span class="text-sm text-muted-foreground">预算占收入</span>
+                <strong class="text-sm">{{ budgetRatio }}</strong>
+              </div>
+              <div class="flex items-center justify-between rounded-lg border p-3">
+                <span class="text-sm text-muted-foreground">储蓄目标</span>
+                <strong class="text-sm">{{ money(form.savingsGoalAmount) }}</strong>
+              </div>
+            </div>
+            <Alert>
+              <WalletCards data-icon="inline-start" />
+              <AlertTitle>风险偏好</AlertTitle>
+              <AlertDescription>{{ riskText }}</AlertDescription>
+            </Alert>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle class="text-base">Agent 长期记忆</CardTitle>
+            <CardDescription>写给 Agent 的长期偏好和工作习惯。</CardDescription>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-4">
+            <div class="flex flex-col gap-2">
+              <Label>自定义指令</Label>
+              <Textarea
+                v-model="memoryPreferences.customInstructions"
+                rows="9"
+                maxlength="3000"
+                placeholder="例如：用中文对话，回答尽量简短；咖啡归为餐饮；股票问题可以给偏看好/偏谨慎/可观察，但要说明风险。"
+              />
+            </div>
+            <div class="rounded-lg border">
+              <div class="flex items-center justify-between gap-3 border-b p-3">
+                <div>
+                  <p class="text-sm font-medium">启用自动记忆</p>
+                  <p class="text-xs text-muted-foreground">从普通聊天中沉淀低风险偏好。</p>
+                </div>
+                <Switch v-model="memoryPreferences.autoMemoryEnabled" />
+              </div>
+              <div class="flex items-center justify-between gap-3 border-b p-3">
+                <div>
+                  <p class="text-sm font-medium">跳过工具辅助对话</p>
+                  <p class="text-xs text-muted-foreground">用了查询、搜索、记账等工具的对话不生成记忆。</p>
+                </div>
+                <Switch v-model="memoryPreferences.skipToolAssistedMemory" />
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3">
+                <div>
+                  <p class="text-sm font-medium">重置记忆</p>
+                  <p class="text-xs text-muted-foreground">删除所有 Agent 自定义指令和自动沉淀记忆。</p>
+                </div>
+                <Button variant="destructive" size="sm" :disabled="memoryResetting" @click="resetMemory">
+                  <Loader2 v-if="memoryResetting" data-icon="inline-start" class="animate-spin" />
+                  <RotateCcw v-else data-icon="inline-start" />
+                  重置
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+          <CardFooter class="justify-end border-t">
+            <Button :disabled="memorySaving" @click="saveMemoryPreferences">
+              <Loader2 v-if="memorySaving" data-icon="inline-start" class="animate-spin" />
+              保存记忆
+            </Button>
+          </CardFooter>
+        </Card>
+
+        <Card>
+          <CardHeader class="flex flex-row items-start justify-between gap-3">
+            <div>
+              <CardTitle class="text-base">最近预警</CardTitle>
+              <CardDescription>达到阈值或超支时会显示在这里。</CardDescription>
+            </div>
+            <Badge variant="outline">{{ recentAlerts.length }} 条</Badge>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-2">
+            <Alert v-if="!recentAlerts.length">
+              <AlertTitle>暂无预警</AlertTitle>
+              <AlertDescription>保存预算后，系统会根据阈值生成提醒。</AlertDescription>
+            </Alert>
+            <Alert v-for="alert in recentAlerts" v-else :key="alert.id" :variant="alert.severity === 'CRITICAL' ? 'destructive' : 'default'">
+              <AlertTitle>{{ alert.category === 'ALL' ? '总预算' : alert.category }} · {{ alertLabel(alert) }}</AlertTitle>
+              <AlertDescription>{{ alert.message }}</AlertDescription>
+            </Alert>
+          </CardContent>
+        </Card>
       </aside>
     </div>
   </div>
@@ -223,7 +261,32 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { Loader2, Plus, RotateCcw, Save, Trash2, WalletCards } from '@lucide/vue'
+import { confirmAction, feedback } from '@/lib/feedback'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { getFinancialProfileAPI, saveFinancialProfileAPI } from '../api/financialProfile'
 import { getBudgetsAPI, saveBudgetAPI, deleteBudgetAPI } from '../api/budget'
 import { getRecentAlertsAPI } from '../api/alert'
@@ -234,7 +297,6 @@ import {
   resetAgentMemoriesAPI
 } from '../api/agentMemory'
 
-const formRef = ref(null)
 const saving = ref(false)
 const loading = ref(false)
 const hasProfile = ref(false)
@@ -271,13 +333,6 @@ const riskOptions = [
   { label: '进取', value: 'AGGRESSIVE' }
 ]
 
-const rules = {
-  monthlyIncome: [{ type: 'number', min: 0, message: '月收入不能为负数' }],
-  fixedExpense: [{ type: 'number', min: 0, message: '固定支出不能为负数' }],
-  savingsGoalAmount: [{ type: 'number', min: 0, message: '储蓄目标不能为负数' }],
-  monthlyBudgetGoal: [{ type: 'number', min: 0, message: '预算目标不能为负数' }]
-}
-
 const disposableIncome = computed(() => Math.max(Number(form.monthlyIncome || 0) - Number(form.fixedExpense || 0), 0))
 
 const budgetRatio = computed(() => {
@@ -294,6 +349,10 @@ const riskText = computed(() => {
 
 function money(value) {
   return `¥${Number(value || 0).toFixed(2)}`
+}
+
+function riskLabel(value) {
+  return riskOptions.find(option => option.value === value)?.label || '稳健'
 }
 
 function applyProfile(profile) {
@@ -358,8 +417,7 @@ async function loadProfile() {
 }
 
 async function handleSave() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
+  if (!validateProfile()) return
   saving.value = true
   try {
     const profileRes = await saveFinancialProfileAPI({ ...form })
@@ -371,7 +429,7 @@ async function handleSave() {
     ])
     applyBudgetData(budgetRes.data || {})
     recentAlerts.value = alertRes.data || []
-    ElMessage.success('财务画像和预算已保存')
+    feedback.success('财务画像和预算已保存')
   } finally {
     saving.value = false
   }
@@ -388,26 +446,42 @@ async function saveMemoryPreferences() {
       autoMemoryEnabled: saved.autoMemoryEnabled ?? submitted.autoMemoryEnabled,
       skipToolAssistedMemory: saved.skipToolAssistedMemory ?? submitted.skipToolAssistedMemory
     })
-    ElMessage.success('Agent 长期记忆已保存')
+    feedback.success('Agent 长期记忆已保存')
   } finally {
     memorySaving.value = false
   }
 }
 
 async function resetMemory() {
-  await ElMessageBox.confirm('确定删除所有 Agent 长期记忆吗？财务画像不会被删除。', '重置记忆', {
-    type: 'warning',
-    confirmButtonText: '重置',
-    cancelButtonText: '取消'
-  })
+  const confirmed = await confirmAction('确定删除所有 Agent 长期记忆吗？财务画像不会被删除。')
+  if (!confirmed) return
   memoryResetting.value = true
   try {
     await resetAgentMemoriesAPI()
     applyMemoryPreferences({})
-    ElMessage.success('Agent 长期记忆已重置')
+    feedback.success('Agent 长期记忆已重置')
   } finally {
     memoryResetting.value = false
   }
+}
+
+function validateProfile() {
+  const checks = [
+    [form.monthlyIncome, '月收入不能为负数'],
+    [form.fixedExpense, '固定支出不能为负数'],
+    [form.savingsGoalAmount, '储蓄目标不能为负数'],
+    [form.monthlyBudgetGoal, '预算目标不能为负数']
+  ]
+  const failed = checks.find(([value]) => Number(value || 0) < 0)
+  if (failed) {
+    feedback.warning(failed[1])
+    return false
+  }
+  if (Number(totalBudgetThreshold.value || 0) < 1 || Number(totalBudgetThreshold.value || 0) > 100) {
+    feedback.warning('总预算预警阈值需要在 1 到 100 之间')
+    return false
+  }
+  return true
 }
 
 async function syncBudgets() {
@@ -468,308 +542,3 @@ function currentMonth() {
 
 onMounted(loadProfile)
 </script>
-
-<style scoped>
-.profile-page {
-  max-width: 1180px;
-  margin: 0 auto;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 22px;
-}
-
-.page-header h1 {
-  margin: 0;
-  color: var(--text);
-  font-size: 28px;
-  font-weight: 800;
-}
-
-.page-header p {
-  margin: 8px 0 0;
-  color: var(--text-secondary);
-  font-size: 14px;
-}
-
-.profile-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 20px;
-  align-items: start;
-}
-
-.profile-panel {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow);
-}
-
-.form-panel,
-.summary-panel,
-.memory-panel,
-.alert-panel {
-  padding: 20px;
-}
-
-.form-panel {
-  padding: 24px;
-}
-
-.profile-side {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.section-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.section-title.compact {
-  margin-top: 18px;
-}
-
-.section-title h2 {
-  margin: 0;
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.section-title span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-:deep(.el-input-number) {
-  width: 100%;
-}
-
-.percent-input-wrap {
-  position: relative;
-}
-
-.percent-input-wrap :deep(.el-input-number .el-input__wrapper) {
-  padding-right: 30px;
-}
-
-.percent-suffix {
-  position: absolute;
-  top: 50%;
-  right: 36px;
-  transform: translateY(-50%);
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 600;
-  pointer-events: none;
-}
-
-:deep(.el-segmented) {
-  width: 100%;
-}
-
-:deep(.el-segmented__item) {
-  flex: 1;
-}
-
-.metric-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.metric-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--bg);
-}
-
-.metric-row span {
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.metric-row strong {
-  color: var(--text);
-  font-size: 15px;
-}
-
-.risk-strip {
-  margin-top: 14px;
-  padding: 12px;
-  border-radius: 8px;
-  background: #eef2ff;
-  color: #1e3a8a;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.risk-strip.conservative {
-  background: #ecfdf5;
-  color: #047857;
-}
-
-.risk-strip.aggressive {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.memory-editor label {
-  display: block;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.memory-editor p {
-  margin: 6px 0 12px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.memory-settings {
-  overflow: hidden;
-  margin-top: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.memory-setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px 12px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-
-.memory-setting-row:last-child {
-  border-bottom: 0;
-}
-
-.memory-setting-row strong {
-  display: block;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.memory-setting-row span {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.memory-setting-row.danger {
-  background: #fff7f7;
-}
-
-.memory-footer {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
-.budget-editor {
-  margin-bottom: 18px;
-}
-
-.budget-editor-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.empty-box {
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.budget-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 110px 56px;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.budget-category,
-.budget-amount,
-.budget-threshold {
-  width: 100%;
-}
-
-.alert-item {
-  padding: 12px;
-  border-radius: 8px;
-  background: #fff7ed;
-  margin-top: 10px;
-}
-
-.alert-item.critical {
-  background: #fef2f2;
-}
-
-.alert-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 6px;
-}
-
-.alert-top strong {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.alert-top span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.alert-item p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-@media (max-width: 960px) {
-  .profile-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .page-header {
-    flex-direction: column;
-  }
-
-  .budget-row {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

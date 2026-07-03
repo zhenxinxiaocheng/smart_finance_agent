@@ -1,89 +1,79 @@
 <template>
-  <div class="daily-stats">
+  <div class="daily-stats flex flex-col gap-[var(--app-section-gap)]">
     <!-- ===== 近七日统计 ===== -->
-    <div class="section-block">
-      <div class="section-header">
-        <h3 class="section-title">
-          <span class="title-dot" style="background: var(--primary);"></span>
-          近七日统计
-        </h3>
-        <span class="section-date-range">{{ sevenDayRange }}</span>
-      </div>
+    <Card>
+      <CardHeader class="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>近七日统计</CardTitle>
+          <CardDescription>按天查看最近一周收入、支出与结余走势</CardDescription>
+        </div>
+        <Badge variant="outline">{{ sevenDayRange }}</Badge>
+      </CardHeader>
 
       <!-- 统计卡片 -->
-      <div class="stats-cards-row">
-        <div class="stat-mini-card" v-for="card in dailyCards" :key="card.label">
-          <div class="mini-icon" :class="card.iconClass">
-            <el-icon :size="18"><component :is="card.icon" /></el-icon>
-          </div>
-          <div class="mini-body">
-            <span class="mini-label">{{ card.label }}</span>
-            <span class="mini-value" :class="card.valueClass">{{ card.formatted }}</span>
+      <CardContent class="flex flex-col gap-4">
+        <div class="grid gap-3 md:grid-cols-3">
+          <div class="rounded-lg border bg-card p-[var(--app-card-padding)]" v-for="card in dailyCards" :key="card.label">
+            <div class="flex items-center gap-3">
+              <div class="flex size-10 items-center justify-center rounded-lg border bg-background text-foreground">
+                <component :is="card.icon" data-icon="inline-start" />
+              </div>
+              <div class="min-w-0">
+                <p class="text-sm text-muted-foreground">{{ card.label }}</p>
+                <p class="text-xl font-semibold tabular-nums" :class="card.valueClass">{{ card.formatted }}</p>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- 七日收支趋势图 -->
-      <div class="chart-card">
-        <div class="chart-header">
-          <h4 class="chart-title">七日收支趋势</h4>
+        <!-- 七日收支趋势图 -->
+        <div class="rounded-lg border bg-card">
+          <div class="border-b px-4 py-3">
+            <h4 class="text-sm font-medium">七日收支趋势</h4>
+          </div>
+          <div class="p-3">
+            <v-chart :option="sevenDayChartOption" class="chart-bar" autoresize />
+          </div>
         </div>
-        <div class="chart-body">
-          <v-chart :option="sevenDayChartOption" class="chart-bar" autoresize />
-        </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
 
     <!-- ===== 资产汇总 ===== -->
-    <div class="section-block">
-      <div class="section-header">
-        <h3 class="section-title">
-          <span class="title-dot" style="background: var(--accent);"></span>
-          资产汇总
-        </h3>
-      </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>资产汇总</CardTitle>
+        <CardDescription>汇总当前周期的收入、支出、净资产和交易笔数</CardDescription>
+      </CardHeader>
 
-      <div class="assets-grid">
-        <div class="asset-card highlight">
-          <div class="asset-card-header">
-            <span class="asset-label">总资产</span>
-            <el-icon :size="20" class="asset-icon total"><Money /></el-icon>
+      <CardContent>
+        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div
+            v-for="asset in assetCards"
+            :key="asset.label"
+            class="rounded-lg border bg-background p-4"
+            :class="asset.highlight ? 'border-primary/20 bg-primary/5' : ''"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-sm text-muted-foreground">{{ asset.label }}</span>
+              <component :is="asset.icon" data-icon="inline-start" class="text-muted-foreground" />
+            </div>
+            <p class="mt-3 text-2xl font-semibold tabular-nums" :class="asset.valueClass">{{ asset.value }}</p>
+            <p class="mt-1 text-xs text-muted-foreground">{{ asset.desc }}</p>
           </div>
-          <span class="asset-value total-value">{{ formatMoney(assetSummary.totalAssets) }}</span>
-          <span class="asset-desc">当前累计净资产</span>
         </div>
-        <div class="asset-card">
-          <div class="asset-card-header">
-            <span class="asset-label">总收入</span>
-            <el-icon :size="20" class="asset-icon income"><Top /></el-icon>
-          </div>
-          <span class="asset-value income-value">{{ formatMoney(assetSummary.totalIncome) }}</span>
-          <span class="asset-desc">期间累计收入</span>
-        </div>
-        <div class="asset-card">
-          <div class="asset-card-header">
-            <span class="asset-label">总支出</span>
-            <el-icon :size="20" class="asset-icon expense"><Bottom /></el-icon>
-          </div>
-          <span class="asset-value expense-value">{{ formatMoney(assetSummary.totalExpense) }}</span>
-          <span class="asset-desc">期间累计支出</span>
-        </div>
-        <div class="asset-card">
-          <div class="asset-card-header">
-            <span class="asset-label">交易笔数</span>
-            <el-icon :size="20" class="asset-icon count"><List /></el-icon>
-          </div>
-          <span class="asset-value count-value">{{ assetSummary.transactionCount }}</span>
-          <span class="asset-desc">期间交易总笔数</span>
-        </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { ArrowDownRight, ArrowUpRight, ReceiptText, WalletCards } from '@lucide/vue'
 import { listTransactionsAPI } from '../../api/transaction'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAppearance } from '@/composables/useAppearance'
+import { getChartTheme } from '@/lib/chartTheme'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { BarChart } from 'echarts/charts'
@@ -94,6 +84,7 @@ use([BarChart, TitleComponent, TooltipComponent, GridComponent, CanvasRenderer])
 
 const sevenDayData = ref({ income: [], expense: [], labels: [] })
 const assetSummary = ref({ totalAssets: 0, totalIncome: 0, totalExpense: 0, transactionCount: 0 })
+const { mode, themeColor } = useAppearance()
 
 const sevenDayRange = computed(() => {
   const now = new Date()
@@ -110,46 +101,54 @@ const dailyCards = computed(() => {
   const expense7 = sevenDayData.value.expense.reduce((s, v) => s + v, 0)
   const balance = income7 - expense7
   return [
-    { label: '收入', icon: 'Top', iconClass: 'income', valueClass: 'income-text', formatted: formatMoney(income7) },
-    { label: '支出', icon: 'Bottom', iconClass: 'expense', valueClass: 'expense-text', formatted: formatMoney(expense7) },
-    { label: '结余', icon: 'Money', iconClass: 'balance', valueClass: balance >= 0 ? 'balance-positive' : 'balance-negative', formatted: formatMoney(balance) }
+    { label: '收入', icon: ArrowUpRight, valueClass: 'text-primary', formatted: formatMoney(income7) },
+    { label: '支出', icon: ArrowDownRight, valueClass: 'text-destructive', formatted: formatMoney(expense7) },
+    { label: '结余', icon: WalletCards, valueClass: balance >= 0 ? 'text-primary' : 'text-destructive', formatted: formatMoney(balance) }
   ]
 })
 
-const sevenDayChartOption = computed(() => ({
-  tooltip: {
-    trigger: 'axis',
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    borderColor: '#e2e8f0',
-    borderWidth: 1,
-    textStyle: { color: '#0f172a', fontSize: 12 }
-  },
-  grid: { left: '3%', right: '4%', bottom: '3%', top: '20px', containLabel: true },
-  xAxis: {
-    type: 'category',
-    data: sevenDayData.value.labels,
-    axisLine: { lineStyle: { color: '#e2e8f0' } },
-    axisTick: { show: false },
-    axisLabel: { color: '#94a3b8', fontSize: 11 }
-  },
-  yAxis: {
-    type: 'value',
-    splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
-    axisLabel: { color: '#94a3b8', fontSize: 11 }
-  },
-  series: [
-    {
-      name: '收入', type: 'bar', barWidth: 14,
-      itemStyle: { color: '#1e3a8a', borderRadius: [4, 4, 0, 0] },
-      data: sevenDayData.value.income
-    },
-    {
-      name: '支出', type: 'bar', barWidth: 14,
-      itemStyle: { color: '#ef4444', borderRadius: [4, 4, 0, 0] },
-      data: sevenDayData.value.expense
-    }
+const assetCards = computed(() => {
+  return [
+    { label: '总资产', icon: WalletCards, value: formatMoney(assetSummary.value.totalAssets), desc: '当前累计净资产', valueClass: 'text-primary', highlight: true },
+    { label: '总收入', icon: ArrowUpRight, value: formatMoney(assetSummary.value.totalIncome), desc: '期间累计收入', valueClass: 'text-primary' },
+    { label: '总支出', icon: ArrowDownRight, value: formatMoney(assetSummary.value.totalExpense), desc: '期间累计支出', valueClass: 'text-destructive' },
+    { label: '交易笔数', icon: ReceiptText, value: assetSummary.value.transactionCount, desc: '期间交易总笔数', valueClass: 'text-foreground' }
   ]
-}))
+})
+
+const sevenDayChartOption = computed(() => {
+  mode.value
+  themeColor.value
+  const theme = getChartTheme()
+  return {
+    tooltip: theme.tooltip,
+    grid: { left: '3%', right: '4%', bottom: '3%', top: '20px', containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: sevenDayData.value.labels,
+      axisLine: theme.axisLine,
+      axisTick: { show: false },
+      axisLabel: theme.axisLabel
+    },
+    yAxis: {
+      type: 'value',
+      splitLine: theme.splitLine,
+      axisLabel: theme.axisLabel
+    },
+    series: [
+      {
+        name: '收入', type: 'bar', barWidth: 14,
+        itemStyle: { color: theme.primary, borderRadius: [4, 4, 0, 0] },
+        data: sevenDayData.value.income
+      },
+      {
+        name: '支出', type: 'bar', barWidth: 14,
+        itemStyle: { color: theme.destructive, borderRadius: [4, 4, 0, 0] },
+        data: sevenDayData.value.expense
+      }
+    ]
+  }
+})
 
 async function fetchData() {
   const now = new Date()
@@ -214,129 +213,5 @@ onMounted(fetchData)
 </script>
 
 <style scoped>
-.daily-stats { display: flex; flex-direction: column; gap: 24px; }
-
-/* ===== 区块 ===== */
-.section-block {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px 0;
-}
-
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-}
-
-.title-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-
-.section-date-range { font-size: 13px; color: var(--text-muted); }
-
-/* ===== 统计小卡片 ===== */
-.stats-cards-row {
-  display: flex;
-  gap: 16px;
-  padding: 20px 24px;
-}
-
-.stat-mini-card {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 18px 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-  transition: var(--transition);
-}
-
-.stat-mini-card:hover {
-  border-color: var(--primary-lighter);
-  box-shadow: var(--shadow-sm);
-}
-
-.mini-icon {
-  width: 42px; height: 42px;
-  border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-
-.mini-icon.income { background: #eef2ff; color: #1e3a8a; }
-.mini-icon.expense { background: #fef2f2; color: #ef4444; }
-.mini-icon.balance { background: #ecfdf5; color: #10b981; }
-
-.mini-body { display: flex; flex-direction: column; gap: 2px; }
-.mini-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
-.mini-value { font-size: 20px; font-weight: 700; font-feature-settings: 'tnum'; }
-
-.income-text { color: #1e3a8a; }
-.expense-text { color: #ef4444; }
-.balance-positive { color: #10b981; }
-.balance-negative { color: #ef4444; }
-
-/* ===== 图表卡片 ===== */
-.chart-card { border-top: 1px solid var(--border); }
-.chart-header { padding: 16px 24px 0; }
-.chart-title { font-size: 14px; font-weight: 600; color: var(--text); margin: 0; }
-.chart-body { padding: 12px 16px 16px; }
 .chart-bar { height: 280px; }
-
-/* ===== 资产汇总 ===== */
-.assets-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  padding: 20px 24px 24px;
-}
-
-.asset-card {
-  padding: 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: var(--transition);
-  display: flex; flex-direction: column; gap: 8px;
-}
-
-.asset-card:hover { box-shadow: var(--shadow-sm); border-color: var(--primary-lighter); }
-.asset-card.highlight { background: linear-gradient(135deg, #eef2ff 0%, #fff 100%); border-color: var(--primary-lighter); }
-
-.asset-card-header { display: flex; justify-content: space-between; align-items: center; }
-.asset-label { font-size: 13px; color: var(--text-muted); font-weight: 500; }
-.asset-value { font-size: 24px; font-weight: 700; font-feature-settings: 'tnum'; }
-.asset-desc { font-size: 11px; color: var(--text-muted); }
-
-.total-value { color: var(--primary); }
-.income-value { color: #1e3a8a; }
-.expense-value { color: #ef4444; }
-.count-value { color: var(--accent-dark); }
-
-.asset-icon.total { color: var(--primary); }
-.asset-icon.income { color: #1e3a8a; }
-.asset-icon.expense { color: #ef4444; }
-.asset-icon.count { color: var(--accent-dark); }
-
-@media (max-width: 1000px) {
-  .assets-grid { grid-template-columns: repeat(2, 1fr); }
-  .stats-cards-row { flex-direction: column; }
-}
-
-@media (max-width: 600px) {
-  .assets-grid { grid-template-columns: 1fr; }
-}
 </style>

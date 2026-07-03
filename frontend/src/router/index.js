@@ -5,18 +5,18 @@ const routes = [
   {
     path: '/login',
     name: 'Login',
-    component: () => import('../views/Login.vue'),
+    component: () => import('../views/LoginShadcn.vue'),
     meta: { guest: true }
   },
   {
     path: '/register',
     name: 'Register',
-    component: () => import('../views/Register.vue'),
+    component: () => import('../views/RegisterShadcn.vue'),
     meta: { guest: true }
   },
   {
     path: '/',
-    component: () => import('../layouts/MainLayout.vue'),
+    component: () => import('../layouts/MainLayoutShadcn.vue'),
     meta: { auth: true },
     redirect: '/statistics',
     children: [

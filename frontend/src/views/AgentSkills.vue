@@ -1,110 +1,191 @@
 <template>
-  <div class="skills-page">
-    <section class="skills-main">
-      <header class="page-head">
-        <div>
-          <h1>Agent 技能</h1>
-          <p>启用、禁用和审计 Agent 可使用的 Skills。</p>
-        </div>
-        <button class="refresh-btn" @click="loadSkills">刷新</button>
-      </header>
-
-      <div class="filter-row">
-        <el-input v-model="keyword" placeholder="搜索技能" clearable />
-        <el-select v-model="category" placeholder="全部分类" clearable>
-          <el-option v-for="item in categories" :key="item" :label="item" :value="item" />
-        </el-select>
-      </div>
-
-      <div v-if="loading" class="empty-state">加载中...</div>
-      <div v-else-if="filteredSkills.length === 0" class="empty-state">暂无技能</div>
-      <div v-else class="skill-grid">
-        <article
-          v-for="skill in filteredSkills"
-          :key="skill.id"
-          class="skill-card"
-          :class="{ active: selectedSkill?.id === skill.id, disabled: !isEnabled(skill) }"
-          @click="selectSkill(skill)"
-        >
-          <div class="skill-card-head">
-            <div>
-              <h2>{{ skill.name || skill.skillKey }}</h2>
-              <p>{{ skill.skillKey }}</p>
-            </div>
-            <el-switch
-              :model-value="isEnabled(skill)"
-              :loading="skill.updating"
-              @click.stop
-              @change="value => toggleSkill(skill, value)"
-            />
+  <div class="grid h-full gap-5 overflow-auto lg:grid-cols-[minmax(0,1fr)_380px]">
+    <Card class="min-w-0">
+      <CardHeader class="gap-4">
+        <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div class="min-w-0">
+            <CardTitle class="text-2xl">Agent 技能</CardTitle>
+            <CardDescription>启用、禁用和审计 Agent 可使用的 Skills。</CardDescription>
           </div>
-          <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
-          <div class="skill-meta">
-            <span>{{ skill.category || '未分类' }}</span>
-            <span :class="riskClass(skill.riskLevel)">{{ riskLabel(skill.riskLevel) }}</span>
-            <span>{{ sourceLabel(skill) }}</span>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <aside class="detail-panel">
-      <template v-if="selectedSkill">
-        <div class="detail-head">
-          <div>
-            <h2>{{ selectedSkill.name || selectedSkill.skillKey }}</h2>
-            <p>{{ selectedSkill.sourceType }} · {{ selectedSkill.version || '1.0.0' }}</p>
-          </div>
-          <button v-if="!Number(selectedSkill.builtIn)" class="danger-btn" @click="deleteSkill(selectedSkill)">卸载</button>
+          <Button variant="outline" :disabled="loading" @click="loadSkills">
+            <RefreshCw data-icon="inline-start" :class="{ 'animate-spin': loading }" />
+            刷新
+          </Button>
         </div>
 
-        <dl class="detail-list">
-          <div>
-            <dt>风险等级</dt>
-            <dd>{{ riskLabel(selectedSkill.riskLevel) }}</dd>
+        <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div class="relative">
+            <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input v-model="keyword" class="pl-9" placeholder="搜索技能" />
           </div>
-          <div>
-            <dt>绑定工具</dt>
-            <dd>{{ selectedSkill.boundTools || '无' }}</dd>
-          </div>
-          <div>
-            <dt>来源</dt>
-            <dd>{{ selectedSkill.sourceUri }}</dd>
-          </div>
-        </dl>
+          <Select v-model="category">
+            <SelectTrigger>
+              <SelectValue placeholder="全部分类" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="ALL">全部分类</SelectItem>
+                <SelectItem v-for="item in categories" :key="item" :value="item">{{ item }}</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
 
-        <section class="instruction-box">
-          <h3>Skill 说明</h3>
-          <pre>{{ selectedSkill.instructionText || selectedSkill.description || '暂无说明' }}</pre>
-        </section>
-
-        <section class="invocation-box">
-          <div class="section-title">
-            <h3>调用历史</h3>
-            <button class="ghost-btn" @click="loadInvocations(selectedSkill)">刷新</button>
-          </div>
-          <div v-if="invocationLoading" class="empty-state small">加载中...</div>
-          <div v-else-if="invocations.length === 0" class="empty-state small">暂无调用记录</div>
-          <div v-else class="invocation-list">
-            <div v-for="item in invocations" :key="item.id" class="invocation-item">
-              <div class="invocation-top">
-                <span>{{ item.skillName }}</span>
-                <span :class="item.success ? 'ok' : 'fail'">{{ item.success ? '成功' : item.blocked ? '已拦截' : '失败' }}</span>
+      <CardContent>
+        <div v-if="loading" class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <Skeleton v-for="index in 6" :key="index" class="h-36 rounded-lg" />
+        </div>
+        <Alert v-else-if="filteredSkills.length === 0">
+          <AlertTitle>暂无技能</AlertTitle>
+          <AlertDescription>没有找到匹配当前筛选条件的 Skill。</AlertDescription>
+        </Alert>
+        <div v-else class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <Card
+            v-for="skill in filteredSkills"
+            :key="skill.id"
+            class="cursor-pointer transition-colors"
+            :class="[
+              selectedSkill?.id === skill.id ? 'border-primary bg-muted/40' : 'hover:border-primary/40',
+              !isEnabled(skill) ? 'opacity-60' : ''
+            ]"
+            @click="selectSkill(skill)"
+          >
+            <CardHeader class="gap-3 p-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <CardTitle class="truncate text-base">{{ skill.name || skill.skillKey }}</CardTitle>
+                  <CardDescription class="truncate">{{ skill.skillKey }}</CardDescription>
+                </div>
+                <Switch
+                  :model-value="isEnabled(skill)"
+                  :disabled="skill.updating"
+                  @click.stop
+                  @update:model-value="value => toggleSkill(skill, value)"
+                />
               </div>
-              <p>{{ item.summary }}</p>
-              <time>{{ formatTime(item.createdAt) }}</time>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-4 p-4 pt-0">
+              <p class="line-clamp-3 min-h-[60px] text-sm leading-5 text-muted-foreground">
+                {{ skill.description || '暂无描述' }}
+              </p>
+              <div class="flex flex-wrap gap-2">
+                <Badge variant="secondary">{{ skill.category || '未分类' }}</Badge>
+                <Badge :variant="riskVariant(skill.riskLevel)">{{ riskLabel(skill.riskLevel) }}</Badge>
+                <Badge variant="outline">{{ sourceLabel(skill) }}</Badge>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card class="min-w-0 lg:sticky lg:top-0 lg:h-fit">
+      <template v-if="selectedSkill">
+        <CardHeader class="gap-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <CardTitle class="truncate">{{ selectedSkill.name || selectedSkill.skillKey }}</CardTitle>
+              <CardDescription>{{ selectedSkill.sourceType }} · {{ selectedSkill.version || '1.0.0' }}</CardDescription>
+            </div>
+            <Button v-if="!Number(selectedSkill.builtIn)" variant="destructive" size="sm" @click="deleteSkill(selectedSkill)">
+              <Trash2 data-icon="inline-start" />
+              卸载
+            </Button>
+          </div>
+        </CardHeader>
+
+        <CardContent class="flex flex-col gap-5">
+          <div class="grid gap-3">
+            <div class="rounded-lg border border-border p-3">
+              <p class="text-xs text-muted-foreground">风险等级</p>
+              <p class="mt-1 text-sm font-medium">{{ riskLabel(selectedSkill.riskLevel) }}</p>
+            </div>
+            <div class="rounded-lg border border-border p-3">
+              <p class="text-xs text-muted-foreground">绑定工具</p>
+              <p class="mt-1 break-words text-sm font-medium">{{ selectedSkill.boundTools || '无' }}</p>
+            </div>
+            <div class="rounded-lg border border-border p-3">
+              <p class="text-xs text-muted-foreground">来源</p>
+              <p class="mt-1 break-words text-sm font-medium">{{ selectedSkill.sourceUri || '-' }}</p>
             </div>
           </div>
-        </section>
+
+          <Separator />
+
+          <section class="flex flex-col gap-3">
+            <h3 class="text-sm font-semibold">Skill 说明</h3>
+            <ScrollArea class="h-64 rounded-lg border bg-muted/30 p-3">
+              <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-foreground">{{ selectedSkill.instructionText || selectedSkill.description || '暂无说明' }}</pre>
+            </ScrollArea>
+          </section>
+
+          <section class="flex flex-col gap-3">
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="text-sm font-semibold">调用历史</h3>
+              <Button size="sm" variant="ghost" :disabled="invocationLoading" @click="loadInvocations(selectedSkill)">
+                <RefreshCw data-icon="inline-start" :class="{ 'animate-spin': invocationLoading }" />
+                刷新
+              </Button>
+            </div>
+            <Skeleton v-if="invocationLoading" class="h-24 rounded-lg" />
+            <Alert v-else-if="invocations.length === 0">
+              <AlertTitle>暂无调用记录</AlertTitle>
+              <AlertDescription>这个 Skill 暂时还没有被 Agent 调用。</AlertDescription>
+            </Alert>
+            <div v-else class="grid gap-2">
+              <div v-for="item in invocations" :key="item.id" class="rounded-lg border p-3">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="truncate text-sm font-medium">{{ item.skillName }}</span>
+                  <Badge :variant="item.success ? 'secondary' : 'destructive'">
+                    {{ item.success ? '成功' : item.blocked ? '已拦截' : '失败' }}
+                  </Badge>
+                </div>
+                <p class="mt-2 text-sm leading-5 text-muted-foreground">{{ item.summary || '无摘要' }}</p>
+                <time class="mt-2 block text-xs text-muted-foreground">{{ formatTime(item.createdAt) }}</time>
+              </div>
+            </div>
+          </section>
+        </CardContent>
       </template>
-      <div v-else class="empty-state">选择一个技能查看详情</div>
-    </aside>
+
+      <CardContent v-else class="p-6">
+        <Alert>
+          <AlertTitle>选择一个技能</AlertTitle>
+          <AlertDescription>点击左侧 Skill 后查看说明、风险和调用历史。</AlertDescription>
+        </Alert>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { RefreshCw, Search, Trash2 } from '@lucide/vue'
+import { confirmAction, feedback } from '@/lib/feedback'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import {
   deleteAgentSkillAPI,
   listAgentSkillsAPI,
@@ -118,7 +199,7 @@ const invocations = ref([])
 const loading = ref(false)
 const invocationLoading = ref(false)
 const keyword = ref('')
-const category = ref('')
+const category = ref('ALL')
 
 const categories = computed(() => [...new Set(skills.value.map(skill => skill.category).filter(Boolean))])
 
@@ -127,7 +208,7 @@ const filteredSkills = computed(() => {
   return skills.value.filter(skill => {
     const matchKeyword = !key
       || `${skill.name || ''} ${skill.skillKey || ''} ${skill.description || ''}`.toLowerCase().includes(key)
-    const matchCategory = !category.value || skill.category === category.value
+    const matchCategory = category.value === 'ALL' || skill.category === category.value
     return matchKeyword && matchCategory
   })
 })
@@ -147,10 +228,10 @@ function riskLabel(risk) {
   return '只读'
 }
 
-function riskClass(risk) {
-  if (risk === 'REQUIRES_CONFIRMATION') return 'risk-confirm'
-  if (risk === 'EXTERNAL_INFORMATION') return 'risk-external'
-  return 'risk-read'
+function riskVariant(risk) {
+  if (risk === 'REQUIRES_CONFIRMATION') return 'destructive'
+  if (risk === 'EXTERNAL_INFORMATION') return 'outline'
+  return 'secondary'
 }
 
 async function loadSkills() {
@@ -183,13 +264,10 @@ async function toggleSkill(skill, enabled) {
 }
 
 async function deleteSkill(skill) {
-  await ElMessageBox.confirm(`确定卸载 ${skill.name || skill.skillKey} 吗？`, '卸载技能', {
-    confirmButtonText: '卸载',
-    cancelButtonText: '取消',
-    type: 'warning'
-  })
+  const confirmed = await confirmAction(`确定卸载 ${skill.name || skill.skillKey} 吗？`)
+  if (!confirmed) return
   await deleteAgentSkillAPI(skill.id)
-  ElMessage.success('技能已卸载')
+  feedback.success('技能已卸载')
   selectedSkill.value = null
   await loadSkills()
 }
@@ -218,266 +296,3 @@ onMounted(async () => {
   await loadSkills()
 })
 </script>
-
-<style scoped>
-.skills-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 20px;
-  height: 100%;
-  padding: 24px;
-  background: #f3f6fb;
-  color: #172033;
-  overflow: auto;
-}
-
-.skills-main,
-.detail-panel,
-.install-panel {
-  background: #fff;
-  border: 1px solid #dfe7f2;
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-
-.skills-main {
-  padding: 20px;
-  min-width: 0;
-}
-
-.page-head,
-.skill-card-head,
-.detail-head,
-.section-title,
-.invocation-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.page-head h1,
-.detail-head h2,
-.skill-card h2 {
-  margin: 0;
-  color: #101828;
-}
-
-.page-head h1 {
-  font-size: 22px;
-}
-
-.page-head p,
-.skill-card-head p,
-.detail-head p,
-.skill-desc,
-.invocation-item p,
-.empty-state {
-  margin: 6px 0 0;
-  color: #667085;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.install-panel {
-  margin: 18px 0;
-  padding: 14px;
-}
-
-.filter-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
-  margin-bottom: 16px;
-  gap: 10px;
-  align-items: center;
-}
-
-.refresh-btn,
-.ghost-btn,
-.danger-btn {
-  height: 36px;
-  border: 0;
-  border-radius: 6px;
-  padding: 0 14px;
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.refresh-btn,
-.ghost-btn {
-  background: #eef4ff;
-  color: #1d4ed8;
-}
-
-.danger-btn {
-  background: #fff1f2;
-  color: #be123c;
-}
-
-.skill-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.skill-card {
-  border: 1px solid #dfe7f2;
-  border-radius: 8px;
-  padding: 14px;
-  cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.skill-card.active {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
-}
-
-.skill-card.disabled {
-  opacity: 0.62;
-}
-
-.skill-card h2 {
-  font-size: 15px;
-}
-
-.skill-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.skill-meta span {
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  padding: 3px 8px;
-  font-size: 12px;
-}
-
-.skill-meta .risk-confirm {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.skill-meta .risk-external {
-  background: #ecfeff;
-  color: #0e7490;
-}
-
-.skill-meta .risk-read {
-  background: #f0fdf4;
-  color: #15803d;
-}
-
-.detail-panel {
-  padding: 18px;
-  min-width: 0;
-}
-
-.detail-list {
-  display: grid;
-  gap: 10px;
-  margin: 18px 0;
-}
-
-.detail-list div {
-  border-bottom: 1px solid #edf2f7;
-  padding-bottom: 10px;
-}
-
-.detail-list dt {
-  color: #667085;
-  font-size: 12px;
-}
-
-.detail-list dd {
-  margin: 4px 0 0;
-  color: #172033;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-
-.instruction-box,
-.invocation-box {
-  margin-top: 18px;
-}
-
-.instruction-box h3,
-.invocation-box h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
-}
-
-.instruction-box pre {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border: 1px solid #e5edf6;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 12px;
-  color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.invocation-list {
-  display: grid;
-  gap: 10px;
-}
-
-.invocation-item {
-  border: 1px solid #e5edf6;
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.invocation-item time {
-  display: block;
-  margin-top: 6px;
-  color: #98a2b3;
-  font-size: 12px;
-}
-
-.ok {
-  color: #15803d;
-}
-
-.fail {
-  color: #b42318;
-}
-
-.empty-state {
-  padding: 24px;
-  text-align: center;
-}
-
-.empty-state.small {
-  padding: 12px;
-}
-
-@media (max-width: 1100px) {
-  .skills-page {
-    grid-template-columns: 1fr;
-  }
-
-  .detail-panel {
-    order: -1;
-  }
-}
-
-@media (max-width: 720px) {
-  .skills-page {
-    padding: 12px;
-  }
-
-  .filter-row {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
