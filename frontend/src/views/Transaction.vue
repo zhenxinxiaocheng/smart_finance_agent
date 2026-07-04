@@ -88,7 +88,12 @@
               <TableEmpty v-else-if="tableData.length === 0" :colspan="7">
                 暂无消费记录
               </TableEmpty>
-              <TableRow v-for="row in tableData" v-else :key="row.id">
+              <TableRow
+                v-for="row in tableData"
+                v-else
+                :key="row.id"
+                :class="selectedTransactionId && Number(row.id) === selectedTransactionId ? 'bg-primary/5 ring-1 ring-inset ring-primary/30' : ''"
+              >
                 <TableCell class="font-medium">{{ row.transactionDate }}</TableCell>
                 <TableCell>
                   <Badge :variant="row.type === 'INCOME' ? 'secondary' : 'destructive'">
@@ -271,7 +276,7 @@
 </template>
 
 <script setup>
-import { computed, ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted, watch } from 'vue'
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -282,7 +287,8 @@ import {
   Settings,
   Trash2
 } from '@lucide/vue'
-import { listTransactionsAPI, addTransactionAPI, updateTransactionAPI, deleteTransactionAPI } from '../api/transaction'
+import { useRoute } from 'vue-router'
+import { listTransactionsAPI, addTransactionAPI, updateTransactionAPI, deleteTransactionAPI, getTransactionAPI } from '../api/transaction'
 import { listCategoriesAPI, addCategoryAPI, updateCategoryAPI, deleteCategoryAPI } from '../api/category'
 import CategorySelect from '../components/CategorySelectShadcn.vue'
 import { confirmAction, feedback } from '@/lib/feedback'
@@ -329,12 +335,14 @@ import {
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 
+const route = useRoute()
 const tableData = ref([])
 const loading = ref(false)
 const page = ref(1)
 const size = ref(20)
 const total = ref(0)
 const totalPages = computed(() => Math.max(Math.ceil(total.value / size.value), 1))
+const selectedTransactionId = ref(route.query.transactionId ? Number(route.query.transactionId) : null)
 
 const filter = reactive({
   type: '',
@@ -463,10 +471,23 @@ async function fetchData() {
     if (res.code === 200) {
       tableData.value = res.data.records || []
       total.value = res.data.total || 0
+      await pinSelectedTransaction()
     }
   } finally {
     loading.value = false
   }
+}
+
+async function pinSelectedTransaction() {
+  if (!selectedTransactionId.value) return
+  const exists = tableData.value.some(item => Number(item.id) === selectedTransactionId.value)
+  if (exists) return
+  try {
+    const res = await getTransactionAPI(selectedTransactionId.value)
+    if (res.code === 200 && res.data) {
+      tableData.value = [{ ...res.data, _auditPinned: true }, ...tableData.value]
+    }
+  } catch {}
 }
 
 function resetFilter() {
@@ -564,6 +585,11 @@ async function handleDelete(id) {
 onMounted(() => {
   fetchData()
   fetchCategories()
+})
+
+watch(() => route.query.transactionId, transactionId => {
+  selectedTransactionId.value = transactionId ? Number(transactionId) : null
+  fetchData()
 })
 </script>
 

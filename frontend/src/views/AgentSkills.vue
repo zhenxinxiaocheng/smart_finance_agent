@@ -160,8 +160,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RefreshCw, Search, Trash2 } from '@lucide/vue'
+import { useRoute } from 'vue-router'
 import { confirmAction, feedback } from '@/lib/feedback'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -193,6 +194,7 @@ import {
   setAgentSkillEnabledAPI
 } from '../api/agentSkills'
 
+const route = useRoute()
 const skills = ref([])
 const selectedSkill = ref(null)
 const invocations = ref([])
@@ -239,15 +241,25 @@ async function loadSkills() {
   try {
     const res = await listAgentSkillsAPI()
     skills.value = Array.isArray(res.data) ? res.data : []
-    selectedSkill.value = selectedSkill.value
-      ? skills.value.find(item => item.id === selectedSkill.value.id) || skills.value[0] || null
-      : skills.value[0] || null
+    selectedSkill.value = resolveSelectedSkill() || skills.value[0] || null
     if (selectedSkill.value) {
       await loadInvocations(selectedSkill.value)
     }
   } finally {
     loading.value = false
   }
+}
+
+function resolveSelectedSkill() {
+  const queryId = route.query.skillId ? Number(route.query.skillId) : null
+  if (queryId) {
+    const matched = skills.value.find(item => Number(item.id) === queryId)
+    if (matched) return matched
+  }
+  if (selectedSkill.value) {
+    return skills.value.find(item => item.id === selectedSkill.value.id) || null
+  }
+  return null
 }
 
 async function toggleSkill(skill, enabled) {
@@ -294,5 +306,13 @@ function formatTime(value) {
 
 onMounted(async () => {
   await loadSkills()
+})
+
+watch(() => route.query.skillId, async () => {
+  const matched = resolveSelectedSkill()
+  if (matched) {
+    selectedSkill.value = matched
+    await loadInvocations(matched)
+  }
 })
 </script>

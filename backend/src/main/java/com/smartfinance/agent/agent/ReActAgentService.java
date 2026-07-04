@@ -314,6 +314,7 @@ public class ReActAgentService {
 
             AnalysisRecord record = new AnalysisRecord();
             record.setUserId(userId);
+            record.setTraceId(traceId);
             record.setQuery(query);
             record.setPlan(objectMapper.writeValueAsString(plan));
             record.setStepsResult(objectMapper.writeValueAsString(steps));
@@ -401,6 +402,7 @@ public class ReActAgentService {
                 - 如果你是根据某个 Skill 的说明决定调用工具，必须在 action JSON 中写入 "skill":"该 Skill 的 skill_key"；如果只是直接使用内置工具，可以省略 skill。
                 - skill 不能替代 tool；实际执行仍只能调用 tool 字段里的安全工具。
                 - 当用户明确要求“做成 Skill / 记成 Skill / 包装成 Skill / 以后遇到这类问题按这个流程做”时，调用 create_custom_skill 生成自定义 Skill 草稿；普通偏好不要自动做成 Skill。
+                - 当用户明确要求“定期 / 每天 / 每周 / 每月 / 提醒我 / 自动帮我”执行某个财务分析、复盘或监控任务时，调用 create_agent_schedule 生成待确认周期任务；不要直接创建任务，不要把一次性偏好做成周期任务；input 必须包含 name、description、cronExpression、taskQuery、timezone。
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案默认用中文，简洁自然，默认不超过 500 字；如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言。
@@ -431,6 +433,7 @@ public class ReActAgentService {
 
                 规则：
                 - summary 只能写安全摘要，例如“正在查询本月支出”，不要写内部推理或敏感信息。
+                - 当用户明确要求“定期 / 每天 / 每周 / 每月 / 提醒我 / 自动帮我”执行某个财务分析、复盘或监控任务时，调用 create_agent_schedule 生成待确认周期任务；不要直接创建任务。
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案用中文，简洁自然，默认不超过 500 字。

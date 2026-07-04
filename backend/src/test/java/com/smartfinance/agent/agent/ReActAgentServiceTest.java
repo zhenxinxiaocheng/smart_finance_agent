@@ -1,6 +1,7 @@
 package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.entity.AnalysisRecord;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
 import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.FinancialProfileService;
@@ -89,6 +90,19 @@ class ReActAgentServiceTest {
         verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L), any(), eq(""));
         verify(analysisRecordMapper).insert(any());
         verify(memoryExtractor).extractAndSave(eq(1L), eq("我这个月花了多少"), any());
+    }
+
+    @Test
+    void run_shouldPersistTraceIdOnAnalysisRecord() {
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"ok"}
+                """));
+
+        var result = service.run(1L, "show my budget");
+
+        ArgumentCaptor<AnalysisRecord> captor = ArgumentCaptor.forClass(AnalysisRecord.class);
+        verify(analysisRecordMapper).insert(captor.capture());
+        assertEquals(result.getTraceId(), captor.getValue().getTraceId());
     }
 
     @Test

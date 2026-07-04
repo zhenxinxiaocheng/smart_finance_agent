@@ -151,6 +151,25 @@ CREATE TABLE IF NOT EXISTS `agent_run_step`
     CONSTRAINT `fk_agent_run_step_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent run visible steps';
 
+CREATE TABLE IF NOT EXISTS `agent_reflection`
+(
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`         BIGINT       NOT NULL COMMENT 'User ID',
+    `trace_id`        VARCHAR(64)  NOT NULL COMMENT 'ReAct trace ID',
+    `suggestion_type` VARCHAR(50)  NOT NULL COMMENT 'MEMORY_CANDIDATE/SKILL_CANDIDATE/SCHEDULE_CANDIDATE/RISK_WARNING',
+    `title`           VARCHAR(120) NOT NULL COMMENT 'Display title',
+    `summary`         VARCHAR(500) NOT NULL COMMENT 'Display summary',
+    `payload`         TEXT         NULL     COMMENT 'Evidence and action payload JSON',
+    `status`          VARCHAR(30)  NOT NULL DEFAULT 'OPEN' COMMENT 'OPEN/ACCEPTED/DISMISSED/EXPIRED',
+    `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`         TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_agent_reflection_user` (`user_id`, `status`, `deleted`),
+    INDEX `idx_agent_reflection_trace` (`trace_id`),
+    CONSTRAINT `fk_agent_reflection_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent post-run reflections';
+
 CREATE TABLE IF NOT EXISTS `transaction`
 (
     `id`               BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
@@ -316,6 +335,7 @@ CREATE TABLE IF NOT EXISTS `analysis_record`
 (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `user_id`      BIGINT       NOT NULL COMMENT '用户ID',
+    `trace_id`     VARCHAR(64)  NULL     COMMENT 'ReAct trace ID',
     `query`        TEXT         NOT NULL COMMENT '用户原始问题',
     `plan`         TEXT         NULL     COMMENT 'Agent执行计划(JSON)',
     `steps_result` TEXT         NULL     COMMENT '各步骤执行结果(JSON)',
@@ -328,6 +348,55 @@ CREATE TABLE IF NOT EXISTS `analysis_record`
     PRIMARY KEY (`id`),
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_created_at` (`created_at`),
-    INDEX `idx_chat_trace` (`trace_id`),
+    INDEX `idx_analysis_trace` (`trace_id`),
     CONSTRAINT `fk_analysis_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent分析记录表';
+
+CREATE TABLE IF NOT EXISTS `agent_schedule`
+(
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`         BIGINT       NOT NULL COMMENT 'User ID',
+    `trace_id`        VARCHAR(64)  NULL     COMMENT 'Last ReAct trace ID',
+    `name`            VARCHAR(200) NOT NULL COMMENT 'Schedule name',
+    `description`     VARCHAR(500) NULL     COMMENT 'Schedule description',
+    `cron_expression` VARCHAR(100) NOT NULL COMMENT 'Spring cron expression',
+    `timezone`        VARCHAR(50)  NOT NULL DEFAULT 'Asia/Shanghai' COMMENT 'Timezone',
+    `task_query`      TEXT         NOT NULL COMMENT 'Instruction executed by the agent',
+    `enabled`         TINYINT      NOT NULL DEFAULT 1 COMMENT 'Enabled flag',
+    `last_run_at`     DATETIME     NULL     COMMENT 'Last run time',
+    `next_run_at`     DATETIME     NULL     COMMENT 'Next run time',
+    `lock_until`      DATETIME     NULL     COMMENT 'Execution lock expiration time',
+    `run_count`       INT          NOT NULL DEFAULT 0 COMMENT 'Run count',
+    `consecutive_failures` INT     NOT NULL DEFAULT 0 COMMENT 'Consecutive failed run count',
+    `last_status`     VARCHAR(20)  NULL     COMMENT 'SUCCESS/FAILED',
+    `last_answer`     TEXT         NULL     COMMENT 'Last agent answer',
+    `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`         TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_agent_schedule_user` (`user_id`, `enabled`, `deleted`),
+    INDEX `idx_agent_schedule_next_run` (`enabled`, `next_run_at`),
+    INDEX `idx_agent_schedule_lock` (`enabled`, `lock_until`),
+    CONSTRAINT `fk_agent_schedule_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent scheduled tasks';
+
+CREATE TABLE IF NOT EXISTS `agent_schedule_run`
+(
+    `id`            BIGINT      NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `schedule_id`   BIGINT      NOT NULL COMMENT 'Schedule ID',
+    `user_id`       BIGINT      NOT NULL COMMENT 'User ID',
+    `trace_id`      VARCHAR(64) NULL     COMMENT 'ReAct trace ID',
+    `status`        VARCHAR(20) NOT NULL COMMENT 'SUCCESS/FAILED',
+    `answer`        TEXT        NULL     COMMENT 'Agent answer',
+    `error_message` TEXT        NULL     COMMENT 'Failure message',
+    `started_at`    DATETIME    NOT NULL COMMENT 'Run started time',
+    `finished_at`   DATETIME    NOT NULL COMMENT 'Run finished time',
+    `duration_ms`   BIGINT      NOT NULL DEFAULT 0 COMMENT 'Run duration in milliseconds',
+    `created_at`    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    PRIMARY KEY (`id`),
+    INDEX `idx_agent_schedule_run_schedule` (`schedule_id`, `created_at`),
+    INDEX `idx_agent_schedule_run_user` (`user_id`, `created_at`),
+    INDEX `idx_agent_schedule_run_trace` (`trace_id`),
+    CONSTRAINT `fk_agent_schedule_run_schedule` FOREIGN KEY (`schedule_id`) REFERENCES `agent_schedule` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_agent_schedule_run_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent scheduled task run history';

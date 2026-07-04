@@ -29,6 +29,8 @@ class ToolRegistryTest {
     @Mock
     private CustomSkillTool customSkillTool;
     @Mock
+    private AgentScheduleTool agentScheduleTool;
+    @Mock
     private SkillInvocationRecordService skillInvocationRecordService;
     @Mock
     private AgentSkillService agentSkillService;
@@ -38,6 +40,7 @@ class ToolRegistryTest {
     @BeforeEach
     void setUp() {
         registry = new ToolRegistry(financialTools, transactionRecorder, webSearchTool, budgetTool, customSkillTool,
+                agentScheduleTool,
                 skillInvocationRecordService, agentSkillService);
     }
 
@@ -145,6 +148,22 @@ class ToolRegistryTest {
         verify(skillInvocationRecordService).record(eq(1L), eq("trace-custom"),
                 eq("create_custom_skill"), eq("Skill 管理"), eq("BUILT_IN"), eq("REQUIRES_CONFIRMATION"),
                 any(), eq(true), eq(false), any(Long.class), any(), eq("pending custom skill"));
+    }
+
+    @Test
+    void execute_createAgentSchedule_shouldCreatePendingActionAndRecordInvocation() {
+        when(agentSkillService.resolveInvocationSkill(1L, "create_agent_schedule", null))
+                .thenReturn(builtInSkill("create_agent_schedule", "Agent 自动化", "BUILT_IN", "REQUIRES_CONFIRMATION", 1));
+        when(agentScheduleTool.createAgentSchedule(any(), any(), any(), any(), any()))
+                .thenReturn("pending schedule");
+
+        ToolRegistry.ToolObservation observation =
+                registry.execute("create_agent_schedule", null, 1L, "trace-schedule");
+
+        assertThat(observation.isSuccess()).isTrue();
+        verify(skillInvocationRecordService).record(eq(1L), eq("trace-schedule"),
+                eq("create_agent_schedule"), eq("Agent 自动化"), eq("BUILT_IN"), eq("REQUIRES_CONFIRMATION"),
+                any(), eq(true), eq(false), any(Long.class), any(), eq("pending schedule"));
     }
 
     private AgentSkill builtInSkill(String key, String category, String sourceType, String riskLevel, int enabled) {

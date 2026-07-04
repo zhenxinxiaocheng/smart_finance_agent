@@ -22,4 +22,8 @@ public class CustomSkillDraftRequest {
     private String category;
 
     private String riskLevel;
+
+    private Long sourceReflectionId;
+
+    private String sourceTraceId;
 }

@@ -18,8 +18,9 @@ public class PendingActionController {
     }
 
     @GetMapping
-    public Result<List<PendingAction>> list(@RequestAttribute Long userId) {
-        return Result.success(pendingActionService.listPending(userId));
+    public Result<List<PendingAction>> list(@RequestAttribute Long userId,
+                                            @RequestParam(required = false) String status) {
+        return Result.success(pendingActionService.list(userId, status));
     }
 
     @PostMapping("/{id}/confirm")

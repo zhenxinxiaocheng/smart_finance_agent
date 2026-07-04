@@ -14,6 +14,11 @@
       </Button>
     </div>
 
+    <Alert v-if="auditLandingHint">
+      <AlertTitle>来自动作审计</AlertTitle>
+      <AlertDescription>{{ auditLandingHint }}</AlertDescription>
+    </Alert>
+
     <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
       <Card>
         <CardHeader>
@@ -262,6 +267,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { Loader2, Plus, RotateCcw, Save, Trash2, WalletCards } from '@lucide/vue'
+import { useRoute } from 'vue-router'
 import { confirmAction, feedback } from '@/lib/feedback'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -297,6 +303,7 @@ import {
   resetAgentMemoriesAPI
 } from '../api/agentMemory'
 
+const route = useRoute()
 const saving = ref(false)
 const loading = ref(false)
 const hasProfile = ref(false)
@@ -345,6 +352,18 @@ const riskText = computed(() => {
   if (form.riskPreference === 'CONSERVATIVE') return '保守型：优先保障现金流和低波动目标'
   if (form.riskPreference === 'AGGRESSIVE') return '进取型：可接受更高波动，但仍需保留应急金'
   return '稳健型：兼顾储蓄进度和日常生活质量'
+})
+
+const auditLandingHint = computed(() => {
+  const type = route.query.type
+  const id = route.query.entityId
+  if (type === 'BUDGET') {
+    return `预算 #${id || '-'} 已落地，可在本月预算设置中查看或调整。`
+  }
+  if (type === 'AGENT_MEMORY') {
+    return `长期记忆 #${id || '-'} 已落地，可在 Agent 长期记忆设置中继续调整。`
+  }
+  return ''
 })
 
 function money(value) {

@@ -45,6 +45,30 @@ const routes = [
         meta: { title: 'Agent 技能' }
       },
       {
+        path: 'agent-audit',
+        name: 'AgentAudit',
+        component: () => import('../views/AgentAudit.vue'),
+        meta: { title: 'Agent 审计' }
+      },
+      {
+        path: 'schedules',
+        name: 'AgentSchedules',
+        component: () => import('../views/AgentSchedules.vue'),
+        meta: { title: '周期任务' }
+      },
+      {
+        path: 'reflections',
+        name: 'AgentReflections',
+        component: () => import('../views/AgentReflections.vue'),
+        meta: { title: 'Agent 反思' }
+      },
+      {
+        path: 'pending-actions',
+        name: 'AgentPendingActions',
+        component: () => import('../views/AgentPendingActions.vue'),
+        meta: { title: '待确认动作' }
+      },
+      {
         path: 'bill-import',
         name: 'BillImport',
         component: () => import('../views/BillImport.vue'),

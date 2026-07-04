@@ -340,6 +340,43 @@
             </article>
           </div>
         </section>
+
+        <section class="trace-section">
+          <h3>运行反思</h3>
+          <div v-if="traceReflectionLoading" class="trace-empty small">加载中...</div>
+          <div v-else-if="!traceReflections.length" class="trace-empty small">暂无反思建议</div>
+          <div v-else class="reflection-list">
+            <article v-for="reflection in traceReflections" :key="reflection.id" class="reflection-card">
+              <div class="trace-step-head">
+                <span>{{ reflection.title || reflectionTypeLabel(reflection.suggestionType) }}</span>
+                <Badge :variant="reflection.status === 'OPEN' ? 'outline' : 'secondary'">
+                  {{ reflectionStatusLabel(reflection.status) }}
+                </Badge>
+              </div>
+              <p>{{ reflection.summary }}</p>
+              <div v-if="reflection.status === 'OPEN'" class="reflection-actions">
+                <Button
+                  v-if="canAcceptReflection(reflection)"
+                  size="xs"
+                  type="button"
+                  :disabled="reflection.handling"
+                  @click="acceptReflection(reflection)"
+                >
+                  {{ reflection.handling ? '处理中' : reflectionAcceptLabel(reflection) }}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  type="button"
+                  :disabled="reflection.handling"
+                  @click="dismissReflection(reflection)"
+                >
+                  忽略
+                </Button>
+              </div>
+            </article>
+          </div>
+        </section>
       </div>
       </DialogContent>
     </Dialog>
@@ -349,6 +386,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Bell, Plus, SendHorizontal } from '@lucide/vue'
+import { useRoute } from 'vue-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -369,6 +407,7 @@ import { streamReactChatAPI, getChatHistoryAPI } from '../api/chat'
 import { getAgentRunDetailAPI } from '../api/agentRuns'
 import { getUnreadAlertsAPI } from '../api/alert'
 import { listPendingActionsAPI, confirmPendingActionAPI, cancelPendingActionAPI } from '../api/pendingAction'
+import { listAgentReflectionsAPI, acceptAgentReflectionAPI, dismissAgentReflectionAPI } from '../api/agentReflections'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -391,6 +430,9 @@ const activePendingActions = ref([])
 const traceDrawerVisible = ref(false)
 const traceLoading = ref(false)
 const traceDetail = ref(null)
+const traceReflectionLoading = ref(false)
+const traceReflections = ref([])
+const route = useRoute()
 let typingTimer = null
 let alertTimer = null
 let chatAbortController = null
@@ -703,6 +745,9 @@ function clearChat() {
 onMounted(async () => {
   await loadHistory()
   await fetchAlerts()
+  if (route.query.traceId) {
+    await openRunTrace({ traceId: String(route.query.traceId) })
+  }
   alertTimer = setInterval(fetchAlerts, 30000)
   scrollToBottom()
 })
@@ -726,19 +771,97 @@ watch(messages, () => {
   scrollToBottom()
 }, { deep: true })
 
+watch(() => route.query.traceId, traceId => {
+  if (traceId) {
+    openRunTrace({ traceId: String(traceId) })
+  }
+})
+
 async function openRunTrace(message) {
   if (!message?.traceId) return
   traceDrawerVisible.value = true
   traceLoading.value = true
   traceDetail.value = null
+  traceReflections.value = []
   try {
     const res = await getAgentRunDetailAPI(message.traceId)
     traceDetail.value = res.data || null
+    await loadTraceReflections(message.traceId)
   } catch {
     feedback.error('运行详情加载失败')
   } finally {
     traceLoading.value = false
   }
+}
+
+async function loadTraceReflections(traceId) {
+  traceReflectionLoading.value = true
+  try {
+    const res = await listAgentReflectionsAPI()
+    const items = Array.isArray(res.data) ? res.data : []
+    traceReflections.value = items.filter(item => item.traceId === traceId)
+  } catch {
+    traceReflections.value = []
+  } finally {
+    traceReflectionLoading.value = false
+  }
+}
+
+async function acceptReflection(reflection) {
+  if (!canAcceptReflection(reflection)) return
+  reflection.handling = true
+  try {
+    const res = await acceptAgentReflectionAPI(reflection.id)
+    Object.assign(reflection, res.data || {}, { handling: false })
+    feedback.success(reflectionAcceptSuccessMessage(reflection))
+    await loadPendingActions()
+  } catch {
+    reflection.handling = false
+  }
+}
+
+async function dismissReflection(reflection) {
+  if (!reflection || reflection.status !== 'OPEN') return
+  reflection.handling = true
+  try {
+    const res = await dismissAgentReflectionAPI(reflection.id)
+    Object.assign(reflection, res.data || {}, { handling: false })
+    feedback.success('已忽略')
+  } catch {
+    reflection.handling = false
+  }
+}
+
+function canAcceptReflection(reflection) {
+  return reflection?.status === 'OPEN'
+    && ['SKILL_CANDIDATE', 'MEMORY_CANDIDATE', 'SCHEDULE_CANDIDATE'].includes(reflection?.suggestionType)
+}
+
+function reflectionAcceptLabel(reflection) {
+  if (reflection?.suggestionType === 'MEMORY_CANDIDATE') return '生成待确认记忆'
+  if (reflection?.suggestionType === 'SCHEDULE_CANDIDATE') return '生成待确认任务'
+  return '生成待确认 Skill'
+}
+
+function reflectionAcceptSuccessMessage(reflection) {
+  if (reflection?.suggestionType === 'MEMORY_CANDIDATE') return '已生成待确认记忆'
+  if (reflection?.suggestionType === 'SCHEDULE_CANDIDATE') return '已生成待确认任务'
+  return '已生成待确认 Skill'
+}
+
+function reflectionTypeLabel(type) {
+  if (type === 'SKILL_CANDIDATE') return 'Skill 候选'
+  if (type === 'SCHEDULE_CANDIDATE') return '周期任务候选'
+  if (type === 'MEMORY_CANDIDATE') return '记忆候选'
+  if (type === 'RISK_WARNING') return '风险提示'
+  return '反思建议'
+}
+
+function reflectionStatusLabel(status) {
+  if (status === 'OPEN') return '待处理'
+  if (status === 'ACCEPTED') return '已采纳'
+  if (status === 'DISMISSED') return '已忽略'
+  return status || '未知'
 }
 
 function statusLabel(status) {
@@ -1509,7 +1632,8 @@ function formatTime(value) {
 
 .trace-overview p,
 .trace-step-card p,
-.skill-invocation-card p {
+.skill-invocation-card p,
+.reflection-card p {
   margin: 0 0 10px;
   color: #475569;
   font-size: 13px;
@@ -1544,14 +1668,16 @@ function formatTime(value) {
 }
 
 .trace-step-list,
-.skill-invocation-list {
+.skill-invocation-list,
+.reflection-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .trace-step-card,
-.skill-invocation-card {
+.skill-invocation-card,
+.reflection-card {
   border: 1px solid var(--chat-border);
   border-radius: var(--radius);
   background: var(--muted);
@@ -1573,6 +1699,13 @@ function formatTime(value) {
 
 .trace-step-head .fail {
   color: #dc2626;
+}
+
+.reflection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .trace-raw {

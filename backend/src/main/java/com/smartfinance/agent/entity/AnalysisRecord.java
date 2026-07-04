@@ -10,6 +10,7 @@ public class AnalysisRecord {
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long userId;
+    private String traceId;
     private String query;
     private String plan;
     private String stepsResult;

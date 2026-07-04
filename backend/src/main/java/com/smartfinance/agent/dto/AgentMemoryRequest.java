@@ -14,4 +14,8 @@ public class AgentMemoryRequest {
 
     @NotBlank(message = "记忆内容不能为空")
     private String memoryValue;
+
+    private Long sourceReflectionId;
+
+    private String sourceTraceId;
 }

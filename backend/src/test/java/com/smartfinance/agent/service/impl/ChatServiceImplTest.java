@@ -4,6 +4,7 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
+import com.smartfinance.agent.service.AgentReflectionService;
 import com.smartfinance.agent.service.AgentRunService;
 import com.smartfinance.agent.service.PendingActionService;
 import dev.langchain4j.data.message.AiMessage;
@@ -42,13 +43,16 @@ class ChatServiceImplTest {
     @Mock
     private AgentRunService agentRunService;
     @Mock
+    private AgentReflectionService agentReflectionService;
+    @Mock
     private ChatLanguageModel chatModel;
 
     private ChatServiceImpl chatService;
 
     @BeforeEach
     void setUp() {
-        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper, pendingActionService, agentRunService, chatModel);
+        chatService = new ChatServiceImpl(reactAgentService, chatMessageMapper, pendingActionService,
+                agentRunService, agentReflectionService, chatModel);
     }
 
     @Test
@@ -92,6 +96,7 @@ class ChatServiceImplTest {
         verify(agentRunService).recordStepFinished(1L, "trace-1", 1, "Query spending", "get_total_expense",
                 "{}", true, "spent 80", null);
         verify(agentRunService).completeRun("trace-1", "spent 80");
+        verify(agentReflectionService).reflectRun(1L, "trace-1");
     }
 
     @Test
@@ -123,6 +128,7 @@ class ChatServiceImplTest {
         verify(reactAgentService, never()).run(eq(1L), any(), org.mockito.ArgumentMatchers.<List<ChatMessage>>any(), any());
         verify(agentRunService).startRun(eq(1L), any(), eq("介绍一下你自己"));
         verify(agentRunService).completeRun(any(), eq("我是智财Agent。"));
+        verify(agentReflectionService).reflectRun(eq(1L), any(String.class));
     }
 
     private ChatMessage message(String role, String content) {

@@ -58,6 +58,9 @@ public class ToolRegistry {
             Map.entry("\u9884\u7b97\u72b6\u6001", "get_budget_status"),
             Map.entry("\u9884\u7b97\u9884\u8b66", "check_alerts"),
             Map.entry("\u9884\u8b66\u5386\u53f2", "get_alert_history"),
+            Map.entry("\u5b9a\u65f6\u4efb\u52a1", "create_agent_schedule"),
+            Map.entry("\u5468\u671f\u4efb\u52a1", "create_agent_schedule"),
+            Map.entry("\u5b9a\u671f\u6267\u884c", "create_agent_schedule"),
             Map.entry("\u521b\u5efaskill", "create_custom_skill"),
             Map.entry("\u81ea\u5b9a\u4e49skill", "create_custom_skill"),
             Map.entry("\u505a\u6210skill", "create_custom_skill")
@@ -72,6 +75,7 @@ public class ToolRegistry {
                         WebSearchTool webSearchTool,
                         BudgetTool budgetTool,
                         CustomSkillTool customSkillTool,
+                        AgentScheduleTool agentScheduleTool,
                         SkillInvocationRecordService skillInvocationRecordService,
                         AgentSkillService agentSkillService) {
         this.skillInvocationRecordService = skillInvocationRecordService;
@@ -129,6 +133,13 @@ public class ToolRegistry {
                         stringList(input, "boundTools"),
                         text(input, "category", "Custom"),
                         text(input, "riskLevel", "READ_ONLY")));
+        register("create_agent_schedule", "Create a confirmable recurring Agent task. input: {name, description, cronExpression, taskQuery, timezone}",
+                input -> agentScheduleTool.createAgentSchedule(
+                        text(input, "name", ""),
+                        text(input, "description", ""),
+                        text(input, "cronExpression", ""),
+                        text(input, "taskQuery", ""),
+                        text(input, "timezone", "Asia/Shanghai")));
     }
 
     public String manifest() {
@@ -289,6 +300,9 @@ public class ToolRegistry {
     }
 
     private static String categoryFor(String name) {
+        if (name.contains("schedule")) {
+            return "Agent \u81ea\u52a8\u5316";
+        }
         if (name.contains("skill")) {
             return "Skill 管理";
         }
@@ -305,7 +319,7 @@ public class ToolRegistry {
     }
 
     private static String riskFor(String name) {
-        if ("create_custom_skill".equals(name)) {
+        if ("create_custom_skill".equals(name) || "create_agent_schedule".equals(name)) {
             return "REQUIRES_CONFIRMATION";
         }
         if ("record_transaction".equals(name) || "set_budget".equals(name)) {

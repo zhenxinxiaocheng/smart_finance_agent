@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
+import com.smartfinance.agent.service.AgentReflectionService;
 import com.smartfinance.agent.service.AgentRunService;
 import com.smartfinance.agent.service.ChatService;
 import com.smartfinance.agent.service.PendingActionService;
@@ -35,17 +36,20 @@ public class ChatServiceImpl implements ChatService {
     private final ChatMessageMapper chatMessageMapper;
     private final PendingActionService pendingActionService;
     private final AgentRunService agentRunService;
+    private final AgentReflectionService agentReflectionService;
     private final ChatLanguageModel chatModel;
 
     public ChatServiceImpl(ReActAgentService reactAgentService,
                            ChatMessageMapper chatMessageMapper,
                            PendingActionService pendingActionService,
                            AgentRunService agentRunService,
+                           AgentReflectionService agentReflectionService,
                            ChatLanguageModel chatModel) {
         this.reactAgentService = reactAgentService;
         this.chatMessageMapper = chatMessageMapper;
         this.pendingActionService = pendingActionService;
         this.agentRunService = agentRunService;
+        this.agentReflectionService = agentReflectionService;
         this.chatModel = chatModel;
     }
 
@@ -62,6 +66,7 @@ public class ChatServiceImpl implements ChatService {
                 agentRunService.startRun(userId, traceId, message);
                 response = fastChat(message, recentHistory);
                 agentRunService.completeRun(traceId, response);
+                reflectRunQuietly(userId, traceId);
                 saveMessage(userId, "ASSISTANT", response, traceId);
             } else {
                 var result = reactAgentService.run(userId, message, recentHistory,
@@ -93,6 +98,7 @@ public class ChatServiceImpl implements ChatService {
                     agentRunService.startRun(userId, traceId, message);
                     String response = fastChat(message, recentHistory);
                     agentRunService.completeRun(traceId, response);
+                    reflectRunQuietly(userId, traceId);
                     saveMessage(userId, "ASSISTANT", response, traceId);
                     sendEvent(emitter, "final", Map.of(
                             "response", response,
@@ -222,6 +228,7 @@ public class ChatServiceImpl implements ChatService {
             @Override
             public void onFinal(String response, String traceId) {
                 agentRunService.completeRun(traceId, response);
+                reflectRunQuietly(userId, traceId);
                 if (emitter != null) {
                     sendEvent(emitter, "final", Map.of(
                             "response", response,
@@ -230,6 +237,16 @@ public class ChatServiceImpl implements ChatService {
                 }
             }
         };
+    }
+
+    private void reflectRunQuietly(Long userId, String traceId) {
+        try {
+            if (traceId != null && !traceId.isBlank()) {
+                agentReflectionService.reflectRun(userId, traceId);
+            }
+        } catch (Exception e) {
+            log.warn("Agent reflection failed: userId={}, traceId={}, error={}", userId, traceId, e.getMessage());
+        }
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Map<String, Object> payload) {

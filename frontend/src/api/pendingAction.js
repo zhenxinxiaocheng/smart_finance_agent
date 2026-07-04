@@ -1,7 +1,7 @@
 import request from './request'
 
-export function listPendingActionsAPI() {
-  return request.get('/pending-actions')
+export function listPendingActionsAPI(params = {}) {
+  return request.get('/pending-actions', { params })
 }
 
 export function confirmPendingActionAPI(id) {
