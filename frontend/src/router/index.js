@@ -16,9 +16,12 @@ const routes = [
   },
   {
     path: '/',
+    redirect: '/chat'
+  },
+  {
+    path: '/',
     component: () => import('../layouts/MainLayoutShadcn.vue'),
     meta: { auth: true },
-    redirect: '/statistics',
     children: [
       {
         path: 'statistics',
@@ -78,7 +81,7 @@ const routes = [
         path: 'chat',
         name: 'Chat',
         component: () => import('../views/ChatView.vue'),
-        meta: { title: '智能助手' }
+        meta: { title: '新对话' }
       }
     ]
   }
@@ -91,10 +94,12 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const authStore = useAuthStore()
-  if (to.meta.auth && !authStore.isLoggedIn) {
+  const requiresAuth = to.matched.some(record => record.meta.auth)
+  const guestOnly = to.matched.some(record => record.meta.guest)
+  if (requiresAuth && !authStore.isLoggedIn) {
     next('/login')
-  } else if (to.meta.guest && authStore.isLoggedIn) {
-    next('/statistics')
+  } else if (guestOnly && authStore.isLoggedIn) {
+    next('/chat')
   } else {
     next()
   }

@@ -133,7 +133,7 @@ async function handleLogin() {
   try {
     await authStore.login(form)
     feedback.success('登录成功')
-    router.push('/statistics')
+    router.push('/chat')
   } catch {
   } finally {
     loading.value = false

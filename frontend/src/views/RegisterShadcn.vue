@@ -140,7 +140,7 @@ async function handleRegister() {
       nickname: form.nickname || undefined
     })
     feedback.success('注册成功')
-    router.push('/statistics')
+    router.push('/chat')
   } catch {
   } finally {
     loading.value = false

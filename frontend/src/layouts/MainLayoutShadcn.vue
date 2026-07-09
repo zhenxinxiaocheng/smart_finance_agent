@@ -18,6 +18,9 @@
 
       <ScrollArea class="min-h-0 flex-1">
         <nav class="flex flex-col gap-5 p-3">
+          <div v-if="showChatConversationPanel" class="hidden md:block">
+            <ChatConversationPanel />
+          </div>
           <section v-for="group in navGroups" :key="group.label" class="flex flex-col gap-1">
             <div v-if="!isCollapse" class="hidden px-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/45 md:block">
               {{ group.label }}
@@ -189,6 +192,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BarChart3,
@@ -207,6 +211,7 @@ import {
   Zap
 } from '@lucide/vue'
 import ThemeCustomizer from '@/components/theme/ThemeCustomizer.vue'
+import ChatConversationPanel from '@/components/chat/ChatConversationPanel.vue'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -229,11 +234,14 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { getUnreadAlertsAPI, markAlertReadAPI } from '@/api/alert'
+import { useChatConversationsStore } from '@/stores/chatConversations'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const conversationStore = useChatConversationsStore()
+const { conversations, conversationLoading } = storeToRefs(conversationStore)
 
 const isCollapse = ref(false)
 const logoutOpen = ref(false)
@@ -242,11 +250,23 @@ const notificationLoading = ref(false)
 const unreadAlerts = ref([])
 let notificationTimer = null
 const activeMenu = computed(() => route.path)
+const showChatConversationPanel = computed(() => !isCollapse.value && conversations.value.length > 0)
 const userInitial = computed(() => authStore.username?.charAt(0)?.toUpperCase() || 'U')
 const safeUnreadAlerts = computed(() => Array.isArray(unreadAlerts.value) ? unreadAlerts.value : [])
 const notificationCount = computed(() => safeUnreadAlerts.value.length)
 
 const navGroups = [
+  {
+    label: 'AGENT',
+    items: [
+      { path: '/chat', label: '新对话', icon: MessageSquareText },
+      { path: '/profile', label: '财务画像', icon: UserRound },
+      { path: '/stocks', label: '股票分析', icon: TrendingUp, badge: '开发中', disabled: true },
+      { path: '/agent-audit', label: 'Agent 审计', icon: Bot },
+      { path: '/schedules', label: '周期任务', icon: TrendingUp },
+      { path: '/skills', label: 'Agent 技能', icon: Bot }
+    ]
+  },
   {
     label: 'WORKSPACE',
     items: [
@@ -254,21 +274,14 @@ const navGroups = [
       { path: '/bill-import', label: '账单导入', icon: UploadCloud },
       { path: '/transactions', label: '消费记录', icon: ListChecks }
     ]
-  },
-  {
-    label: 'AGENT',
-    items: [
-      { path: '/profile', label: '财务画像', icon: UserRound },
-      { path: '/stocks', label: '股票分析', icon: TrendingUp, badge: '开发中', disabled: true },
-      { path: '/agent-audit', label: 'Agent 审计', icon: Bot },
-      { path: '/schedules', label: '周期任务', icon: TrendingUp },
-      { path: '/reflections', label: 'Agent 反思', icon: UserRound },
-      { path: '/pending-actions', label: '待确认动作', icon: ListChecks },
-      { path: '/skills', label: 'Agent 技能', icon: Bot },
-      { path: '/chat', label: '智能助手', icon: MessageSquareText }
-    ]
   }
 ]
+
+onMounted(() => {
+  if (!conversationLoading.value && !conversations.value.length) {
+    conversationStore.loadConversations()
+  }
+})
 
 function navItemClass(item) {
   const path = typeof item === 'string' ? item : item.path
