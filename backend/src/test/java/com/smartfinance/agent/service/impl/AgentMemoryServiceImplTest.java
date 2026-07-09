@@ -148,7 +148,7 @@ class AgentMemoryServiceImplTest {
         AgentMemory category = memory("CATEGORY_PREFERENCE", "coffee", "咖啡归为餐饮");
         when(agentMemoryMapper.selectActiveByKey(1L, "AGENT_PREFERENCE", "_CUSTOM_INSTRUCTIONS"))
                 .thenReturn(instructions);
-        when(agentMemoryMapper.selectActiveForAgent(1L, 10)).thenReturn(List.of(category));
+        when(agentMemoryMapper.selectActiveForAgent(1L, 50)).thenReturn(List.of(category));
 
         String context = service.buildAgentContext(1L);
 
@@ -156,6 +156,42 @@ class AgentMemoryServiceImplTest {
         assertThat(context).contains("用中文回答，尽量简短");
         assertThat(context).contains("自动沉淀的 Agent 长期记忆");
         assertThat(context).contains("咖啡归为餐饮");
+    }
+
+    @Test
+    void buildAgentContext_shouldExposeProfileAndMemoryBlocksWithoutModuleHardLimit() {
+        AgentMemory instructions = memory("AGENT_PREFERENCE", "_CUSTOM_INSTRUCTIONS", "用中文回答，尽量简短");
+        AgentMemory category = memory("CATEGORY_PREFERENCE", "coffee", "咖啡归为餐饮");
+        AgentMemory responseStyle = memory("RESPONSE_STYLE", "brief", "回答保持简洁");
+        AgentMemory oversized = memory("ANALYSIS_PREFERENCE", "oversized", "x".repeat(2300));
+        when(agentMemoryMapper.selectActiveByKey(1L, "AGENT_PREFERENCE", "_CUSTOM_INSTRUCTIONS"))
+                .thenReturn(instructions);
+        when(agentMemoryMapper.selectActiveForAgent(1L, 50)).thenReturn(List.of(category, responseStyle, oversized));
+
+        String context = service.buildAgentContext(1L);
+
+        assertThat(context).contains("USER PROFILE");
+        assertThat(context).contains("/1375 chars");
+        assertThat(context).contains("MEMORY");
+        assertThat(context).contains("/2200 chars");
+        assertThat(context).contains("§");
+        assertThat(context).contains("用中文回答，尽量简短");
+        assertThat(context).contains("咖啡归为餐饮");
+        assertThat(context).contains("回答保持简洁");
+        assertThat(context).contains("oversized");
+    }
+
+    @Test
+    void retrieveRelevantMemories_shouldRankByQueryRelevanceBeforeConfidence() {
+        AgentMemory coffee = memory("CATEGORY_PREFERENCE", "coffee", "咖啡归为餐饮");
+        coffee.setConfidence(0.7);
+        AgentMemory brief = memory("RESPONSE_STYLE", "brief", "回答保持简洁");
+        brief.setConfidence(0.99);
+        when(agentMemoryMapper.selectActiveForAgent(1L, 50)).thenReturn(List.of(brief, coffee));
+
+        List<AgentMemory> memories = service.retrieveRelevantMemories(1L, "星巴克咖啡怎么分类", 2);
+
+        assertThat(memories).containsExactly(coffee, brief);
     }
 
     @Test

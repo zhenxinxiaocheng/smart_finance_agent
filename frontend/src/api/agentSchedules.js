@@ -8,6 +8,10 @@ export function createAgentScheduleAPI(data) {
   return request.post('/agent-schedules', data)
 }
 
+export function updateAgentScheduleAPI(id, data) {
+  return request.put(`/agent-schedules/${id}`, data)
+}
+
 export function setAgentScheduleEnabledAPI(id, enabled) {
   return request.put(`/agent-schedules/${id}/enabled`, null, { params: { enabled } })
 }

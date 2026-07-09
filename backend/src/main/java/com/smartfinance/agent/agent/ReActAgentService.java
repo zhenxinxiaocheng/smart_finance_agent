@@ -2,6 +2,7 @@ package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.context.ContextUsageSnapshot;
 import com.smartfinance.agent.dto.ExecutionPlan;
 import com.smartfinance.agent.dto.PlanStep;
 import com.smartfinance.agent.dto.ReActResult;
@@ -9,13 +10,13 @@ import com.smartfinance.agent.dto.ReActStepRecord;
 import com.smartfinance.agent.entity.AnalysisRecord;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
 import com.smartfinance.agent.service.AgentMemoryService;
-import com.smartfinance.agent.service.FinancialProfileService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -28,7 +29,6 @@ import java.util.UUID;
 public class ReActAgentService {
 
     private static final int MAX_STEPS = 6;
-    private static final int MAX_HISTORY_MESSAGE_LENGTH = 1000;
     private static final String FRIENDLY_ERROR = "抱歉，我现在暂时无法完成这次分析，请稍后再试。";
     private static final String MAX_STEP_ANSWER = "我已经做了几轮查询和分析，但这次任务还没有收敛到足够可靠的结论。你可以把问题缩小一点，比如指定月份、分类或要看的指标，我再继续帮你查。";
 
@@ -38,9 +38,10 @@ public class ReActAgentService {
     private final FinancialMonitor financialMonitor;
     private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
-    private final FinancialProfileService financialProfileService;
+    private final AgentContextService agentContextService;
     private final AgentMemoryService agentMemoryService;
     private final MemoryExtractor memoryExtractor;
+    private final ToolSelectionService toolSelectionService;
 
     public ReActAgentService(ChatLanguageModel chatModel,
                              ToolRegistry toolRegistry,
@@ -48,18 +49,34 @@ public class ReActAgentService {
                              FinancialMonitor financialMonitor,
                              AnalysisRecordMapper analysisRecordMapper,
                              ObjectMapper objectMapper,
-                             FinancialProfileService financialProfileService,
+                             AgentContextService agentContextService,
                              AgentMemoryService agentMemoryService,
                              MemoryExtractor memoryExtractor) {
+        this(chatModel, toolRegistry, agentVerifier, financialMonitor, analysisRecordMapper, objectMapper,
+                agentContextService, agentMemoryService, memoryExtractor, new ToolSelectionService(toolRegistry));
+    }
+
+    @Autowired
+    public ReActAgentService(ChatLanguageModel chatModel,
+                             ToolRegistry toolRegistry,
+                             AgentVerifier agentVerifier,
+                             FinancialMonitor financialMonitor,
+                             AnalysisRecordMapper analysisRecordMapper,
+                             ObjectMapper objectMapper,
+                             AgentContextService agentContextService,
+                             AgentMemoryService agentMemoryService,
+                             MemoryExtractor memoryExtractor,
+                             ToolSelectionService toolSelectionService) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.agentVerifier = agentVerifier;
         this.financialMonitor = financialMonitor;
         this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
-        this.financialProfileService = financialProfileService;
+        this.agentContextService = agentContextService;
         this.agentMemoryService = agentMemoryService;
         this.memoryExtractor = memoryExtractor;
+        this.toolSelectionService = toolSelectionService;
     }
 
     public ReActResult run(Long userId, String userMessage) {
@@ -70,11 +87,26 @@ public class ReActAgentService {
         return run(userId, userMessage, recentHistory, ReActEventListener.NOOP);
     }
 
+    public ReActResult run(Long userId,
+                           Long conversationId,
+                           String userMessage,
+                           List<com.smartfinance.agent.entity.ChatMessage> recentHistory) {
+        return run(userId, conversationId, userMessage, recentHistory, ReActEventListener.NOOP);
+    }
+
     public ReActResult run(Long userId, String userMessage, ReActEventListener listener) {
         return run(userId, userMessage, List.of(), listener);
     }
 
     public ReActResult run(Long userId,
+                           String userMessage,
+                           List<com.smartfinance.agent.entity.ChatMessage> recentHistory,
+                           ReActEventListener listener) {
+        return run(userId, null, userMessage, recentHistory, listener);
+    }
+
+    public ReActResult run(Long userId,
+                           Long conversationId,
                            String userMessage,
                            List<com.smartfinance.agent.entity.ChatMessage> recentHistory,
                            ReActEventListener listener) {
@@ -85,7 +117,7 @@ public class ReActAgentService {
         boolean usedTool = false;
 
         listener.onRunStarted(traceId);
-        messages.add(SystemMessage.from(systemPromptV2(userId)));
+        messages.add(SystemMessage.from(systemPromptV2(userId, userMessage)));
 
         if (financialMonitor.hasPendingAlerts(userId)) {
             String pending = financialMonitor.getPendingMessage(userId);
@@ -94,28 +126,13 @@ public class ReActAgentService {
             }
         }
 
-        String profileContext = financialProfileService.buildAgentContext(userId);
-        if (profileContext != null && !profileContext.isBlank()) {
-            messages.add(UserMessage.from("""
-                    系统资料：下面是用户主动维护的长期财务画像。回答预算、省钱、储蓄、风险相关问题时必须优先参考；不要声称这是实时流水。
-                    %s
-                    """.formatted(profileContext)));
+        AgentContextService.AgentContext agentContext = agentContextService.build(
+                userId, userMessage, recentHistory, traceId, conversationId);
+        messages.addAll(agentContext.messages());
+        String languageInstruction = agentContext.languageInstruction();
+        if (agentContext.contextBundle() != null) {
+            listener.onContextUsage(agentContext.contextBundle().usage());
         }
-
-        String memoryContext = agentMemoryService.buildAgentContext(userId);
-        if (memoryContext != null && !memoryContext.isBlank()) {
-            messages.add(UserMessage.from("""
-                    系统资料：下面是用户可编辑的 Agent 长期指令和自动沉淀记忆。
-                    必须优先遵守其中的回答风格、语言偏好、分类偏好和 Agent 使用偏好；如果和当前问题明确要求冲突，以当前问题为准。
-                    %s
-                    """.formatted(memoryContext)));
-        }
-        String languageInstruction = preferredLanguageInstruction(userMessage, memoryContext);
-        if (!languageInstruction.isBlank()) {
-            messages.add(UserMessage.from(languageInstruction));
-        }
-
-        appendConversationHistory(messages, recentHistory);
 
         messages.add(UserMessage.from("用户问题：" + userMessage));
 
@@ -171,15 +188,17 @@ public class ReActAgentService {
             toolResults.add(observation.getRawResult());
 
             messages.add(AiMessage.from(toJson(decision)));
+            String toolRef = "traceId=%s, stepNumber=%d, tool=%s".formatted(traceId, stepNumber, tool);
             messages.add(UserMessage.from("""
                     Observation:
                     success=%s
                     summary=%s
-                    result=%s
+                    ref=%s
+                    完整结果已保存到运行轨迹；除非需要明细，否则仅根据 summary 和 ref 继续。
 
                     请继续 ReAct。若已有足够信息，输出 final JSON；否则输出下一步 action JSON。
                     %s
-                    """.formatted(observation.isSuccess(), observation.getSummary(), observation.getRawResult(), languageInstruction)));
+                    """.formatted(observation.isSuccess(), observation.getSummary(), toolRef, languageInstruction)));
         }
 
         if (finalAnswer == null || finalAnswer.isBlank()) {
@@ -198,36 +217,6 @@ public class ReActAgentService {
                 .finalAnswer(finalAnswer)
                 .steps(steps)
                 .build();
-    }
-
-    private void appendConversationHistory(List<ChatMessage> messages,
-                                           List<com.smartfinance.agent.entity.ChatMessage> recentHistory) {
-        if (recentHistory == null || recentHistory.isEmpty()) {
-            return;
-        }
-        messages.add(UserMessage.from("""
-                下面是该用户最近的对话历史，仅用于理解上下文指代。
-                如果用户提到“刚才、之前、继续、上一个、那”等表达，请优先结合这些历史理解。
-                """));
-        for (com.smartfinance.agent.entity.ChatMessage history : recentHistory) {
-            if (history == null || history.getContent() == null || history.getContent().isBlank()) {
-                continue;
-            }
-            String role = history.getRole() == null ? "" : history.getRole().trim().toUpperCase();
-            String content = truncateHistory(history.getContent().trim());
-            if ("USER".equals(role)) {
-                messages.add(UserMessage.from("历史用户消息：" + content));
-            } else if ("ASSISTANT".equals(role)) {
-                messages.add(AiMessage.from("历史助手回复：" + content));
-            }
-        }
-    }
-
-    private String truncateHistory(String content) {
-        if (content.length() <= MAX_HISTORY_MESSAGE_LENGTH) {
-            return content;
-        }
-        return content.substring(0, MAX_HISTORY_MESSAGE_LENGTH) + "...";
     }
 
     private String generate(List<ChatMessage> messages) {
@@ -333,18 +322,6 @@ public class ReActAgentService {
         }
     }
 
-    private String preferredLanguageInstruction(String userMessage, String memoryContext) {
-        String current = userMessage == null ? "" : userMessage.toLowerCase();
-        String memory = memoryContext == null ? "" : memoryContext.toLowerCase();
-        if (asksForChinese(current)) {
-            return "系统语言要求：最终 answer 必须使用中文。";
-        }
-        if (asksForEnglish(current) || asksForEnglish(memory)) {
-            return "System language requirement: the final answer must be written in English. Keep all facts, amounts, and dates unchanged.";
-        }
-        return "";
-    }
-
     private boolean followsLanguageInstruction(String answer, String languageInstruction) {
         if (languageInstruction == null || languageInstruction.isBlank()) {
             return true;
@@ -355,33 +332,7 @@ public class ReActAgentService {
         return true;
     }
 
-    private boolean asksForEnglish(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String lower = text.toLowerCase();
-        return lower.contains("english")
-                || text.contains("英语")
-                || text.contains("英文")
-                || text.contains("用英")
-                || text.contains("英語")
-                || lower.contains("respond in en")
-                || lower.contains("reply in en");
-    }
-
-    private boolean asksForChinese(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String lower = text.toLowerCase();
-        return text.contains("中文")
-                || text.contains("汉语")
-                || text.contains("普通话")
-                || text.contains("用中")
-                || lower.contains("chinese");
-    }
-
-    private String systemPromptV2(Long userId) {
+    private String systemPromptV2(Long userId, String userMessage) {
         LocalDate now = LocalDate.now();
         return """
                 你具备短期对话记忆能力，可以参考最近的用户消息和助手最终回复来理解上下文。
@@ -412,37 +363,7 @@ public class ReActAgentService {
 
                 可用 Skills：
                 %s
-                """.formatted(now, toolRegistry.manifest(userId));
-    }
-
-    private String systemPrompt() {
-        LocalDate now = LocalDate.now();
-        return """
-                你具备短期对话记忆能力，可以参考最近的用户消息和助手最终回复来理解上下文。
-                当用户说“刚才、之前、继续、上一个、那”等表达时，优先结合最近对话历史判断含义；如果历史不足，再诚实说明无法确定。
-
-                你是「智财Agent」的 ReAct 控制模型。当前日期：%s。
-
-                你必须在每轮只输出一个严格 JSON 对象，不要输出 Markdown，不要解释格式，不要暴露 Thought。
-
-                可输出两种 JSON：
-                1) 调用工具：
-                {"type":"action","summary":"给用户看的安全步骤摘要","skill":"可选Skill名","tool":"工具名","input":{...}}
-                2) 最终回答：
-                {"type":"final","answer":"给用户看的最终中文回答"}
-
-                规则：
-                - summary 只能写安全摘要，例如“正在查询本月支出”，不要写内部推理或敏感信息。
-                - 当用户明确要求“定期 / 每天 / 每周 / 每月 / 提醒我 / 自动帮我”执行某个财务分析、复盘或监控任务时，调用 create_agent_schedule 生成待确认周期任务；不要直接创建任务。
-                - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
-                - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
-                - 最终答案用中文，简洁自然，默认不超过 500 字。
-                - 股票、基金、行业问题可以给出“偏看好、偏谨慎、可观察”等倾向性建议，但必须说明风险，不能承诺收益，不能使用“稳赚、一定上涨、立即买入”等确定性表达。
-                - 涉及实时行情、新闻、政策、汇率、上市公司近期动态时，必须先调用 search_web，不要凭空编造实时信息。
-
-                可用工具：
-                %s
-                """.formatted(now, toolRegistry.manifest());
+                """.formatted(now, toolSelectionService.manifest(userId, userMessage));
     }
 
     private static String text(JsonNode node, String field) {
@@ -484,5 +405,7 @@ public class ReActAgentService {
         default void onFinal(String response, String traceId) {}
 
         default void onRunStarted(String traceId) {}
+
+        default void onContextUsage(ContextUsageSnapshot usage) {}
     }
 }

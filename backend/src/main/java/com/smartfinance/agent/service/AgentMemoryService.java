@@ -34,5 +34,7 @@ public interface AgentMemoryService {
 
     boolean shouldSkipToolAssistedMemory(Long userId);
 
+    java.util.List<AgentMemory> retrieveRelevantMemories(Long userId, String query, int limit);
+
     String buildAgentContext(Long userId);
 }

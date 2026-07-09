@@ -2,16 +2,15 @@ package com.smartfinance.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.agent.ReActAgentService;
+import com.smartfinance.agent.context.ContextUsageSnapshot;
+import com.smartfinance.agent.entity.ChatConversation;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.AgentReflectionService;
 import com.smartfinance.agent.service.AgentRunService;
+import com.smartfinance.agent.service.ChatConversationService;
 import com.smartfinance.agent.service.ChatService;
 import com.smartfinance.agent.service.PendingActionService;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -20,7 +19,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -37,87 +35,79 @@ public class ChatServiceImpl implements ChatService {
     private final PendingActionService pendingActionService;
     private final AgentRunService agentRunService;
     private final AgentReflectionService agentReflectionService;
-    private final ChatLanguageModel chatModel;
+    private final ChatConversationService conversationService;
 
     public ChatServiceImpl(ReActAgentService reactAgentService,
                            ChatMessageMapper chatMessageMapper,
                            PendingActionService pendingActionService,
                            AgentRunService agentRunService,
                            AgentReflectionService agentReflectionService,
-                           ChatLanguageModel chatModel) {
+                           ChatConversationService conversationService) {
         this.reactAgentService = reactAgentService;
         this.chatMessageMapper = chatMessageMapper;
         this.pendingActionService = pendingActionService;
         this.agentRunService = agentRunService;
         this.agentReflectionService = agentReflectionService;
-        this.chatModel = chatModel;
+        this.conversationService = conversationService;
     }
 
     @Override
     public String chat(Long userId, String message) {
-        List<ChatMessage> recentHistory = loadRecentHistory(userId);
-        saveMessage(userId, "USER", message);
+        return chat(userId, null, message);
+    }
+
+    @Override
+    public String chat(Long userId, Long conversationId, String message) {
+        ChatConversation conversation = conversationService.ensureConversation(userId, conversationId);
+        Long activeConversationId = conversation.getId();
+        List<ChatMessage> recentHistory = loadRecentHistory(userId, activeConversationId);
+        saveMessage(userId, activeConversationId, "USER", message);
+        conversationService.updateTitleFromFirstMessage(userId, activeConversationId, message);
         AtomicReference<String> traceRef = new AtomicReference<>();
         String response;
         try {
-            if (shouldUseFastChat(message)) {
-                String traceId = UUID.randomUUID().toString();
-                traceRef.set(traceId);
-                agentRunService.startRun(userId, traceId, message);
-                response = fastChat(message, recentHistory);
-                agentRunService.completeRun(traceId, response);
-                reflectRunQuietly(userId, traceId);
-                saveMessage(userId, "ASSISTANT", response, traceId);
-            } else {
-                var result = reactAgentService.run(userId, message, recentHistory,
-                        runRecorder(userId, message, traceRef, null));
-                response = result.getFinalAnswer();
-                saveMessage(userId, "ASSISTANT", response, result.getTraceId());
-            }
+            var result = reactAgentService.run(userId, activeConversationId, message, recentHistory,
+                    runRecorder(userId, message, traceRef, null));
+            response = result.getFinalAnswer();
+            saveMessage(userId, activeConversationId, "ASSISTANT", response, result.getTraceId());
         } catch (Exception e) {
             log.error("ReActAgent call failed: userId={}, message={}", userId, message, e);
             response = FALLBACK_RESPONSE;
             agentRunService.failRun(traceRef.get(), e.getMessage(), response);
-            saveMessage(userId, "ASSISTANT", response, traceRef.get());
+            saveMessage(userId, activeConversationId, "ASSISTANT", response, traceRef.get());
         }
         return response;
     }
 
     @Override
     public SseEmitter streamReactChat(Long userId, String message) {
+        return streamReactChat(userId, null, message);
+    }
+
+    @Override
+    public SseEmitter streamReactChat(Long userId, Long conversationId, String message) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
-        List<ChatMessage> recentHistory = loadRecentHistory(userId);
-        saveMessage(userId, "USER", message);
+        ChatConversation conversation = conversationService.ensureConversation(userId, conversationId);
+        Long activeConversationId = conversation.getId();
+        List<ChatMessage> recentHistory = loadRecentHistory(userId, activeConversationId);
+        saveMessage(userId, activeConversationId, "USER", message);
+        conversationService.updateTitleFromFirstMessage(userId, activeConversationId, message);
         AtomicReference<String> traceRef = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
             try {
-                if (shouldUseFastChat(message)) {
-                    String traceId = UUID.randomUUID().toString();
-                    traceRef.set(traceId);
-                    agentRunService.startRun(userId, traceId, message);
-                    String response = fastChat(message, recentHistory);
-                    agentRunService.completeRun(traceId, response);
-                    reflectRunQuietly(userId, traceId);
-                    saveMessage(userId, "ASSISTANT", response, traceId);
-                    sendEvent(emitter, "final", Map.of(
-                            "response", response,
-                            "traceId", traceId
-                    ));
-                } else {
-                    var result = reactAgentService.run(userId, message, recentHistory,
-                            runRecorder(userId, message, traceRef, emitter));
-                    saveMessage(userId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());
-                    var pendingActions = pendingActionService.listPending(userId);
-                    if (!pendingActions.isEmpty()) {
-                        sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
-                    }
+                var result = reactAgentService.run(userId, activeConversationId, message, recentHistory,
+                        runRecorder(userId, message, traceRef, emitter));
+                saveMessage(userId, activeConversationId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());
+                var pendingActions = pendingActionService.listPending(userId);
+                if (!pendingActions.isEmpty()) {
+                    sendEvent(emitter, "pending_actions", Map.of("actions", pendingActions));
                 }
                 emitter.complete();
             } catch (Exception e) {
                 log.error("ReAct SSE call failed: userId={}, message={}", userId, message, e);
                 agentRunService.failRun(traceRef.get(), e.getMessage(), FALLBACK_RESPONSE);
-                saveMessage(userId, "ASSISTANT", FALLBACK_RESPONSE, traceRef.get());
+                saveMessage(userId, activeConversationId, "ASSISTANT", FALLBACK_RESPONSE, traceRef.get());
                 sendEvent(emitter, "error", Map.of(
                         "message", FALLBACK_RESPONSE,
                         "traceId", traceRef.get() == null ? "" : traceRef.get()
@@ -127,60 +117,6 @@ public class ChatServiceImpl implements ChatService {
         });
 
         return emitter;
-    }
-
-    private boolean shouldUseFastChat(String message) {
-        if (message == null || message.isBlank()) {
-            return true;
-        }
-        String text = message.toLowerCase();
-        String[] reactKeywords = {
-                "消费", "支出", "收入", "账", "记账", "花了", "预算", "储蓄", "存款",
-                "流水", "交易", "分类", "统计", "本月", "上月", "今天", "昨天", "明细",
-                "股票", "基金", "行情", "新闻", "汇率", "搜索", "查询", "多少", "分析",
-                "month", "today", "yesterday", "previous", "last", "expense", "income",
-                "spent", "spend", "budget", "transaction", "category", "stock", "fund",
-                "price", "market", "search", "analyze"
-        };
-        for (String keyword : reactKeywords) {
-            if (text.contains(keyword)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private String fastChat(String message, List<ChatMessage> recentHistory) {
-        List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from("""
-                You are 智财Agent. Reply in Chinese unless the user asks otherwise.
-                Be concise. Do not claim to have queried financial records, budgets, realtime markets, or tools.
-                If the user asks for account data, bookkeeping, budgets, realtime market data, or calculations that need tools, say briefly that this request should use the agent analysis path.
-                """));
-        appendFastHistory(messages, recentHistory);
-        messages.add(UserMessage.from(message));
-        AiMessage response = chatModel.generate(messages).content();
-        return response == null || response.text() == null ? "" : response.text();
-    }
-
-    private void appendFastHistory(List<dev.langchain4j.data.message.ChatMessage> messages,
-                                   List<ChatMessage> recentHistory) {
-        if (recentHistory == null || recentHistory.isEmpty()) {
-            return;
-        }
-        int start = Math.max(0, recentHistory.size() - 4);
-        for (int i = start; i < recentHistory.size(); i++) {
-            ChatMessage history = recentHistory.get(i);
-            if (history == null || history.getContent() == null || history.getContent().isBlank()) {
-                continue;
-            }
-            String content = history.getContent().trim();
-            if ("USER".equalsIgnoreCase(history.getRole())) {
-                messages.add(UserMessage.from(content));
-            } else if ("ASSISTANT".equalsIgnoreCase(history.getRole())) {
-                messages.add(AiMessage.from(content));
-            }
-        }
     }
 
     private ReActAgentService.ReActEventListener runRecorder(Long userId,
@@ -236,6 +172,13 @@ public class ChatServiceImpl implements ChatService {
                     ));
                 }
             }
+
+            @Override
+            public void onContextUsage(ContextUsageSnapshot usage) {
+                if (emitter != null && usage != null) {
+                    sendEvent(emitter, "context_usage", Map.of("usage", usage));
+                }
+            }
         };
     }
 
@@ -257,9 +200,9 @@ public class ChatServiceImpl implements ChatService {
         }
     }
 
-    private List<ChatMessage> loadRecentHistory(Long userId) {
+    private List<ChatMessage> loadRecentHistory(Long userId, Long conversationId) {
         try {
-            List<ChatMessage> messages = chatMessageMapper.selectRecentByUser(userId, MEMORY_MESSAGE_LIMIT);
+            List<ChatMessage> messages = chatMessageMapper.selectRecentByConversation(userId, conversationId, MEMORY_MESSAGE_LIMIT);
             List<ChatMessage> ordered = new ArrayList<>();
             for (int i = messages.size() - 1; i >= 0; i--) {
                 ordered.add(messages.get(i));
@@ -271,14 +214,15 @@ public class ChatServiceImpl implements ChatService {
         }
     }
 
-    private void saveMessage(Long userId, String role, String content) {
-        saveMessage(userId, role, content, null);
+    private void saveMessage(Long userId, Long conversationId, String role, String content) {
+        saveMessage(userId, conversationId, role, content, null);
     }
 
-    private void saveMessage(Long userId, String role, String content, String traceId) {
+    private void saveMessage(Long userId, Long conversationId, String role, String content, String traceId) {
         try {
             ChatMessage msg = new ChatMessage();
             msg.setUserId(userId);
+            msg.setConversationId(conversationId);
             msg.setRole(role);
             msg.setContent(content);
             if (traceId != null && !traceId.isBlank()) {
@@ -292,9 +236,17 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public List<Map<String, Object>> getChatHistory(Long userId, int limit) {
+        ChatConversation conversation = conversationService.ensureConversation(userId, null);
+        return getChatHistory(userId, conversation.getId(), limit);
+    }
+
+    @Override
+    public List<Map<String, Object>> getChatHistory(Long userId, Long conversationId, int limit) {
+        ChatConversation conversation = conversationService.ensureConversation(userId, conversationId);
         List<ChatMessage> messages = chatMessageMapper.selectList(
                 new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getUserId, userId)
+                        .eq(ChatMessage::getConversationId, conversation.getId())
                         .orderByDesc(ChatMessage::getCreatedAt)
                         .last("LIMIT " + limit));
 

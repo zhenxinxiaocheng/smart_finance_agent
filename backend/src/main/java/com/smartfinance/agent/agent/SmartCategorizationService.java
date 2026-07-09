@@ -148,69 +148,6 @@ public class SmartCategorizationService {
         log.info("已记录用户偏好: userId={}, keyword={}, category={}", userId, keyword, category);
     }
 
-    /**
-     * 获取用户最常用的分类
-     */
-    public List<String> getUserTopCategories(Long userId, String type, int limit) {
-        Map<String, Integer> counts = userCategoryCount.getOrDefault(userId, Map.of());
-        return counts.entrySet().stream()
-                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-                .limit(limit)
-                .map(Map.Entry::getKey)
-                .toList();
-    }
-
-    /**
-     * 格式化分类列表为提示文本（供AI使用）
-     */
-    public String getCategoryPrompt(String type, Long userId) {
-        List<ExpenseCategory> categories = loadCategories(userId).stream()
-                .filter(c -> matchesType(c.getName(), type))
-                .toList();
-        if (categories.isEmpty()) {
-            return type.equals("INCOME") ? "\n【可用收入分类】\n（暂无，请用户在「管理分类」中创建）\n"
-                    : "\n【可用支出分类】\n（暂无，请用户在「管理分类」中创建）\n";
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append(type.equals("INCOME") ? "\n【可用收入分类】\n" : "\n【可用支出分类】\n");
-        for (ExpenseCategory c : categories) {
-            sb.append("- ").append(c.getName());
-            if (c.getBenchmarkLabel() != null && !c.getBenchmarkLabel().isBlank()) {
-                sb.append("（").append(c.getBenchmarkLabel()).append("）");
-            }
-            sb.append("\n");
-        }
-        return sb.toString();
-    }
-
-    /**
-     * 获取所有分类的提示文本（供AI系统提示使用）
-     */
-    public String getAllCategoriesPrompt(Long userId) {
-        List<ExpenseCategory> categories = loadCategories(userId);
-        if (categories.isEmpty()) {
-            return "（暂无分类，请引导用户在「管理分类」中创建消费分类）";
-        }
-        List<String> expense = new ArrayList<>();
-        List<String> income = new ArrayList<>();
-        for (ExpenseCategory c : categories) {
-            if (isIncomeCategory(c.getName())) {
-                income.add(c.getName());
-            } else {
-                expense.add(c.getName());
-            }
-        }
-        StringBuilder sb = new StringBuilder();
-        if (!expense.isEmpty()) {
-            sb.append("支出：").append(String.join("、", expense));
-        }
-        if (!income.isEmpty()) {
-            if (!sb.isEmpty()) sb.append("；");
-            sb.append("收入：").append(String.join("、", income));
-        }
-        return sb.toString();
-    }
-
     // ===== 内部方法 =====
 
     /**

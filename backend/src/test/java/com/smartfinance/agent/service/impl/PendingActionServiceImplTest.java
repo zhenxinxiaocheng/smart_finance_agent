@@ -216,6 +216,52 @@ class PendingActionServiceImplTest {
     }
 
     @Test
+    void prepareSchedule_shouldNormalizeFiveFieldCronBeforeConfirming() {
+        AtomicReference<PendingAction> savedAction = new AtomicReference<>();
+        doAnswer(invocation -> {
+            PendingAction action = invocation.getArgument(0);
+            action.setId(41L);
+            savedAction.set(action);
+            return 1;
+        }).when(pendingActionMapper).insert(any(PendingAction.class));
+        when(pendingActionMapper.selectById(41L)).thenAnswer(invocation -> savedAction.get());
+        AgentSchedule schedule = new AgentSchedule();
+        schedule.setId(67L);
+        when(agentScheduleService.create(
+                1L,
+                "每日财务分析提醒",
+                "每天分析支出",
+                "0 0 10 * * *",
+                "汇总当日支出",
+                "Asia/Shanghai"
+        )).thenReturn(schedule);
+
+        PendingAction prepared = pendingActionService.prepareSchedule(
+                1L,
+                "每日财务分析提醒",
+                "每天分析支出",
+                "0 10 * * *",
+                "汇总当日支出",
+                "Asia/Shanghai"
+        );
+
+        assertThat(prepared.getSummary()).contains("0 0 10 * * *");
+        assertThat(prepared.getPayload()).contains("\"cronExpression\":\"0 0 10 * * *\"");
+
+        PendingAction confirmed = pendingActionService.confirm(1L, 41L);
+
+        assertThat(confirmed.getStatus()).isEqualTo("CONFIRMED");
+        verify(agentScheduleService).create(
+                1L,
+                "每日财务分析提醒",
+                "每天分析支出",
+                "0 0 10 * * *",
+                "汇总当日支出",
+                "Asia/Shanghai"
+        );
+    }
+
+    @Test
     void prepareMemory_shouldCreatePendingAction_thenConfirmCreatesManualMemory() {
         AtomicReference<PendingAction> savedAction = new AtomicReference<>();
         doAnswer(invocation -> {

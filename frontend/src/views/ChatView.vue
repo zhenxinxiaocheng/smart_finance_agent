@@ -1,6 +1,47 @@
 <template>
   <div class="chat-view">
-    <div class="chat-container">
+    <div class="chat-layout">
+      <section v-if="isNewConversationLanding" class="new-chat-landing">
+        <div class="new-chat-panel">
+          <h1 class="new-chat-title">今天有什么计划？</h1>
+          <div class="new-chat-composer">
+            <button class="new-chat-add" type="button" aria-label="添加" disabled>
+              <Plus />
+            </button>
+            <Textarea
+              v-model="inputMessage"
+              class="new-chat-input chat-input"
+              :placeholder="conversationLoading ? '正在准备...' : '有问题，尽管问'"
+              :disabled="conversationLoading"
+              rows="1"
+              @keydown.enter.prevent="handleSend"
+              @input="autoResizeInput"
+            />
+            <Button
+              class="new-chat-send"
+              size="icon-lg"
+              :variant="inputMessage.trim() && !conversationLoading ? 'default' : 'secondary'"
+              :disabled="!inputMessage.trim() || conversationLoading"
+              @click="handleSend"
+            >
+              <SendHorizontal />
+            </Button>
+          </div>
+          <div class="new-chat-prompts">
+            <Button
+              v-for="item in landingSuggestions"
+              :key="item"
+              variant="outline"
+              size="sm"
+              class="new-chat-prompt"
+              @click="sendSuggestion(item)"
+            >
+              {{ item }}
+            </Button>
+          </div>
+        </div>
+      </section>
+      <div v-else class="chat-container">
       <header class="chat-header">
         <div class="header-left">
           <div class="header-avatar">
@@ -63,14 +104,18 @@
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="outline" size="sm" title="新建对话" @click="clearChat">
+          <Button variant="outline" size="sm" title="新建对话" :disabled="conversationLoading || loading" @click="createNewConversation">
             <Plus data-icon="inline-start" />
             新建对话
           </Button>
         </div>
       </header>
 
-      <div class="messages-area" ref="messageListRef">
+      <div
+        class="messages-area"
+        :class="{ 'is-populated': messages.length > 0 || showTypingAnimation }"
+        ref="messageListRef"
+      >
         <div v-if="messages.length === 0 && !historyLoading" class="empty-state">
           <div class="empty-icon-wrapper">
             <div class="empty-icon-bg"></div>
@@ -253,35 +298,93 @@
             class="suggestion-chip"
             @click="sendSuggestion(item)"
           >
-            <span class="chip-icon">{{ suggestionIcons[index] }}</span>
             <span>{{ item }}</span>
           </Button>
         </div>
       </div>
 
       <div class="input-area-container">
-        <div class="input-wrapper">
+        <div class="composer-shell">
           <Textarea
             v-model="inputMessage"
             class="chat-input"
-            :placeholder="loading ? '等待AI回复...' : '输入财务问题，或直接记账...'"
+            :placeholder="loading ? '等待回复...' : '随心输入...'"
             :disabled="loading"
-            rows="1"
+            rows="2"
             @keydown.enter.prevent="handleSend"
             @input="autoResizeInput"
           />
-          <Button
-            class="send-button"
-            size="icon-lg"
-            :variant="inputMessage.trim() && !loading ? 'default' : 'secondary'"
-            :disabled="!inputMessage.trim() || loading"
-            @click="handleSend"
-          >
-            <SendHorizontal />
-          </Button>
+          <div class="composer-toolbar">
+            <div class="composer-tools-left">
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <button
+                    class="context-orb"
+                    :class="contextWindowLevelClass"
+                    :style="{ '--context-used': `${contextUsagePercent}%` }"
+                    type="button"
+                    :title="contextWindowTitle"
+                    aria-label="背景信息窗口"
+                  >
+                    <span class="context-orb-inner"></span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" class="w-72 p-3">
+                  <div class="context-popover">
+                    <div class="context-popover-head">
+                      <span>背景信息窗口</span>
+                      <strong>{{ contextUsagePercentLabel }}</strong>
+                    </div>
+                    <div class="context-popover-bar">
+                      <span :style="{ width: `${contextUsagePercent}%` }"></span>
+                    </div>
+                    <div class="context-popover-grid">
+                      <div>
+                        <span>总上下文</span>
+                        <strong>{{ contextWindowBudgetLabel }}</strong>
+                      </div>
+                      <div>
+                        <span>已用</span>
+                        <strong>{{ contextUsedTokenLabel }}</strong>
+                      </div>
+                      <div>
+                        <span>剩余</span>
+                        <strong>{{ contextRemainingTokenLabel }}</strong>
+                      </div>
+                    </div>
+                    <div class="context-popover-meta" v-if="contextCompressedCount || contextDroppedCount">
+                      <span v-if="contextCompressedCount">已压缩 {{ contextCompressedCount }} 块</span>
+                      <span v-if="contextDroppedCount">已丢弃 {{ contextDroppedCount }} 块</span>
+                    </div>
+                    <Button
+                      class="context-compress-button"
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      :disabled="!canCompressCurrentContext"
+                      @click="compressCurrentContext"
+                    >
+                      {{ compressingContext ? '压缩中...' : '手动压缩当前对话' }}
+                    </Button>
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div class="composer-tools-right">
+              <Button
+                class="send-button"
+                size="icon-lg"
+                :variant="inputMessage.trim() && !loading ? 'default' : 'secondary'"
+                :disabled="!inputMessage.trim() || loading"
+                @click="handleSend"
+              >
+                <SendHorizontal />
+              </Button>
+            </div>
+          </div>
         </div>
-        <p class="input-hint">智财Agent · 消费分析 + 理财顾问 · 试试说「分析一下我的消费结构」</p>
       </div>
+    </div>
     </div>
 
     <Dialog v-model:open="traceDrawerVisible">
@@ -384,9 +487,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Bell, Plus, SendHorizontal } from '@lucide/vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -403,12 +507,17 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 import { feedback } from '@/lib/feedback'
-import { streamReactChatAPI, getChatHistoryAPI } from '../api/chat'
+import {
+  streamReactChatAPI,
+  getChatHistoryAPI
+} from '../api/chat'
 import { getAgentRunDetailAPI } from '../api/agentRuns'
+import { compressAgentContextAPI, getAgentContextConfigAPI, getAgentContextUsageAPI } from '../api/agentContext'
 import { getUnreadAlertsAPI } from '../api/alert'
 import { listPendingActionsAPI, confirmPendingActionAPI, cancelPendingActionAPI } from '../api/pendingAction'
 import { listAgentReflectionsAPI, acceptAgentReflectionAPI, dismissAgentReflectionAPI } from '../api/agentReflections'
 import { marked } from 'marked'
+import { useChatConversationsStore } from '@/stores/chatConversations'
 
 marked.setOptions({
   breaks: true,
@@ -427,15 +536,25 @@ const isTyping = ref(false)
 const historyLoading = ref(true)
 const activeSteps = ref([])
 const activePendingActions = ref([])
+const contextUsage = ref(null)
+const contextUsageLoading = ref(false)
+const contextUsageSource = ref('')
+const compressingContext = ref(false)
 const traceDrawerVisible = ref(false)
 const traceLoading = ref(false)
 const traceDetail = ref(null)
 const traceReflectionLoading = ref(false)
 const traceReflections = ref([])
 const route = useRoute()
+const router = useRouter()
+const conversationStore = useChatConversationsStore()
+const { currentConversationId, conversationLoading } = storeToRefs(conversationStore)
 let typingTimer = null
 let alertTimer = null
 let chatAbortController = null
+let suppressNextConversationRouteLoad = false
+const PENDING_ACTION_NOTICE = 'PENDING_ACTION_NOTICE'
+const contextConfig = ref({ maxTokens: 0, reservedOutputTokens: 0, effectiveBudget: 0 })
 
 const suggestions = [
   '我这个月消费情况如何？',
@@ -445,7 +564,146 @@ const suggestions = [
   '帮我看看我的预算设置'
 ]
 
-const suggestionIcons = ['📝', '💰', '📊', '📈', '💡', '🍜']
+const landingSuggestions = [
+  '记录一笔今天的支出',
+  '分析我这个月消费',
+  '帮我规划下月预算'
+]
+
+const isNewConversationLanding = computed(() => {
+  return !currentConversationId.value && !loading.value && !showTypingAnimation.value && !historyLoading.value
+})
+
+const contextMaxTokens = computed(() => {
+  const maxTokens = Number(contextUsage.value?.maxTokens || contextConfig.value.maxTokens || 0)
+  return maxTokens > 0 ? maxTokens : (contextConfig.value.effectiveBudget || 12000)
+})
+
+const contextUsedTokens = computed(() => Math.max(0, Number(contextUsage.value?.usedTokens || 0)))
+
+const hasContextUsage = computed(() => !!contextUsage.value)
+
+const isEstimatedContextUsage = computed(() => contextUsageSource.value === 'local')
+
+const contextRemainingTokens = computed(() => {
+  const remainingTokens = Number(contextUsage.value?.remainingTokens)
+  if (Number.isFinite(remainingTokens) && remainingTokens >= 0) {
+    return Math.max(0, remainingTokens)
+  }
+  return Math.max(0, contextMaxTokens.value - contextUsedTokens.value)
+})
+
+const contextUsagePercent = computed(() => {
+  const ratio = Number(contextUsage.value?.usageRatio)
+  if (Number.isFinite(ratio) && ratio > 0) {
+    return Math.max(0, Math.min(100, Math.round(ratio * 100)))
+  }
+  if (!contextMaxTokens.value) return 0
+  return Math.max(0, Math.min(100, Math.round((contextUsedTokens.value / contextMaxTokens.value) * 100)))
+})
+
+const contextUsagePercentLabel = computed(() => {
+  if (contextUsageLoading.value) return '计算中'
+  if (!hasContextUsage.value) return '未计算'
+  return isEstimatedContextUsage.value ? `${contextUsagePercent.value}%估算` : `${contextUsagePercent.value}%`
+})
+
+const contextUsedTokenLabel = computed(() => {
+  if (contextUsageLoading.value) return '计算中'
+  if (!hasContextUsage.value) return '未计算'
+  return formatTokenCount(contextUsedTokens.value)
+})
+
+const contextRemainingTokenLabel = computed(() => {
+  if (contextUsageLoading.value) return '计算中'
+  if (!hasContextUsage.value) return '未计算'
+  return formatTokenCount(contextRemainingTokens.value)
+})
+
+const contextWindowBudgetLabel = computed(() => formatTokenCount(contextMaxTokens.value))
+
+const contextWindowTitle = computed(() => {
+  if (contextUsageLoading.value) {
+    return '背景信息窗口：正在计算当前会话上下文占用'
+  }
+  if (!hasContextUsage.value) {
+    return `背景信息窗口：总上下文 ${contextWindowBudgetLabel.value}，当前会话占用未计算`
+  }
+  if (isEstimatedContextUsage.value) {
+    return `背景信息窗口：总上下文 ${contextWindowBudgetLabel.value}，已用约 ${contextUsedTokenLabel.value}，剩余约 ${contextRemainingTokenLabel.value}`
+  }
+  return `背景信息窗口：总上下文 ${contextWindowBudgetLabel.value}，已用 ${contextUsedTokenLabel.value}，剩余 ${contextRemainingTokenLabel.value}`
+})
+
+const contextCompressedCount = computed(() => contextUsage.value?.compressedKeys?.length || 0)
+
+const contextDroppedCount = computed(() => contextUsage.value?.droppedKeys?.length || 0)
+
+const canCompressCurrentContext = computed(() => {
+  return Boolean(currentConversationId.value)
+    && !compressingContext.value
+    && !loading.value
+    && messages.value.some(message => ['USER', 'ASSISTANT'].includes(message.role) && !message.noticeType)
+})
+
+const latestTraceId = computed(() => {
+  const latest = [...messages.value].reverse().find(message => message.role === 'ASSISTANT' && message.traceId)
+  return latest?.traceId || ''
+})
+
+const contextWindowLevelClass = computed(() => {
+  if (!hasContextUsage.value) return 'is-unknown'
+  if (contextUsagePercent.value >= 85) return 'is-high'
+  if (contextUsagePercent.value >= 60) return 'is-medium'
+  return 'is-low'
+})
+
+function formatTokenCount(value) {
+  const count = Math.max(0, Math.round(Number(value || 0)))
+  if (count >= 1000) {
+    const next = count / 1000
+    return `${Number.isInteger(next) ? next.toFixed(0) : next.toFixed(1)}k`
+  }
+  return `${count}`
+}
+
+function resetChatState() {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
+  if (typingTimer) {
+    clearTimeout(typingTimer)
+    typingTimer = null
+  }
+  showTypingAnimation.value = false
+  typingDisplay.value = ''
+  activeSteps.value = []
+  activePendingActions.value = []
+  contextUsage.value = null
+  contextUsageLoading.value = false
+  contextUsageSource.value = ''
+  isTyping.value = false
+  loading.value = false
+  messages.value = []
+}
+
+async function initializeConversation() {
+  await conversationStore.initializeConversation(route, router)
+  conversationStore.syncCurrentConversationFromRoute(route)
+}
+
+async function createNewConversation() {
+  if (conversationLoading.value || loading.value) return
+  resetChatState()
+  inputMessage.value = ''
+  try {
+    await conversationStore.startNewConversation(route, router)
+  } catch {
+    feedback.error('新建对话失败')
+  }
+  historyLoading.value = false
+}
 
 function autoResizeInput(e) {
   const el = e.target
@@ -518,21 +776,38 @@ function typeText(text, traceId, index = 0) {
     activeSteps.value = []
     activePendingActions.value = []
     loading.value = false
+    conversationStore.loadConversations()
     scrollToBottom()
   }
 }
 
 async function handleSend() {
   const text = inputMessage.value.trim()
-  if (!text || loading.value) return
+  if (!text || loading.value || conversationLoading.value) return
+  if (!currentConversationId.value) {
+    suppressNextConversationRouteLoad = true
+    let conversation = null
+    try {
+      conversation = await conversationStore.createConversation(route, router)
+    } catch {
+      suppressNextConversationRouteLoad = false
+      feedback.error('新建对话失败')
+      return
+    }
+    if (!conversation?.id) {
+      suppressNextConversationRouteLoad = false
+      feedback.error('新建对话失败')
+      return
+    }
+  }
+  if (!currentConversationId.value) return
 
   messages.value.push({ role: 'USER', content: text })
   inputMessage.value = ''
 
-  const inputEl = document.querySelector('.chat-input')
-  if (inputEl) {
+  document.querySelectorAll('.chat-input').forEach(inputEl => {
     inputEl.style.height = 'auto'
-  }
+  })
 
   scrollToBottom()
   loading.value = true
@@ -540,11 +815,14 @@ async function handleSend() {
   typingDisplay.value = ''
   activeSteps.value = []
   activePendingActions.value = []
+  contextUsage.value = null
+  contextUsageSource.value = ''
+  contextUsageLoading.value = true
   chatAbortController = new AbortController()
   let terminalEventReceived = false
 
   try {
-    await streamReactChatAPI({ message: text }, {
+    await streamReactChatAPI({ conversationId: currentConversationId.value, message: text }, {
       step_started: payload => {
         upsertStep({
           stepNumber: payload.stepNumber,
@@ -566,6 +844,11 @@ async function handleSend() {
       pending_actions: payload => {
         applyPendingActions(payload.actions || [])
       },
+      context_usage: payload => {
+        contextUsage.value = normalizeContextUsage(payload?.usage || payload)
+        contextUsageSource.value = 'server'
+        contextUsageLoading.value = false
+      },
       error: payload => {
         terminalEventReceived = true
         finishWithError(payload.message)
@@ -579,7 +862,123 @@ async function handleSend() {
       finishWithError()
     }
   } finally {
+    contextUsageLoading.value = false
     chatAbortController = null
+  }
+}
+
+function normalizeContextUsage(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+  return {
+    maxTokens: Number(payload.maxTokens || 0),
+    reservedOutputTokens: Number(payload.reservedOutputTokens || 0),
+    usedTokens: Number(payload.usedTokens || 0),
+    remainingTokens: Number(payload.remainingTokens || 0),
+    usageRatio: Number(payload.usageRatio || 0),
+    blocks: Array.isArray(payload.blocks) ? payload.blocks : [],
+    droppedKeys: Array.isArray(payload.droppedKeys) ? payload.droppedKeys : [],
+    compressedKeys: Array.isArray(payload.compressedKeys) ? payload.compressedKeys : []
+  }
+}
+
+function estimateTextTokens(text) {
+  const value = String(text || '')
+  if (!value.trim()) return 0
+  let cjk = 0
+  let ascii = 0
+  let other = 0
+  for (const char of value) {
+    const code = char.charCodeAt(0)
+    if (code >= 0x4e00 && code <= 0x9fff) {
+      cjk += 1
+    } else if (code < 128) {
+      ascii += 1
+    } else {
+      other += 1
+    }
+  }
+  return Math.max(1, cjk + other + Math.ceil(ascii / 4))
+}
+
+function estimateLocalContextUsage() {
+  const historyText = messages.value
+    .filter(message => !message.noticeType && ['USER', 'ASSISTANT'].includes(message.role))
+    .map(message => `${message.role}: ${message.content || ''}`)
+    .join('\n')
+  const usedTokens = estimateTextTokens(historyText)
+  const maxTokens = contextMaxTokens.value || 12000
+  const reservedOutputTokens = Number(contextConfig.value.reservedOutputTokens || 0)
+  const promptBudget = Math.max(1, maxTokens - reservedOutputTokens)
+  return {
+    maxTokens,
+    reservedOutputTokens,
+    usedTokens,
+    remainingTokens: Math.max(0, promptBudget - usedTokens),
+    usageRatio: Math.min(1, usedTokens / promptBudget),
+    blocks: [{
+      key: 'local-history-estimate',
+      displayName: '当前会话历史估算',
+      sourceType: 'HISTORY',
+      tokens: usedTokens,
+      hidden: false,
+      compressed: false
+    }],
+    droppedKeys: [],
+    compressedKeys: []
+  }
+}
+
+async function loadContextUsage() {
+  if (!currentConversationId.value) {
+    contextUsage.value = null
+    contextUsageSource.value = ''
+    contextUsageLoading.value = false
+    return
+  }
+  contextUsageLoading.value = true
+  try {
+    const res = await getAgentContextUsageAPI({ conversationId: currentConversationId.value })
+    const usage = normalizeContextUsage(res?.data)
+    contextUsage.value = usage || estimateLocalContextUsage()
+    contextUsageSource.value = usage ? 'server' : (contextUsage.value ? 'local' : '')
+  } catch {
+    contextUsage.value = estimateLocalContextUsage()
+    contextUsageSource.value = contextUsage.value ? 'local' : ''
+  } finally {
+    contextUsageLoading.value = false
+  }
+}
+
+async function compressCurrentContext() {
+  if (!canCompressCurrentContext.value) {
+    if (!currentConversationId.value) {
+      feedback.error('请先选择一个对话')
+    } else if (!messages.value.some(message => ['USER', 'ASSISTANT'].includes(message.role) && !message.noticeType)) {
+      feedback.error('当前对话暂无可压缩内容')
+    }
+    return
+  }
+  compressingContext.value = true
+  try {
+    const payload = {
+      conversationId: currentConversationId.value,
+      scope: 'CONVERSATION',
+      ...(latestTraceId.value ? { traceId: latestTraceId.value } : {})
+    }
+    const res = await compressAgentContextAPI(payload)
+    const summary = res?.data
+    if (summary?.compressedTokens || summary?.originalTokens) {
+      feedback.success(`已压缩上下文：${formatTokenCount(summary.originalTokens)} -> ${formatTokenCount(summary.compressedTokens)}`)
+    } else {
+      feedback.success('已压缩当前对话上下文')
+    }
+    await loadContextUsage()
+  } catch (err) {
+    console.error('上下文压缩失败:', err)
+  } finally {
+    compressingContext.value = false
   }
 }
 
@@ -598,7 +997,7 @@ function upsertStep(step) {
 }
 
 function applyPendingActions(actions) {
-  const normalizedActions = Array.isArray(actions) ? actions.map(action => ({ ...action })) : []
+  const normalizedActions = normalizePendingActions(actions)
   if (showTypingAnimation.value) {
     activePendingActions.value = normalizedActions
   } else {
@@ -608,6 +1007,23 @@ function applyPendingActions(actions) {
     }
   }
   scrollToBottom()
+}
+
+function normalizePendingActions(actions) {
+  return Array.isArray(actions)
+    ? actions.filter(action => action?.status === 'PENDING').map(action => ({ ...action }))
+    : []
+}
+
+function removeHandledPendingActions() {
+  messages.value.forEach(message => {
+    if (Array.isArray(message.pendingActions)) {
+      message.pendingActions = normalizePendingActions(message.pendingActions)
+    }
+  })
+  messages.value = messages.value.filter(message => {
+    return !message.noticeType || message.noticeType !== PENDING_ACTION_NOTICE || message.pendingActions?.length
+  })
 }
 
 function stepLabel(status) {
@@ -658,6 +1074,7 @@ async function confirmPendingAction(action) {
   try {
     const res = await confirmPendingActionAPI(action.id)
     Object.assign(action, res.data || {}, { confirming: false })
+    removeHandledPendingActions()
     feedback.success('已执行')
   } catch {
     action.confirming = false
@@ -670,6 +1087,7 @@ async function cancelPendingAction(action) {
   try {
     const res = await cancelPendingActionAPI(action.id)
     Object.assign(action, res.data || {}, { confirming: false })
+    removeHandledPendingActions()
     feedback.success('已取消')
   } catch {
     action.confirming = false
@@ -682,9 +1100,16 @@ function sendSuggestion(text) {
 }
 
 async function loadHistory() {
+  if (!currentConversationId.value) {
+    messages.value = []
+    contextUsage.value = null
+    contextUsageSource.value = ''
+    historyLoading.value = false
+    return
+  }
   historyLoading.value = true
   try {
-    const res = await getChatHistoryAPI({ limit: 50 })
+    const res = await getChatHistoryAPI({ conversationId: currentConversationId.value, limit: 50 })
     if (res.code === 200 && Array.isArray(res.data)) {
       messages.value = res.data.map(m => ({
         role: m.role,
@@ -693,22 +1118,30 @@ async function loadHistory() {
         steps: Array.isArray(m.steps) ? m.steps : []
       }))
     }
-    await loadPendingActions()
   } catch (err) {
     console.error('加载聊天历史失败:', err)
   } finally {
     historyLoading.value = false
   }
+  try {
+    await loadPendingActions()
+  } catch (err) {
+    console.error('加载待确认操作失败:', err)
+  } finally {
+    await loadContextUsage()
+  }
 }
 
 async function loadPendingActions() {
-  const res = await listPendingActionsAPI()
-  const actions = Array.isArray(res.data) ? res.data : []
+  messages.value = messages.value.filter(message => message.noticeType !== PENDING_ACTION_NOTICE)
+  const res = await listPendingActionsAPI({ status: 'PENDING' })
+  const actions = normalizePendingActions(res.data)
   if (!actions.length) return
   messages.value.push({
     role: 'ASSISTANT',
     content: '还有操作等待你确认，确认后才会真正写入系统。',
-    pendingActions: actions
+    pendingActions: actions,
+    noticeType: PENDING_ACTION_NOTICE
   })
 }
 
@@ -724,25 +1157,29 @@ async function fetchAlerts() {
   }
 }
 
+
+async function loadContextConfig() {
+  try {
+    const res = await getAgentContextConfigAPI()
+    if (res?.data) {
+      contextConfig.value = {
+        maxTokens: Number(res.data.maxTokens) || 0,
+        reservedOutputTokens: Number(res.data.reservedOutputTokens) || 0,
+        effectiveBudget: Number(res.data.effectiveBudget) || 0
+      }
+    }
+  } catch (e) {
+    /* silence; SSE context_usage will overwrite */
+  }
+}
+
 function clearChat() {
-  if (chatAbortController) {
-    chatAbortController.abort()
-    chatAbortController = null
-  }
-  if (typingTimer) {
-    clearTimeout(typingTimer)
-    typingTimer = null
-  }
-  showTypingAnimation.value = false
-  typingDisplay.value = ''
-  activeSteps.value = []
-  activePendingActions.value = []
-  isTyping.value = false
-  loading.value = false
-  messages.value = []
+  resetChatState()
 }
 
 onMounted(async () => {
+  await loadContextConfig()
+  await initializeConversation()
   await loadHistory()
   await fetchAlerts()
   if (route.query.traceId) {
@@ -776,6 +1213,35 @@ watch(() => route.query.traceId, traceId => {
     openRunTrace({ traceId: String(traceId) })
   }
 })
+
+watch(() => route.query.conversationId, async conversationId => {
+  const nextId = Number(conversationId)
+  if (!Number.isFinite(nextId) || nextId <= 0) {
+    resetChatState()
+    conversationStore.syncCurrentConversationFromRoute(route)
+    historyLoading.value = false
+    return
+  }
+  if (suppressNextConversationRouteLoad) {
+    suppressNextConversationRouteLoad = false
+    conversationStore.syncCurrentConversationFromRoute(route)
+    historyLoading.value = false
+    return
+  }
+  if (Number(currentConversationId.value) === nextId && messages.value.length) return
+  resetChatState()
+  conversationStore.syncCurrentConversationFromRoute(route)
+  await loadHistory()
+})
+
+watch(
+  () => [route.query.scheduleTraceId, route.query.refresh],
+  async ([scheduleTraceId, refresh]) => {
+    if (!scheduleTraceId && !refresh) return
+    await loadHistory()
+    scrollToBottom()
+  }
+)
 
 async function openRunTrace(message) {
   if (!message?.traceId) return
@@ -909,6 +1375,94 @@ function formatTime(value) {
   --chat-primary: var(--primary);
   --chat-primary-foreground: var(--primary-foreground);
   --chat-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.chat-layout {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+}
+
+.new-chat-landing {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px 96px;
+}
+
+.new-chat-panel {
+  width: min(820px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 28px;
+}
+
+.new-chat-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.new-chat-composer {
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 18px;
+  border: 1px solid color-mix(in oklab, var(--border) 76%, white 8%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--card) 82%, white 6%);
+  box-shadow: 0 18px 45px rgb(0 0 0 / 0.18);
+}
+
+.new-chat-add {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.new-chat-add svg {
+  width: 22px;
+  height: 22px;
+}
+
+.new-chat-input {
+  min-height: 36px !important;
+  max-height: 96px;
+  flex: 1;
+  padding: 5px 0 !important;
+  font-size: 16px !important;
+}
+
+.new-chat-send {
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.new-chat-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.new-chat-prompt {
+  border-radius: 999px;
+  background: transparent;
 }
 
 .chat-container {
@@ -1058,10 +1612,16 @@ function formatTime(value) {
 .messages-area {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: var(--app-card-padding);
   background: color-mix(in oklab, var(--chat-muted) 46%, transparent);
   scroll-behavior: smooth;
+}
+
+.messages-area.is-populated {
+  justify-content: flex-end;
 }
 
 .messages-area::-webkit-scrollbar {
@@ -1135,9 +1695,9 @@ function formatTime(value) {
 }
 
 .message-bubble {
-  padding: 12px 14px;
+  padding: 10px 14px;
   font-size: 14px;
-  line-height: 1.55;
+  line-height: 1.45;
   word-wrap: break-word;
   white-space: pre-wrap;
 }
@@ -1151,6 +1711,7 @@ function formatTime(value) {
 }
 
 .user-bubble {
+  min-width: 72px;
   background: var(--chat-primary);
   border-radius: var(--radius);
   color: var(--chat-primary-foreground);
@@ -1464,45 +2025,51 @@ function formatTime(value) {
   flex-shrink: 0;
 }
 
-.chip-icon {
-  font-size: 15px;
-}
-
 .input-area-container {
   flex-shrink: 0;
-  padding: 8px var(--app-card-padding) calc(var(--app-card-padding) * 0.9);
+  padding: 10px var(--app-card-padding) calc(var(--app-card-padding) * 0.9);
   background: var(--chat-panel);
 }
 
-.input-wrapper {
-  display: flex;
-  align-items: flex-end;
+.composer-shell {
+  display: grid;
   gap: 10px;
   background: var(--background);
   border: 1px solid var(--chat-border);
-  border-radius: var(--radius);
-  padding: 7px 7px 7px 14px;
+  border-radius: 18px;
+  padding: 14px 10px 10px;
   box-shadow: var(--chat-shadow);
   transition: all 0.2s;
 }
 
-.input-wrapper:focus-within {
+.composer-shell:focus-within {
   border-color: var(--chat-primary);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--chat-primary) 18%, transparent), var(--chat-shadow);
 }
 
 .chat-input {
-  flex: 1;
-  border: none;
-  outline: none;
+  width: 100%;
+  border: 0 !important;
+  outline: 0 !important;
   font-size: 14px;
   font-family: inherit;
   color: var(--foreground);
-  background: transparent;
+  background: transparent !important;
   resize: none;
   line-height: 1.6;
-  max-height: 150px;
-  min-height: 24px;
+  max-height: 170px;
+  min-height: 54px;
+  padding: 0 4px;
+  box-shadow: none !important;
+}
+
+.chat-input:focus,
+.chat-input:focus-visible {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+  --tw-ring-color: transparent !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
 }
 
 .chat-input::placeholder {
@@ -1516,13 +2083,146 @@ function formatTime(value) {
 
 .send-button {
   flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.composer-tools-left,
+.composer-tools-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.composer-tools-left {
+  flex: 1;
+  overflow: hidden;
+}
+
+.composer-tools-right {
+  flex-shrink: 0;
+}
+
+.context-orb {
+  --context-ring: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: conic-gradient(var(--context-ring) var(--context-used), color-mix(in oklab, var(--chat-muted-foreground) 28%, transparent) 0);
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  flex-shrink: 0;
+}
+
+.context-orb:hover {
+  transform: scale(1.08);
+}
+
+.context-orb-inner {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--chat-panel);
+}
+
+.context-orb.is-low {
+  --context-ring: #22c55e;
+}
+
+.context-orb.is-unknown {
+  --context-ring: #94a3b8;
+  opacity: 0.72;
+}
+
+.context-orb.is-medium {
+  --context-ring: #f59e0b;
+}
+
+.context-orb.is-high {
+  --context-ring: #ef4444;
+}
+
+.context-popover {
+  display: grid;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.context-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--chat-panel-foreground);
+}
+
+.context-popover-head strong {
+  font-size: 18px;
+}
+
+.context-popover-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--chat-muted);
+}
+
+.context-popover-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--chat-primary);
+}
+
+.context-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.context-popover-grid div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.context-popover-grid span,
+.context-popover-meta {
+  color: var(--chat-muted-foreground);
+}
+
+.context-popover-grid strong {
+  color: var(--chat-panel-foreground);
+  font-weight: 700;
+}
+
+.context-popover-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-compress-button {
+  width: 100%;
 }
 
 .input-hint {
   text-align: center;
   font-size: 11px;
   color: var(--chat-muted-foreground);
-  margin: 8px 0 0;
+  margin: 0;
   letter-spacing: 0.2px;
 }
 
@@ -1743,5 +2443,40 @@ function formatTime(value) {
 
 .trace-empty.small {
   padding: 8px;
+}
+
+@media (max-width: 720px) {
+  .new-chat-landing {
+    align-items: flex-start;
+    padding: 72px 8px 48px;
+  }
+
+  .new-chat-panel {
+    gap: 22px;
+  }
+
+  .new-chat-composer {
+    min-height: 58px;
+    gap: 8px;
+    padding: 8px 10px 8px 14px;
+  }
+
+  .new-chat-prompts {
+    gap: 8px;
+  }
+
+  .composer-shell {
+    border-radius: 16px;
+    padding: 12px 8px 8px;
+  }
+
+  .composer-toolbar {
+    gap: 6px;
+  }
+
+  .composer-tools-left,
+  .composer-tools-right {
+    gap: 4px;
+  }
 }
 </style>

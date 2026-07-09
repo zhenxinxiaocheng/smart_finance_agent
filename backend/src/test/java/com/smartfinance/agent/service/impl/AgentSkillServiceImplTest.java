@@ -83,6 +83,33 @@ class AgentSkillServiceImplTest {
     }
 
     @Test
+    void buildEnabledSkillManifest_withSelectedBuiltIns_shouldHideUnselectedBuiltInsButKeepCustomSkills() {
+        AgentSkill selectedBuiltIn = skill("get_total_expense", "Total Expense", 1);
+        selectedBuiltIn.setSourceType("BUILT_IN");
+        AgentSkill unselectedBuiltIn = skill("search_web", "Web Search", 1);
+        unselectedBuiltIn.setSourceType("BUILT_IN");
+        AgentSkill custom = skill("coffee-review", "Coffee Review", 1);
+        custom.setSourceType("CUSTOM");
+        when(mapper.selectByUser(1L)).thenReturn(List.of(selectedBuiltIn, unselectedBuiltIn, custom));
+
+        String manifest = service.buildEnabledSkillManifest(1L, List.of(new AgentSkillDefinition(
+                "get_total_expense",
+                "Total Expense",
+                "Finance Query",
+                "Read total expense",
+                "1.0.0",
+                "system",
+                "READ_ONLY",
+                "{}",
+                "Use for total expense queries",
+                List.of("get_total_expense"))));
+
+        assertThat(manifest).contains("Total Expense");
+        assertThat(manifest).contains("Coffee Review");
+        assertThat(manifest).doesNotContain("Web Search");
+    }
+
+    @Test
     void install_shouldUseSourceProviderAndUpsertBySourceIdentity() {
         AgentSkillInstallRequest request = new AgentSkillInstallRequest();
         request.setSourceType("GITHUB");

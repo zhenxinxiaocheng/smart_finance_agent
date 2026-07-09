@@ -15,12 +15,10 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.StringJoiner;
 import java.util.function.Function;
 
 @Component
@@ -147,7 +145,11 @@ public class ToolRegistry {
     }
 
     public String manifest(Long userId) {
-        return agentSkillService.buildEnabledSkillManifest(userId, builtInSkillDefinitions());
+        return manifest(userId, builtInSkillDefinitions());
+    }
+
+    public String manifest(Long userId, Collection<AgentSkillDefinition> definitions) {
+        return agentSkillService.buildEnabledSkillManifest(userId, definitions);
     }
 
     public Collection<AgentSkillDefinition> builtInSkillDefinitions() {
@@ -168,23 +170,6 @@ public class ToolRegistry {
 
     public void syncBuiltInSkills(Long userId) {
         agentSkillService.syncBuiltInSkills(userId, builtInSkillDefinitions());
-    }
-
-    private String legacyManifest() {
-        StringJoiner joiner = new StringJoiner("\n");
-        Set<String> categories = new LinkedHashSet<>();
-        tools.values().forEach(tool -> categories.add(tool.category()));
-        for (String category : categories) {
-            joiner.add("【" + category + "】");
-            tools.forEach((name, tool) -> {
-                if (category.equals(tool.category())) {
-                    joiner.add("- " + name + ": " + tool.description()
-                            + " 风险等级: " + tool.riskLevel()
-                            + " input: " + tool.inputSchemaHint());
-                }
-            });
-        }
-        return joiner.toString();
     }
 
     public ToolObservation execute(String toolName, JsonNode input, Long userId) {

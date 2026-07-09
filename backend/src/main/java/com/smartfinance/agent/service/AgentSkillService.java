@@ -16,8 +16,6 @@ public interface AgentSkillService {
 
     String buildEnabledSkillManifest(Long userId, Collection<AgentSkillDefinition> definitions);
 
-    boolean isEnabled(Long userId, String skillKey);
-
     AgentSkill resolveInvocationSkill(Long userId, String toolName, String requestedSkillKey);
 
     List<AgentSkill> list(Long userId);

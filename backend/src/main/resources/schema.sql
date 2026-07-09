@@ -170,6 +170,40 @@ CREATE TABLE IF NOT EXISTS `agent_reflection`
     CONSTRAINT `fk_agent_reflection_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent post-run reflections';
 
+CREATE TABLE IF NOT EXISTS `agent_context_summary`
+(
+    `id`                BIGINT      NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`           BIGINT      NOT NULL COMMENT 'User ID',
+    `conversation_id`   BIGINT      NULL COMMENT 'Chat conversation ID',
+    `trace_id`          VARCHAR(64) NULL COMMENT 'Source trace ID',
+    `scope`             VARCHAR(50) NOT NULL DEFAULT 'CONVERSATION' COMMENT 'CONVERSATION/TOOL_RESULT/RAG_CONTEXT/MEMORY_CONTEXT/TASK_STATE',
+    `summary`           TEXT        NOT NULL COMMENT 'Compressed context summary',
+    `source_refs`       TEXT        NULL COMMENT 'Source trace/message/tool refs',
+    `source_hash`       VARCHAR(64) NULL COMMENT 'Source content hash',
+    `covered_from_message_id`  BIGINT NULL COMMENT 'First covered chat_message ID',
+    `covered_until_message_id` BIGINT NULL COMMENT 'Last covered chat_message ID',
+    `original_tokens`   INT         NOT NULL DEFAULT 0 COMMENT 'Estimated original tokens',
+    `compressed_tokens` INT         NOT NULL DEFAULT 0 COMMENT 'Estimated compressed tokens',
+    `created_at`        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at`        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`           TINYINT     NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_context_summary_user` (`user_id`, `deleted`, `updated_at`),
+    INDEX `idx_context_summary_conversation` (`user_id`, `conversation_id`, `scope`, `deleted`, `updated_at`),
+    INDEX `idx_context_summary_trace` (`trace_id`),
+    INDEX `idx_context_summary_source` (`user_id`, `scope`, `source_hash`, `deleted`),
+    INDEX `idx_context_summary_covered` (`user_id`, `covered_until_message_id`, `deleted`),
+    CONSTRAINT `fk_context_summary_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent compressed context summaries';
+
+ALTER TABLE `agent_context_summary` ADD COLUMN `conversation_id` BIGINT NULL COMMENT 'Chat conversation ID';
+ALTER TABLE `agent_context_summary` ADD COLUMN `source_hash` VARCHAR(64) NULL COMMENT 'Source content hash';
+ALTER TABLE `agent_context_summary` ADD COLUMN `covered_from_message_id` BIGINT NULL COMMENT 'First covered chat_message ID';
+ALTER TABLE `agent_context_summary` ADD COLUMN `covered_until_message_id` BIGINT NULL COMMENT 'Last covered chat_message ID';
+CREATE INDEX `idx_context_summary_conversation` ON `agent_context_summary` (`user_id`, `conversation_id`, `scope`, `deleted`, `updated_at`);
+CREATE INDEX `idx_context_summary_source` ON `agent_context_summary` (`user_id`, `scope`, `source_hash`, `deleted`);
+CREATE INDEX `idx_context_summary_covered` ON `agent_context_summary` (`user_id`, `covered_until_message_id`, `deleted`);
+
 CREATE TABLE IF NOT EXISTS `transaction`
 (
     `id`               BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
@@ -208,6 +242,19 @@ CREATE TABLE IF NOT EXISTS `expense_category`
     INDEX `idx_user_sort` (`user_id`, `sort_order`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='消费分类表';
 
+CREATE TABLE IF NOT EXISTS `chat_conversation`
+(
+    `id`         BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    `user_id`    BIGINT       NOT NULL COMMENT 'User ID',
+    `title`      VARCHAR(80)  NOT NULL DEFAULT '新对话' COMMENT 'Conversation title',
+    `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    `updated_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    `deleted`    TINYINT      NOT NULL DEFAULT 0 COMMENT 'Logic delete flag',
+    PRIMARY KEY (`id`),
+    INDEX `idx_chat_conversation_user` (`user_id`, `deleted`, `updated_at`),
+    CONSTRAINT `fk_chat_conversation_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Chat conversations';
+
 -- 聊天消息表
 CREATE TABLE IF NOT EXISTS `chat_message`
 (
@@ -225,6 +272,8 @@ CREATE TABLE IF NOT EXISTS `chat_message`
     CONSTRAINT `fk_chat_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='聊天消息表';
 
+ALTER TABLE `chat_message` ADD COLUMN `conversation_id` BIGINT NULL COMMENT 'Conversation ID';
+CREATE INDEX `idx_chat_conversation` ON `chat_message` (`conversation_id`);
 ALTER TABLE `chat_message` ADD COLUMN `trace_id` VARCHAR(64) NULL COMMENT 'Assistant trace ID';
 CREATE INDEX `idx_chat_trace` ON `chat_message` (`trace_id`);
 

@@ -1,10 +1,13 @@
 package com.smartfinance.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.dto.AgentMemoryPreferencesResponse;
 import com.smartfinance.agent.entity.AnalysisRecord;
+import com.smartfinance.agent.entity.AgentMemory;
 import com.smartfinance.agent.mapper.AnalysisRecordMapper;
 import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.FinancialProfileService;
+import com.smartfinance.agent.service.RagKnowledgeService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -22,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
@@ -49,6 +53,8 @@ class ReActAgentServiceTest {
     private AgentMemoryService agentMemoryService;
     @Mock
     private MemoryExtractor memoryExtractor;
+    @Mock
+    private RagKnowledgeService ragKnowledgeService;
 
     private ReActAgentService service;
 
@@ -58,12 +64,18 @@ class ReActAgentServiceTest {
         when(financialMonitor.hasPendingAlerts(1L)).thenReturn(false);
         lenient().when(financialProfileService.buildAgentContext(1L)).thenReturn("");
         lenient().when(agentMemoryService.buildAgentContext(1L)).thenReturn("");
+        lenient().when(agentMemoryService.getPreferences(1L))
+                .thenReturn(AgentMemoryPreferencesResponse.builder().customInstructions("").build());
+        lenient().when(agentMemoryService.retrieveRelevantMemories(eq(1L), any(), anyInt()))
+                .thenReturn(List.of());
         lenient().when(agentMemoryService.isAutoMemoryEnabled(1L)).thenReturn(true);
         lenient().when(agentMemoryService.shouldSkipToolAssistedMemory(1L)).thenReturn(false);
         lenient().when(agentVerifier.verify(any(), any(), anyList()))
                 .thenReturn(new AgentVerifier.VerificationResult(true, null, List.of()));
+        AgentContextService agentContextService = new AgentContextService(
+                financialProfileService, agentMemoryService, ragKnowledgeService);
         service = new ReActAgentService(chatModel, toolRegistry, agentVerifier, financialMonitor,
-                analysisRecordMapper, new ObjectMapper(), financialProfileService, agentMemoryService, memoryExtractor);
+                analysisRecordMapper, new ObjectMapper(), agentContextService, agentMemoryService, memoryExtractor);
     }
 
     @Test
@@ -161,6 +173,34 @@ class ReActAgentServiceTest {
     }
 
     @Test
+    void run_shouldKeepRawToolResultOutOfFollowUpPrompt() {
+        String rawResult = "RAW_TRANSACTION_ROW_SHOULD_NOT_ENTER_PROMPT";
+        when(chatModel.generate(anyList()))
+                .thenReturn(response("""
+                        {"type":"action","summary":"查询交易","tool":"get_transactions","input":{}}
+                        """))
+                .thenReturn(response("""
+                        {"type":"final","answer":"已根据摘要完成分析。"}
+                        """));
+        when(toolRegistry.execute(eq("get_transactions"), any(), eq(1L), any(), eq("")))
+                .thenReturn(ToolRegistry.ToolObservation.builder()
+                        .success(true)
+                        .summary("查询到 2 条交易，总支出 30 元")
+                        .rawResult(rawResult)
+                        .build());
+
+        service.run(1L, "分析交易");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel, org.mockito.Mockito.times(2)).generate(captor.capture());
+        String secondPrompt = captor.getAllValues().get(1).toString();
+        assertFalse(secondPrompt.contains(rawResult));
+        assertTrue(secondPrompt.contains("查询到 2 条交易，总支出 30 元"));
+        assertTrue(secondPrompt.contains("完整结果已保存"));
+    }
+
+    @Test
     void run_whenActionContainsSkill_shouldPassSkillToToolRegistry() {
         when(chatModel.generate(anyList()))
                 .thenReturn(response("""
@@ -215,7 +255,6 @@ class ReActAgentServiceTest {
         assertTrue(joined.contains("历史用户消息"));
         assertTrue(joined.contains("我这个月花了多少"));
         assertTrue(joined.contains("历史助手回复"));
-        assertTrue(joined.contains("..."));
         assertFalse(joined.contains("不要注入"));
         assertEquals(1, countOccurrences(joined, "那上个月呢"));
     }
@@ -240,8 +279,10 @@ class ReActAgentServiceTest {
 
     @Test
     void run_withAgentMemory_shouldInjectMemoryContext() {
-        when(agentMemoryService.buildAgentContext(1L))
-                .thenReturn("用户可编辑的 Agent 长期指令：\n用中文回答，尽量简短\n\n自动沉淀的 Agent 长期记忆：\n- CATEGORY_PREFERENCE/coffee: 咖啡归为餐饮");
+        when(agentMemoryService.getPreferences(1L))
+                .thenReturn(AgentMemoryPreferencesResponse.builder().customInstructions("用中文回答，尽量简短").build());
+        when(agentMemoryService.retrieveRelevantMemories(eq(1L), eq("星巴克怎么分类"), anyInt()))
+                .thenReturn(List.of(memory("CATEGORY_PREFERENCE", "coffee", "咖啡归为餐饮")));
         when(chatModel.generate(anyList())).thenReturn(response("""
                 {"type":"final","answer":"我会按你的分类偏好处理咖啡消费。"}
                 """));
@@ -257,9 +298,27 @@ class ReActAgentServiceTest {
     }
 
     @Test
+    void run_withRelevantRagKnowledge_shouldInjectKnowledgeContext() {
+        when(ragKnowledgeService.retrieveRelevantContext("紧急备用金应该准备多少？"))
+                .thenReturn("紧急备用金建议覆盖 3-6 个月生活支出。");
+        when(chatModel.generate(anyList())).thenReturn(response("""
+                {"type":"final","answer":"建议先准备 3-6 个月生活支出作为紧急备用金。"}
+                """));
+
+        service.run(1L, "紧急备用金应该准备多少？");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).generate(captor.capture());
+        String joined = captor.getValue().toString();
+        assertTrue(joined.contains("系统知识库：下面是 RAG 检索到的理财知识片段"));
+        assertTrue(joined.contains("紧急备用金建议覆盖 3-6 个月生活支出"));
+    }
+
+    @Test
     void run_withLanguageMemory_shouldTellModelToFollowMemoryLanguage() {
-        when(agentMemoryService.buildAgentContext(1L))
-                .thenReturn("用户可编辑的 Agent 长期指令：\n用英语对话");
+        when(agentMemoryService.getPreferences(1L))
+                .thenReturn(AgentMemoryPreferencesResponse.builder().customInstructions("用英语对话").build());
         when(chatModel.generate(anyList())).thenReturn(response("""
                 {"type":"final","answer":"Your spending looks stable so far."}
                 """));
@@ -276,8 +335,8 @@ class ReActAgentServiceTest {
 
     @Test
     void run_withEnglishMemory_shouldRepairChineseFinalAnswer() {
-        when(agentMemoryService.buildAgentContext(1L))
-                .thenReturn("用户可编辑的 Agent 长期指令：\n用英语对话");
+        when(agentMemoryService.getPreferences(1L))
+                .thenReturn(AgentMemoryPreferencesResponse.builder().customInstructions("用英语对话").build());
         when(chatModel.generate(anyList()))
                 .thenReturn(response("""
                         {"type":"final","answer":"您的本月消费总体正常。"}
@@ -337,5 +396,16 @@ class ReActAgentServiceTest {
 
     private Response<AiMessage> response(String text) {
         return Response.from(AiMessage.from(text));
+    }
+
+    private AgentMemory memory(String type, String key, String value) {
+        AgentMemory memory = new AgentMemory();
+        memory.setUserId(1L);
+        memory.setMemoryType(type);
+        memory.setMemoryKey(key);
+        memory.setMemoryValue(value);
+        memory.setConfidence(0.9);
+        memory.setDisabled(0);
+        return memory;
     }
 }

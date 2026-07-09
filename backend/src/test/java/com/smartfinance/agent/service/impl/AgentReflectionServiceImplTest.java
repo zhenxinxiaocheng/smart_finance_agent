@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.dto.AgentReflectionAcceptRequest;
 import com.smartfinance.agent.dto.AgentMemoryRequest;
 import com.smartfinance.agent.dto.CustomSkillDraftRequest;
+import com.smartfinance.agent.entity.AgentMemory;
 import com.smartfinance.agent.entity.AgentReflection;
+import com.smartfinance.agent.entity.AgentSkill;
 import com.smartfinance.agent.entity.PendingAction;
 import com.smartfinance.agent.mapper.AgentReflectionMapper;
+import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.AgentRunService;
+import com.smartfinance.agent.service.AgentSkillService;
 import com.smartfinance.agent.service.PendingActionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,12 +39,17 @@ class AgentReflectionServiceImplTest {
     private AgentRunService agentRunService;
     @Mock
     private PendingActionService pendingActionService;
+    @Mock
+    private AgentMemoryService agentMemoryService;
+    @Mock
+    private AgentSkillService agentSkillService;
 
     private AgentReflectionServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new AgentReflectionServiceImpl(reflectionMapper, agentRunService, pendingActionService, new ObjectMapper());
+        service = new AgentReflectionServiceImpl(reflectionMapper, agentRunService, pendingActionService,
+                agentMemoryService, agentSkillService, new ObjectMapper());
     }
 
     @Test
@@ -82,13 +91,69 @@ class AgentReflectionServiceImplTest {
                 "finalAnswer", "可以每天检查。",
                 "steps", List.of()
         ));
+        when(pendingActionService.prepareSchedule(
+                org.mockito.Mockito.eq(1L),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                org.mockito.Mockito.eq("trace-schedule")
+        )).thenReturn(pendingAction(92L, "CREATE_AGENT_SCHEDULE"));
 
         List<AgentReflection> reflections = service.reflectRun(1L, "trace-schedule");
 
         assertThat(reflections).hasSize(1);
         assertThat(reflections.get(0).getSuggestionType()).isEqualTo("SCHEDULE_CANDIDATE");
+        assertThat(reflections.get(0).getStatus()).isEqualTo("ACCEPTED");
+        assertThat(reflections.get(0).getPayload()).contains("\"pendingActionId\":92");
         assertThat(reflections.get(0).getTitle()).contains("周期任务");
         assertThat(reflections.get(0).getSummary()).contains("每天提醒我检查异常支出");
+        verify(pendingActionService).prepareSchedule(
+                org.mockito.Mockito.eq(1L),
+                org.mockito.Mockito.eq("每日检查异常支出"),
+                org.mockito.Mockito.contains("每天提醒我检查异常支出"),
+                org.mockito.Mockito.eq("0 0 9 * * *"),
+                org.mockito.Mockito.eq("以后每天提醒我检查异常支出"),
+                org.mockito.Mockito.eq("Asia/Shanghai"),
+                any(),
+                org.mockito.Mockito.eq("trace-schedule")
+        );
+    }
+
+    @Test
+    void reflectRun_shouldInferDailyAfternoonTimeFromScheduleIntent() {
+        when(agentRunService.detail(1L, "trace-schedule-time")).thenReturn(Map.of(
+                "traceId", "trace-schedule-time",
+                "query", "每天下午8点16给我发送你好",
+                "status", "COMPLETED",
+                "finalAnswer", "已为您设置每日定时提醒任务：每天下午 20:16，执行内容：发送“你好”。",
+                "steps", List.of()
+        ));
+        when(pendingActionService.prepareSchedule(
+                org.mockito.Mockito.eq(1L),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                org.mockito.Mockito.eq("trace-schedule-time")
+        )).thenReturn(pendingAction(93L, "CREATE_AGENT_SCHEDULE"));
+
+        service.reflectRun(1L, "trace-schedule-time");
+
+        verify(pendingActionService).prepareSchedule(
+                org.mockito.Mockito.eq(1L),
+                org.mockito.Mockito.eq("每日发送你好"),
+                org.mockito.Mockito.contains("每天下午8点16给我发送你好"),
+                org.mockito.Mockito.eq("0 16 20 * * *"),
+                org.mockito.Mockito.eq("每天下午8点16给我发送你好"),
+                org.mockito.Mockito.eq("Asia/Shanghai"),
+                any(),
+                org.mockito.Mockito.eq("trace-schedule-time")
+        );
     }
 
     @Test
@@ -100,13 +165,24 @@ class AgentReflectionServiceImplTest {
                 "finalAnswer", "下次会按这个流程做。",
                 "steps", List.of()
         ));
+        AgentSkill skill = new AgentSkill();
+        skill.setId(31L);
+        when(agentSkillService.installCustomSkill(org.mockito.Mockito.eq(1L), any(CustomSkillDraftRequest.class)))
+                .thenReturn(skill);
 
         List<AgentReflection> reflections = service.reflectRun(1L, "trace-skill");
 
         assertThat(reflections).hasSize(1);
         assertThat(reflections.get(0).getSuggestionType()).isEqualTo("SKILL_CANDIDATE");
+        assertThat(reflections.get(0).getStatus()).isEqualTo("ACCEPTED");
+        assertThat(reflections.get(0).getPayload()).contains("\"resultEntityType\":\"AGENT_SKILL\"");
+        assertThat(reflections.get(0).getPayload()).contains("\"resultEntityId\":31");
         assertThat(reflections.get(0).getTitle()).contains("Skill");
         assertThat(reflections.get(0).getSummary()).contains("以后分析股票");
+        ArgumentCaptor<CustomSkillDraftRequest> captor = ArgumentCaptor.forClass(CustomSkillDraftRequest.class);
+        verify(agentSkillService).installCustomSkill(org.mockito.Mockito.eq(1L), captor.capture());
+        assertThat(captor.getValue().getRiskLevel()).isEqualTo("READ_ONLY");
+        assertThat(captor.getValue().getTriggerText()).contains("以后分析股票");
     }
 
     @Test
@@ -118,13 +194,24 @@ class AgentReflectionServiceImplTest {
                 "finalAnswer", "好的，我会尽量简短。",
                 "steps", List.of()
         ));
+        AgentMemory memory = new AgentMemory();
+        memory.setId(41L);
+        when(agentMemoryService.createManual(org.mockito.Mockito.eq(1L), any(AgentMemoryRequest.class)))
+                .thenReturn(memory);
 
         List<AgentReflection> reflections = service.reflectRun(1L, "trace-memory");
 
         assertThat(reflections).hasSize(1);
         assertThat(reflections.get(0).getSuggestionType()).isEqualTo("MEMORY_CANDIDATE");
+        assertThat(reflections.get(0).getStatus()).isEqualTo("ACCEPTED");
+        assertThat(reflections.get(0).getPayload()).contains("\"resultEntityType\":\"AGENT_MEMORY\"");
+        assertThat(reflections.get(0).getPayload()).contains("\"resultEntityId\":41");
         assertThat(reflections.get(0).getTitle()).contains("记忆");
         assertThat(reflections.get(0).getSummary()).contains("以后回答");
+        ArgumentCaptor<AgentMemoryRequest> captor = ArgumentCaptor.forClass(AgentMemoryRequest.class);
+        verify(agentMemoryService).createManual(org.mockito.Mockito.eq(1L), captor.capture());
+        assertThat(captor.getValue().getMemoryType()).isEqualTo("RESPONSE_STYLE");
+        assertThat(captor.getValue().getMemoryValue()).contains("以后回答");
     }
 
     @Test
@@ -141,7 +228,7 @@ class AgentReflectionServiceImplTest {
         existing.setUserId(1L);
         existing.setTraceId("trace-memory-existing");
         existing.setSuggestionType("MEMORY_CANDIDATE");
-        existing.setStatus("OPEN");
+        existing.setStatus("ACCEPTED");
         when(reflectionMapper.selectOne(any())).thenReturn(existing);
 
         List<AgentReflection> reflections = service.reflectRun(1L, "trace-memory-existing");
@@ -288,9 +375,9 @@ class AgentReflectionServiceImplTest {
         assertThat(accepted.getStatus()).isEqualTo("ACCEPTED");
         verify(pendingActionService).prepareSchedule(
                 org.mockito.Mockito.eq(1L),
-                org.mockito.Mockito.eq("运行反思周期任务"),
+                org.mockito.Mockito.eq("每日检查异常支出"),
                 org.mockito.Mockito.contains("每天提醒我检查异常支出"),
-                org.mockito.Mockito.eq("0 0 9 * * ?"),
+                org.mockito.Mockito.eq("0 0 9 * * *"),
                 org.mockito.Mockito.eq("以后每天提醒我检查异常支出"),
                 org.mockito.Mockito.eq("Asia/Shanghai"),
                 org.mockito.Mockito.eq(12L),

@@ -8,8 +8,8 @@ if ($Help) {
     Write-Host "Usage: .\start-dev.ps1 [-BackendPort 8080] [-FrontendPort 3000]"
     Write-Host ""
     Write-Host "Starts:"
-    Write-Host "  backend : cd backend  ; mvn spring-boot:run"
-    Write-Host "  frontend: cd frontend ; npm run dev"
+    Write-Host "  backend : closes BackendPort first, then runs mvn spring-boot:run"
+    Write-Host "  frontend: closes FrontendPort first, then runs npm run dev -- --strictPort"
     Write-Host ""
     Write-Host "Logs:"
     Write-Host "  .run-logs\backend.out.log"
@@ -32,14 +32,61 @@ function Test-PortInUse {
     return $null -ne $conn
 }
 
-function Find-FreePort {
-    param([int]$StartPort)
-    for ($port = $StartPort; $port -lt ($StartPort + 20); $port++) {
-        if (-not (Test-PortInUse -Port $port)) {
-            return $port
+function Get-PortListenerProcessIds {
+    param([int]$Port)
+
+    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($null -eq $connections) {
+        return @()
+    }
+
+    return @(
+        $connections |
+            Where-Object { $_.OwningProcess -and $_.OwningProcess -ne 0 } |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    )
+}
+
+function Wait-PortReleased {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-PortInUse -Port $Port)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 300
+    }
+
+    return -not (Test-PortInUse -Port $Port)
+}
+
+function Stop-PortListeners {
+    param(
+        [int]$Port,
+        [string]$Name
+    )
+
+    $listenerIds = Get-PortListenerProcessIds -Port $Port
+    if ($listenerIds.Count -eq 0) {
+        Write-Host "$Name port $Port is free."
+        return
+    }
+
+    Write-Host "Closing $Name port ${Port}: PID $($listenerIds -join ', ')"
+    foreach ($processId in $listenerIds) {
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if ($null -ne $process) {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
         }
     }
-    throw "No free port found from $StartPort to $($StartPort + 19)."
+
+    if (-not (Wait-PortReleased -Port $Port)) {
+        throw "$Name port $Port is still in use after stopping listener process(es)."
+    }
 }
 
 if (-not (Test-Path $BackendDir)) {
@@ -52,8 +99,11 @@ if (-not (Test-Path $FrontendDir)) {
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-$ActualBackendPort = Find-FreePort -StartPort $BackendPort
-$ActualFrontendPort = Find-FreePort -StartPort $FrontendPort
+Stop-PortListeners -Port $BackendPort -Name "backend"
+Stop-PortListeners -Port $FrontendPort -Name "frontend"
+
+$ActualBackendPort = $BackendPort
+$ActualFrontendPort = $FrontendPort
 $ApiTarget = "http://localhost:$ActualBackendPort"
 
 $RunId = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -74,9 +124,10 @@ $BackendProcess = Start-Process `
     -PassThru
 
 Write-Host "Starting frontend on port $ActualFrontendPort..."
-$FrontendCommand = "`$env:VITE_API_TARGET='$ApiTarget'; npm run dev -- --host 127.0.0.1 --port $ActualFrontendPort"
+$FrontendShell = if (Get-Command "pwsh" -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
+$FrontendCommand = "`$env:VITE_API_TARGET='$ApiTarget'; npm run dev -- --host 127.0.0.1 --port $ActualFrontendPort --strictPort"
 $FrontendProcess = Start-Process `
-    -FilePath "powershell" `
+    -FilePath $FrontendShell `
     -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $FrontendCommand) `
     -WorkingDirectory $FrontendDir `
     -WindowStyle Hidden `

@@ -45,6 +45,20 @@ public class AgentScheduleController {
                 request.getTimezone()));
     }
 
+    @PutMapping("/{id}")
+    public Result<AgentSchedule> update(@RequestAttribute Long userId,
+                                        @PathVariable Long id,
+                                        @RequestBody AgentScheduleRequest request) {
+        return Result.success(scheduleService.update(
+                userId,
+                id,
+                request.getName(),
+                request.getDescription(),
+                request.getCronExpression(),
+                request.getTaskQuery(),
+                request.getTimezone()));
+    }
+
     @PutMapping("/{id}/enabled")
     public Result<AgentSchedule> setEnabled(@RequestAttribute Long userId,
                                             @PathVariable Long id,

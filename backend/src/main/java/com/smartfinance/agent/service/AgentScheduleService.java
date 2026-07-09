@@ -16,6 +16,14 @@ public interface AgentScheduleService {
                          String taskQuery,
                          String timezone);
 
+    AgentSchedule update(Long userId,
+                         Long scheduleId,
+                         String name,
+                         String description,
+                         String cronExpression,
+                         String taskQuery,
+                         String timezone);
+
     AgentSchedule setEnabled(Long userId, Long scheduleId, boolean enabled);
 
     AgentSchedule retryNow(Long userId, Long scheduleId);

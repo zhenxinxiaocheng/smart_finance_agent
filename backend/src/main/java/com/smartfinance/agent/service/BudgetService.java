@@ -9,7 +9,6 @@ import java.util.Map;
 
 public interface BudgetService {
     Budget setBudget(Long userId, String category, String month, BigDecimal amount, Integer threshold);
-    Budget getBudget(Long userId, String category, String month);
     List<Budget> getUserBudgets(Long userId, String month);
     void deleteBudget(Long id, Long userId);
 

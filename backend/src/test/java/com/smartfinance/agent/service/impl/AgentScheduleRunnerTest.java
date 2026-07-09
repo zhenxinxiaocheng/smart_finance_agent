@@ -4,8 +4,10 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.entity.AgentSchedule;
 import com.smartfinance.agent.entity.AgentScheduleRun;
+import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.AgentScheduleMapper;
 import com.smartfinance.agent.mapper.AgentScheduleRunMapper;
+import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.AgentReflectionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,8 @@ class AgentScheduleRunnerTest {
     @Mock
     private AgentScheduleRunMapper scheduleRunMapper;
     @Mock
+    private ChatMessageMapper chatMessageMapper;
+    @Mock
     private ReActAgentService reActAgentService;
     @Mock
     private AgentReflectionService agentReflectionService;
@@ -39,7 +43,8 @@ class AgentScheduleRunnerTest {
 
     @BeforeEach
     void setUp() {
-        runner = new AgentScheduleRunner(scheduleMapper, scheduleRunMapper, reActAgentService, agentReflectionService);
+        runner = new AgentScheduleRunner(scheduleMapper, scheduleRunMapper, chatMessageMapper,
+                reActAgentService, agentReflectionService);
     }
 
     @Test
@@ -90,6 +95,15 @@ class AgentScheduleRunnerTest {
         assertThat(run.getStartedAt()).isNotNull();
         assertThat(run.getFinishedAt()).isNotNull();
         assertThat(run.getDurationMs()).isNotNull();
+
+        ArgumentCaptor<ChatMessage> chatCaptor = ArgumentCaptor.forClass(ChatMessage.class);
+        verify(chatMessageMapper).insert(chatCaptor.capture());
+        ChatMessage chat = chatCaptor.getValue();
+        assertThat(chat.getUserId()).isEqualTo(1L);
+        assertThat(chat.getRole()).isEqualTo("ASSISTANT");
+        assertThat(chat.getTraceId()).isEqualTo("trace-7");
+        assertThat(chat.getContent()).contains("周期任务「Weekly review」已执行完成");
+        assertThat(chat.getContent()).contains("Budget is stable.");
     }
 
     @Test
@@ -256,6 +270,10 @@ class AgentScheduleRunnerTest {
         assertThat(updated.getLastAnswer()).isEqualTo("Recovered schedule run.");
         assertThat(updated.getNextRunAt()).isNotNull();
         verify(scheduleRunMapper).insert(any(AgentScheduleRun.class));
+        ArgumentCaptor<ChatMessage> chatCaptor = ArgumentCaptor.forClass(ChatMessage.class);
+        verify(chatMessageMapper).insert(chatCaptor.capture());
+        assertThat(chatCaptor.getValue().getContent()).contains("周期任务「周期任务」已执行完成");
+        assertThat(chatCaptor.getValue().getContent()).contains("Recovered schedule run.");
         verify(agentReflectionService, never()).reflectScheduleFailure(any(), any(), any(), any(), any());
     }
 }

@@ -61,15 +61,6 @@ public class BudgetServiceImpl implements BudgetService {
     }
 
     @Override
-    public Budget getBudget(Long userId, String category, String month) {
-        LambdaQueryWrapper<Budget> qw = new LambdaQueryWrapper<Budget>()
-                .eq(Budget::getUserId, userId)
-                .eq(Budget::getCategory, category)
-                .eq(Budget::getMonth, month);
-        return budgetMapper.selectOne(qw);
-    }
-
-    @Override
     public List<Budget> getUserBudgets(Long userId, String month) {
         LambdaQueryWrapper<Budget> qw = new LambdaQueryWrapper<Budget>()
                 .eq(Budget::getUserId, userId)

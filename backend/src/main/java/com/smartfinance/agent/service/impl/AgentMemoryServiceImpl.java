@@ -10,7 +10,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
+import java.util.ArrayList;
 
 @Service
 public class AgentMemoryServiceImpl implements AgentMemoryService {
@@ -18,6 +22,8 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
     private static final double MIN_CONFIDENCE = 0.70;
     private static final int AGENT_CONTEXT_LIMIT = 10;
     private static final int CUSTOM_INSTRUCTIONS_LIMIT = 3000;
+    private static final int USER_PROFILE_CONTEXT_LIMIT = 1375;
+    private static final int MEMORY_CONTEXT_LIMIT = 2200;
     private static final String AGENT_PREFERENCE = "AGENT_PREFERENCE";
     private static final String CUSTOM_INSTRUCTIONS_KEY = "_CUSTOM_INSTRUCTIONS";
     private static final String AUTO_MEMORY_ENABLED_KEY = "_AUTO_MEMORY_ENABLED";
@@ -165,32 +171,114 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
     }
 
     @Override
+    public List<AgentMemory> retrieveRelevantMemories(Long userId, String query, int limit) {
+        int fetchLimit = Math.max(50, limit);
+        List<AgentMemory> candidates = agentMemoryMapper.selectActiveForAgent(userId, fetchLimit);
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        Set<String> queryTerms = terms(query);
+        return candidates.stream()
+                .filter(memory -> memory != null && !RESERVED_KEYS.contains(memory.getMemoryKey()))
+                .sorted(Comparator.comparingDouble((AgentMemory memory) -> relevance(memory, queryTerms)).reversed()
+                        .thenComparing(memory -> memory.getConfidence() == null ? 0.0 : memory.getConfidence(), Comparator.reverseOrder())
+                        .thenComparing(AgentMemory::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(Math.max(0, limit))
+                .toList();
+    }
+
+    @Override
     public String buildAgentContext(Long userId) {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder userProfile = new StringBuilder();
         String customInstructions = settingValue(userId, CUSTOM_INSTRUCTIONS_KEY, "");
         if (!customInstructions.isBlank()) {
-            sb.append("用户可编辑的 Agent 长期指令：\n")
-                    .append(customInstructions)
-                    .append("\n");
+            appendWithinBudget(userProfile, customInstructions, Integer.MAX_VALUE);
         }
 
-        List<AgentMemory> memories = agentMemoryMapper.selectActiveForAgent(userId, AGENT_CONTEXT_LIMIT);
+        StringBuilder memoryBlock = new StringBuilder();
+        List<AgentMemory> memories = retrieveRelevantMemories(userId, "", AGENT_CONTEXT_LIMIT);
         if (memories != null && !memories.isEmpty()) {
-            if (sb.length() > 0) {
-                sb.append("\n");
-            }
-            sb.append("自动沉淀的 Agent 长期记忆：\n");
             for (AgentMemory memory : memories) {
-                sb.append("- ")
-                        .append(memory.getMemoryType())
-                        .append("/")
-                        .append(memory.getMemoryKey())
-                        .append(": ")
-                        .append(memory.getMemoryValue())
-                        .append("\n");
+                String line = "- %s/%s: %s".formatted(
+                        clean(memory.getMemoryType()),
+                        clean(memory.getMemoryKey()),
+                        clean(memory.getMemoryValue()));
+                appendWithinBudget(memoryBlock, line, Integer.MAX_VALUE);
             }
         }
-        return sb.toString().trim();
+        if (userProfile.isEmpty() && memoryBlock.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder context = new StringBuilder();
+        if (!userProfile.isEmpty()) {
+            context.append("§ USER PROFILE (用户可编辑的 Agent 长期指令, ")
+                    .append(userProfile.length())
+                    .append("/")
+                    .append(USER_PROFILE_CONTEXT_LIMIT)
+                    .append(" chars)\n")
+                    .append(userProfile);
+        }
+        if (!memoryBlock.isEmpty()) {
+            if (!context.isEmpty()) {
+                context.append("\n\n");
+            }
+            context.append("§ MEMORY (自动沉淀的 Agent 长期记忆, ")
+                    .append(memoryBlock.length())
+                    .append("/")
+                    .append(MEMORY_CONTEXT_LIMIT)
+                    .append(" chars)\n")
+                    .append(memoryBlock);
+        }
+        return context.toString().trim();
+    }
+
+    private double relevance(AgentMemory memory, Set<String> queryTerms) {
+        String text = "%s %s %s".formatted(
+                clean(memory.getMemoryType()),
+                clean(memory.getMemoryKey()),
+                clean(memory.getMemoryValue())).toLowerCase(Locale.ROOT);
+        double score = 0.0;
+        for (String term : queryTerms) {
+            if (!term.isBlank() && text.contains(term)) {
+                score += term.length() >= 2 ? 3.0 : 1.0;
+            }
+        }
+        String type = clean(memory.getMemoryType());
+        if ("CATEGORY_PREFERENCE".equals(type)) {
+            score += 0.4;
+        } else if ("RESPONSE_STYLE".equals(type)) {
+            score += 0.2;
+        } else if (AGENT_PREFERENCE.equals(type)) {
+            score += 0.1;
+        }
+        return score;
+    }
+
+    private Set<String> terms(String query) {
+        Set<String> terms = new HashSet<>();
+        if (query == null || query.isBlank()) {
+            return terms;
+        }
+        String clean = query.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ");
+        for (String part : clean.split("\\s+")) {
+            if (!part.isBlank()) {
+                terms.add(part);
+                addKnownChineseTerms(part, terms);
+            }
+        }
+        addKnownChineseTerms(clean, terms);
+        return terms;
+    }
+
+    private void addKnownChineseTerms(String text, Set<String> terms) {
+        List<String> known = List.of("咖啡", "餐饮", "预算", "英语", "英文", "中文", "简短", "详细", "分类", "支出", "收入");
+        for (String term : known) {
+            if (text.contains(term)) {
+                terms.add(term);
+            }
+        }
     }
 
     private AgentMemory upsertMemory(Long userId,
@@ -264,5 +352,20 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
         }
         String cleaned = value.trim();
         return cleaned.length() <= max ? cleaned : cleaned.substring(0, max);
+    }
+
+    private static void appendWithinBudget(StringBuilder target, String line, int maxChars) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        String cleanLine = line.trim();
+        int required = cleanLine.length() + (target.isEmpty() ? 0 : 1);
+        if (target.length() + required > maxChars) {
+            return;
+        }
+        if (!target.isEmpty()) {
+            target.append("\n");
+        }
+        target.append(cleanLine);
     }
 }

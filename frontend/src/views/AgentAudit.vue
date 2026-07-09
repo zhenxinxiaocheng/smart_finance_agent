@@ -3,7 +3,7 @@
     <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-normal">Agent 审计</h1>
-        <p class="mt-1 text-sm text-muted-foreground">统一查看反思、待确认动作、周期任务和运行记录。</p>
+        <p class="mt-1 text-sm text-muted-foreground">统一查看自动沉淀、聊天确认、周期任务和运行记录。</p>
       </div>
       <Button variant="outline" :disabled="loading" @click="loadAudit">
         <RefreshCw data-icon="inline-start" :class="{ 'animate-spin': loading }" />
@@ -62,13 +62,11 @@
       <Card class="h-fit">
         <CardHeader>
           <CardTitle>快速入口</CardTitle>
-          <CardDescription>处理 Agent 自我演化队列</CardDescription>
+          <CardDescription>审计 Agent 自我演化记录</CardDescription>
         </CardHeader>
         <CardContent class="grid gap-2">
-          <Button variant="outline" class="justify-start" @click="router.push('/reflections?status=OPEN')">处理反思建议</Button>
-          <Button variant="outline" class="justify-start" @click="router.push('/pending-actions')">确认待办动作</Button>
           <Button variant="outline" class="justify-start" @click="router.push('/schedules')">治理周期任务</Button>
-          <Button variant="outline" class="justify-start" @click="router.push('/chat')">查看运行轨迹</Button>
+          <Button variant="outline" class="justify-start" @click="router.push('/chat')">回到智能助手</Button>
         </CardContent>
       </Card>
     </div>

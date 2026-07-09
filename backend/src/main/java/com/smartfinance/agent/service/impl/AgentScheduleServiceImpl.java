@@ -6,6 +6,7 @@ import com.smartfinance.agent.entity.AgentScheduleRun;
 import com.smartfinance.agent.mapper.AgentScheduleMapper;
 import com.smartfinance.agent.mapper.AgentScheduleRunMapper;
 import com.smartfinance.agent.service.AgentScheduleService;
+import com.smartfinance.agent.util.AgentCronExpressions;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,7 +51,7 @@ public class AgentScheduleServiceImpl implements AgentScheduleService {
                                 String taskQuery,
                                 String timezone) {
         requireUser(userId);
-        String cleanCron = requireText(cronExpression, "cronExpression");
+        String cleanCron = requireText(AgentCronExpressions.normalize(cronExpression), "cronExpression");
         String cleanTask = requireText(taskQuery, "taskQuery");
 
         AgentSchedule schedule = new AgentSchedule();
@@ -67,6 +68,36 @@ public class AgentScheduleServiceImpl implements AgentScheduleService {
         schedule.setLockUntil(null);
         schedule.setDeleted(0);
         scheduleMapper.insert(schedule);
+        return schedule;
+    }
+
+    @Override
+    @Transactional
+    public AgentSchedule update(Long userId,
+                                Long scheduleId,
+                                String name,
+                                String description,
+                                String cronExpression,
+                                String taskQuery,
+                                String timezone) {
+        AgentSchedule schedule = loadOwned(userId, scheduleId);
+        String cleanCron = requireText(AgentCronExpressions.normalize(cronExpression), "cronExpression");
+        String cleanTask = requireText(taskQuery, "taskQuery");
+        String cleanTimezone = cleanTimezone(timezone);
+
+        schedule.setName(truncate(requireText(name, "name"), MAX_NAME_LENGTH));
+        schedule.setDescription(truncate(description, MAX_DESCRIPTION_LENGTH));
+        schedule.setCronExpression(cleanCron);
+        schedule.setTimezone(cleanTimezone);
+        schedule.setTaskQuery(cleanTask);
+        schedule.setLockUntil(null);
+        if (schedule.getEnabled() == null || schedule.getEnabled() == 1) {
+            schedule.setEnabled(1);
+            schedule.setNextRunAt(nextRunAt(cleanCron, cleanTimezone, LocalDateTime.now()));
+        } else {
+            schedule.setNextRunAt(null);
+        }
+        scheduleMapper.updateById(schedule);
         return schedule;
     }
 
@@ -94,7 +125,11 @@ public class AgentScheduleServiceImpl implements AgentScheduleService {
     @Transactional
     public void delete(Long userId, Long scheduleId) {
         AgentSchedule schedule = loadOwned(userId, scheduleId);
-        scheduleMapper.deleteById(schedule.getId());
+        schedule.setDeleted(1);
+        schedule.setEnabled(0);
+        schedule.setNextRunAt(null);
+        schedule.setLockUntil(null);
+        scheduleMapper.updateById(schedule);
     }
 
     @Override

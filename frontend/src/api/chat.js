@@ -84,3 +84,19 @@ function dispatchSseChunk(chunk, handlers) {
 export function getChatHistoryAPI(params) {
   return request.get('/chat/history', { params })
 }
+
+export function listChatConversationsAPI() {
+  return request.get('/chat/conversations')
+}
+
+export function createChatConversationAPI(data = {}) {
+  return request.post('/chat/conversations', data)
+}
+
+export function renameChatConversationAPI(id, data) {
+  return request.patch(`/chat/conversations/${id}`, data)
+}
+
+export function deleteChatConversationAPI(id) {
+  return request.delete(`/chat/conversations/${id}`)
+}

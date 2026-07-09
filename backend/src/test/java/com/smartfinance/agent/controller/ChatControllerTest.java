@@ -3,6 +3,7 @@ package com.smartfinance.agent.controller;
 import com.smartfinance.agent.common.GlobalExceptionHandler;
 import com.smartfinance.agent.common.JwtUtils;
 import com.smartfinance.agent.config.WebMvcConfig;
+import com.smartfinance.agent.service.ChatConversationService;
 import com.smartfinance.agent.service.ChatService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,17 +38,21 @@ class ChatControllerTest {
     private ChatService chatService;
 
     @MockBean
+    private ChatConversationService conversationService;
+
+    @MockBean
     private JwtUtils jwtUtils;
 
     @Test
     void chat_shouldReturnAiResponse() throws Exception {
-        when(chatService.chat(1L, "hello")).thenReturn("Hi, this is your finance assistant.");
+        when(chatService.chat(1L, 7L, "hello")).thenReturn("Hi, this is your finance assistant.");
 
         mockMvc.perform(post("/api/chat")
                         .requestAttr("userId", 1L)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
+                                  "conversationId": 7,
                                   "message": "hello"
                                 }
                                 """))
@@ -57,18 +62,44 @@ class ChatControllerTest {
     }
 
     @Test
+    void chat_shouldRejectMissingConversationId() throws Exception {
+        mockMvc.perform(post("/api/chat")
+                        .requestAttr("userId", 1L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "message": "hello"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("conversationId不能为空"));
+    }
+
+    @Test
     void history_shouldReturnMessages() throws Exception {
-        when(chatService.getChatHistory(1L, 2)).thenReturn(List.of(
+        when(chatService.getChatHistory(1L, 7L, 2)).thenReturn(List.of(
                 Map.of("role", "user", "message", "hello"),
                 Map.of("role", "assistant", "message", "hi")
         ));
 
         mockMvc.perform(get("/api/chat/history")
                         .requestAttr("userId", 1L)
+                        .param("conversationId", "7")
                         .param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data[0].role").value("user"))
                 .andExpect(jsonPath("$.data[1].role").value("assistant"));
+    }
+
+    @Test
+    void history_shouldRejectMissingConversationId() throws Exception {
+        mockMvc.perform(get("/api/chat/history")
+                        .requestAttr("userId", 1L)
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("缺少必要参数: conversationId"));
     }
 }

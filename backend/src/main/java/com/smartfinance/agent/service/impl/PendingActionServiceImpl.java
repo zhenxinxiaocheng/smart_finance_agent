@@ -18,6 +18,7 @@ import com.smartfinance.agent.service.AgentScheduleService;
 import com.smartfinance.agent.service.BudgetService;
 import com.smartfinance.agent.service.PendingActionService;
 import com.smartfinance.agent.service.TransactionService;
+import com.smartfinance.agent.util.AgentCronExpressions;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -174,10 +175,11 @@ public class PendingActionServiceImpl implements PendingActionService {
                                          String timezone,
                                          Long sourceReflectionId,
                                          String sourceTraceId) {
+        String cleanCron = AgentCronExpressions.normalize(cronExpression);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("name", name);
         payload.put("description", description);
-        payload.put("cronExpression", cronExpression);
+        payload.put("cronExpression", cleanCron);
         payload.put("taskQuery", taskQuery);
         payload.put("timezone", defaultText(timezone, "Asia/Shanghai"));
         putSource(payload, sourceReflectionId, sourceTraceId);
@@ -188,7 +190,7 @@ public class PendingActionServiceImpl implements PendingActionService {
         action.setTitle("确认创建周期任务");
         action.setSummary("%s · %s".formatted(
                 defaultText(name, "Agent 周期任务"),
-                defaultText(cronExpression, "未设置 cron")));
+                defaultText(cleanCron, "未设置 cron")));
         action.setPayload(toJson(payload));
         action.setStatus(STATUS_PENDING);
         pendingActionMapper.insert(action);
@@ -231,7 +233,7 @@ public class PendingActionServiceImpl implements PendingActionService {
                     userId,
                     text(payload, "name"),
                     text(payload, "description"),
-                    text(payload, "cronExpression"),
+                    AgentCronExpressions.normalize(text(payload, "cronExpression")),
                     text(payload, "taskQuery"),
                     text(payload, "timezone")
             );

@@ -59,3 +59,12 @@ bill:
   ai:
     endpoint: ${DASHSCOPE_VL_ENDPOINT:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
     multimodal-model: ${DASHSCOPE_VL_MODEL:qwen3.5-omni-plus-2026-03-15}
+
+agent:
+  context:
+    max-tokens: ${AGENT_CONTEXT_MAX_TOKENS:12000}
+    reserved-output-tokens: ${AGENT_CONTEXT_RESERVED_OUTPUT_TOKENS:1500}
+    auto-compress-threshold: ${AGENT_CONTEXT_AUTO_COMPRESS_THRESHOLD:0.75}
+    summary-model: ${AGENT_CONTEXT_SUMMARY_MODEL:}
+    summary-trigger-tokens: ${AGENT_CONTEXT_SUMMARY_TRIGGER_TOKENS:4000}
+    summary-keep-messages: ${AGENT_CONTEXT_SUMMARY_KEEP_MESSAGES:20}

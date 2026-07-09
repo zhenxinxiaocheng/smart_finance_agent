@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.StringJoiner;
 
 @Service
@@ -90,9 +92,14 @@ public class AgentSkillServiceImpl implements AgentSkillService {
 
     @Override
     public String buildEnabledSkillManifest(Long userId) {
+        return renderEnabledSkillManifest(userId, null);
+    }
+
+    private String renderEnabledSkillManifest(Long userId, Set<String> allowedBuiltInKeys) {
         List<AgentSkill> skills = mapper.selectByUser(userId).stream()
                 .filter(skill -> value(skill.getEnabled()) == 1)
                 .filter(skill -> value(skill.getDeleted()) == 0)
+                .filter(skill -> isAllowedBySelection(skill, allowedBuiltInKeys))
                 .toList();
         if (skills.isEmpty()) {
             return "No enabled skills.";
@@ -121,16 +128,10 @@ public class AgentSkillServiceImpl implements AgentSkillService {
     @Override
     public String buildEnabledSkillManifest(Long userId, Collection<AgentSkillDefinition> definitions) {
         syncBuiltInSkills(userId, definitions);
-        return buildEnabledSkillManifest(userId);
-    }
-
-    @Override
-    public boolean isEnabled(Long userId, String skillKey) {
-        if (userId == null || skillKey == null || skillKey.isBlank()) {
-            return true;
-        }
-        AgentSkill skill = mapper.selectByUserAndKey(userId, skillKey);
-        return skill == null || value(skill.getEnabled()) == 1;
+        Set<String> allowedBuiltInKeys = definitions == null ? null : new HashSet<>(definitions.stream()
+                .map(AgentSkillDefinition::skillKey)
+                .toList());
+        return renderEnabledSkillManifest(userId, allowedBuiltInKeys);
     }
 
     @Override
@@ -373,6 +374,17 @@ public class AgentSkillServiceImpl implements AgentSkillService {
             }
         }
         return false;
+    }
+
+    private boolean isAllowedBySelection(AgentSkill skill, Set<String> allowedBuiltInKeys) {
+        if (allowedBuiltInKeys == null) {
+            return true;
+        }
+        String sourceType = clean(skill.getSourceType(), "");
+        if (!"BUILT_IN".equalsIgnoreCase(sourceType)) {
+            return true;
+        }
+        return allowedBuiltInKeys.contains(skill.getSkillKey());
     }
 
     private int value(Integer value) {

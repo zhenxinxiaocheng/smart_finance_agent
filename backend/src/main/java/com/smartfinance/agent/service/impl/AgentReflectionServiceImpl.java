@@ -6,11 +6,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.dto.AgentMemoryRequest;
 import com.smartfinance.agent.dto.AgentReflectionAcceptRequest;
 import com.smartfinance.agent.dto.CustomSkillDraftRequest;
+import com.smartfinance.agent.entity.AgentMemory;
 import com.smartfinance.agent.entity.AgentReflection;
+import com.smartfinance.agent.entity.AgentSkill;
 import com.smartfinance.agent.entity.PendingAction;
 import com.smartfinance.agent.mapper.AgentReflectionMapper;
+import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.AgentReflectionService;
 import com.smartfinance.agent.service.AgentRunService;
+import com.smartfinance.agent.service.AgentSkillService;
 import com.smartfinance.agent.service.PendingActionService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +23,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class AgentReflectionServiceImpl implements AgentReflectionService {
@@ -26,19 +32,28 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
     private static final String STATUS_OPEN = "OPEN";
     private static final String STATUS_ACCEPTED = "ACCEPTED";
     private static final String STATUS_DISMISSED = "DISMISSED";
+    private static final Pattern CHINESE_TIME_PATTERN = Pattern.compile(
+            "(上午|早上|下午|晚上|中午|凌晨)?\\s*(\\d{1,2})\\s*(?:点|:|：)\\s*(?:(\\d{1,2})\\s*(?:分)?)?"
+    );
 
     private final AgentReflectionMapper reflectionMapper;
     private final AgentRunService agentRunService;
     private final PendingActionService pendingActionService;
+    private final AgentMemoryService agentMemoryService;
+    private final AgentSkillService agentSkillService;
     private final ObjectMapper objectMapper;
 
     public AgentReflectionServiceImpl(AgentReflectionMapper reflectionMapper,
                                       AgentRunService agentRunService,
                                       PendingActionService pendingActionService,
+                                      AgentMemoryService agentMemoryService,
+                                      AgentSkillService agentSkillService,
                                       ObjectMapper objectMapper) {
         this.reflectionMapper = reflectionMapper;
         this.agentRunService = agentRunService;
         this.pendingActionService = pendingActionService;
+        this.agentMemoryService = agentMemoryService;
+        this.agentSkillService = agentSkillService;
         this.objectMapper = objectMapper;
     }
 
@@ -52,41 +67,41 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
         Map<String, Object> detail = agentRunService.detail(userId, traceId);
         List<AgentReflection> reflections = new ArrayList<>();
         if (isFailedRun(detail)) {
-            reflections.add(createReflection(
+            reflections.add(autoProcessReflection(userId, createReflection(
                     userId,
                     traceId,
                     "RISK_WARNING",
                     "Agent 运行失败风险",
                     "本次运行出现失败或工具异常：" + defaultText(text(detail, "errorMessage"), "请查看运行轨迹确认原因"),
                     detail
-            ));
+            )));
         } else if (hasScheduleIntent(text(detail, "query")) && !usedTool(detail, "create_agent_schedule")) {
-            reflections.add(createReflection(
+            reflections.add(autoProcessReflection(userId, createReflection(
                     userId,
                     traceId,
                     "SCHEDULE_CANDIDATE",
                     "可沉淀为周期任务",
                     "这次需求像是一个可重复执行的监控或复盘任务：" + text(detail, "query"),
                     detail
-            ));
+            )));
         } else if (hasMemoryIntent(text(detail, "query"))) {
-            reflections.add(createReflection(
+            reflections.add(autoProcessReflection(userId, createReflection(
                     userId,
                     traceId,
                     "MEMORY_CANDIDATE",
                     "可沉淀为长期记忆",
-                    "这次需求像是一个明确的偏好或长期指令，可考虑通过待确认动作写入记忆：" + text(detail, "query"),
+                    "这次需求像是一个明确的偏好或长期指令，已自动沉淀为 Agent 记忆：" + text(detail, "query"),
                     detail
-            ));
+            )));
         } else if (hasSkillIntent(text(detail, "query")) && !usedTool(detail, "create_custom_skill")) {
-            reflections.add(createReflection(
+            reflections.add(autoProcessReflection(userId, createReflection(
                     userId,
                     traceId,
                     "SKILL_CANDIDATE",
                     "可沉淀为自定义 Skill",
-                    "这次需求像是一个稳定工作流，可考虑通过待确认动作沉淀为 Skill：" + text(detail, "query"),
+                    "这次需求像是一个稳定工作流，已自动沉淀为只读 Skill：" + text(detail, "query"),
                     detail
-            ));
+            )));
         }
         return reflections;
     }
@@ -228,7 +243,7 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
         }
         String cronExpression = inferCronExpression(query);
         return new ScheduleDraft(
-                "运行反思周期任务",
+                inferScheduleName(query),
                 truncate(defaultText(reflection.getSummary(), query), 240),
                 cronExpression,
                 query,
@@ -245,6 +260,47 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
         request.setMemoryKey("reflection_" + normalizeKey(traceId));
         request.setMemoryValue(truncate(defaultText(reflection.getSummary(), query), 500));
         return request;
+    }
+
+    private AgentReflection autoProcessReflection(Long userId, AgentReflection reflection) {
+        if (reflection == null || !STATUS_OPEN.equals(reflection.getStatus())) {
+            return reflection;
+        }
+        try {
+            String sourceTraceId = sourceTraceId(reflection);
+            if ("MEMORY_CANDIDATE".equals(reflection.getSuggestionType())) {
+                AgentMemory memory = agentMemoryService.createManual(userId, toMemoryRequest(reflection));
+                markAccepted(reflection, acceptedEntityPayload(reflection, "AGENT_MEMORY", memory == null ? null : memory.getId()));
+            } else if ("SKILL_CANDIDATE".equals(reflection.getSuggestionType())) {
+                AgentSkill skill = agentSkillService.installCustomSkill(userId, toSkillDraft(reflection));
+                markAccepted(reflection, acceptedEntityPayload(reflection, "AGENT_SKILL", skill == null ? null : skill.getId()));
+            } else if ("SCHEDULE_CANDIDATE".equals(reflection.getSuggestionType())) {
+                ScheduleDraft draft = toScheduleDraft(reflection, null);
+                PendingAction action = pendingActionService.prepareSchedule(
+                        userId,
+                        draft.name(),
+                        draft.description(),
+                        draft.cronExpression(),
+                        draft.taskQuery(),
+                        draft.timezone(),
+                        reflection.getId(),
+                        sourceTraceId
+                );
+                markAccepted(reflection, acceptedPayload(reflection, action));
+            }
+        } catch (Exception e) {
+            Map<String, Object> payload = new LinkedHashMap<>(readPayload(reflection.getPayload()));
+            payload.put("autoProcessError", e.getMessage());
+            reflection.setPayload(toJson(payload));
+            reflectionMapper.updateById(reflection);
+        }
+        return reflection;
+    }
+
+    private void markAccepted(AgentReflection reflection, Map<String, Object> payload) {
+        reflection.setStatus(STATUS_ACCEPTED);
+        reflection.setPayload(toJson(payload));
+        reflectionMapper.updateById(reflection);
     }
 
     private Map<String, Object> readPayload(String payload) {
@@ -324,6 +380,15 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
         return payload;
     }
 
+    private Map<String, Object> acceptedEntityPayload(AgentReflection reflection, String resultEntityType, Long resultEntityId) {
+        Map<String, Object> payload = new LinkedHashMap<>(readPayload(reflection.getPayload()));
+        payload.put("resultEntityType", resultEntityType);
+        if (resultEntityId != null) {
+            payload.put("resultEntityId", resultEntityId);
+        }
+        return payload;
+    }
+
     private String sourceTraceId(AgentReflection reflection) {
         if (!isBlank(reflection.getTraceId())) {
             return reflection.getTraceId();
@@ -360,16 +425,52 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
 
     private String inferCronExpression(String query) {
         String clean = defaultText(query, "");
+        int[] time = inferTimeOfDay(clean);
         if (clean.contains("每天")) {
-            return "0 0 9 * * ?";
+            return "0 %d %d * * *".formatted(time[1], time[0]);
         }
         if (clean.contains("每周")) {
-            return "0 0 9 ? * MON";
+            return "0 %d %d * * MON".formatted(time[1], time[0]);
         }
         if (clean.contains("每月")) {
-            return "0 0 9 1 * ?";
+            return "0 %d %d 1 * *".formatted(time[1], time[0]);
         }
         throw new IllegalArgumentException("Schedule frequency is ambiguous");
+    }
+
+    private static int[] inferTimeOfDay(String query) {
+        Matcher matcher = CHINESE_TIME_PATTERN.matcher(defaultText(query, ""));
+        if (!matcher.find()) {
+            return new int[]{9, 0};
+        }
+        String period = defaultText(matcher.group(1), "");
+        int hour = clamp(parseInt(matcher.group(2), 9), 0, 23);
+        int minute = clamp(parseInt(matcher.group(3), 0), 0, 59);
+        if ((period.contains("下午") || period.contains("晚上")) && hour < 12) {
+            hour += 12;
+        } else if (period.contains("中午") && hour < 11) {
+            hour += 12;
+        } else if (period.contains("凌晨") && hour == 12) {
+            hour = 0;
+        }
+        return new int[]{hour, minute};
+    }
+
+    private static String inferScheduleName(String query) {
+        String clean = defaultText(query, "").trim();
+        String prefix = clean.contains("每周") ? "每周" : clean.contains("每月") ? "每月" : "每日";
+        String action = clean
+                .replaceAll("^(以后|请|帮我|给我|我想)?", "")
+                .replaceAll("(每天|每周|每月|定期)", "")
+                .replaceAll("(上午|早上|下午|晚上|中午|凌晨)?\\s*\\d{1,2}\\s*(?:点|:|：)\\s*(?:\\d{1,2}\\s*分?)?", "")
+                .replace("给我", "")
+                .replace("提醒我", "")
+                .replace("提醒", "")
+                .trim();
+        if (action.isBlank()) {
+            action = "执行任务";
+        }
+        return truncate(prefix + action, 80);
     }
 
     private boolean hasSkillIntent(String query) {
@@ -463,6 +564,21 @@ public class AgentReflectionServiceImpl implements AgentReflectionService {
             throw new IllegalArgumentException(message);
         }
         return value.trim();
+    }
+
+    private static int parseInt(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private static boolean isBlank(String value) {
