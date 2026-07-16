@@ -69,6 +69,11 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
     }
 
     @Override
+    public HorizonProfileResponse describe(ResolvedHorizonProfile profile) {
+        return response(profile);
+    }
+
+    @Override
     public HorizonProfileResponse global(Long userId) {
         return response(resolve(userId, null));
     }

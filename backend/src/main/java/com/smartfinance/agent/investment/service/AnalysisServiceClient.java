@@ -1,0 +1,227 @@
+package com.smartfinance.agent.investment.service;
+
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@Component
+public class AnalysisServiceClient {
+
+    public record ResolvedProduct(String productType, String code, String name, String market,
+                                  String currency, String provider, LocalDate dataDate,
+                                  BigDecimal latestPrice, BigDecimal previousClose,
+                                  BigDecimal changeAmount, BigDecimal changePercent,
+                                  BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
+                                  BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
+                                  BigDecimal volumeRatio, BigDecimal amplitude,
+                                  List<String> warnings) {
+        public ResolvedProduct(String productType, String code, String name, String market,
+                               String currency, String provider, LocalDate dataDate,
+                               BigDecimal latestPrice, List<String> warnings) {
+            this(productType, code, name, market, currency, provider, dataDate, latestPrice,
+                    null, null, null, null, null, null, null, null, null, null, null, warnings);
+        }
+    }
+
+    public record RealtimeQuote(String code, String market, BigDecimal latestPrice,
+                                LocalDate dataDate, LocalDateTime fetchedAt,
+                                BigDecimal previousClose, BigDecimal changeAmount,
+                                BigDecimal changePercent, BigDecimal openPrice,
+                                BigDecimal highPrice, BigDecimal lowPrice,
+                                BigDecimal volume, BigDecimal amount,
+                                BigDecimal turnoverRate, BigDecimal volumeRatio,
+                                BigDecimal amplitude,
+                                String provider, List<String> warnings) {
+    }
+
+    private final RestClient restClient;
+    private final String internalToken;
+
+    public AnalysisServiceClient(RestClient.Builder builder,
+                                 @Value("${analysis-service.base-url:http://127.0.0.1:8090}") String baseUrl,
+                                 @Value("${analysis-service.internal-token:dev-analysis-token}") String internalToken) {
+        this.restClient = builder.baseUrl(baseUrl).build();
+        this.internalToken = internalToken;
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> dailyQuotes(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", product.getCode());
+        body.put("market", product.getMarket());
+        body.put("product_type", product.getProductType());
+        body.put("start_date", startDate.toString());
+        body.put("end_date", endDate.toString());
+        Map<String, Object> response = restClient.post()
+                .uri("/internal/v1/market-data/quotes/daily")
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) {
+            throw new IllegalStateException("分析服务返回空响应");
+        }
+        return response;
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> dailyFx(String baseCurrency, LocalDate startDate, LocalDate endDate) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("base_currency", baseCurrency);
+        body.put("quote_currency", "CNY");
+        body.put("start_date", startDate.toString());
+        body.put("end_date", endDate.toString());
+        Map<String, Object> response = restClient.post()
+                .uri("/internal/v1/market-data/fx/daily")
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) throw new IllegalStateException("分析服务返回空汇率响应");
+        return response;
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<LocalDate> aShareTradingDates(int year) {
+        Map<String, Object> response = restClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/internal/v1/market-data/calendar")
+                        .queryParam("market", "A_SHARE")
+                        .queryParam("year", year)
+                        .build())
+                .header("X-Internal-Token", internalToken)
+                .retrieve()
+                .body(Map.class);
+        if (response == null || !(response.get("tradingDates") instanceof List<?> dates)) {
+            throw new IllegalStateException("分析服务返回空交易日历");
+        }
+        return dates.stream().map(String::valueOf).map(LocalDate::parse).toList();
+    }
+
+    public Map<String, Object> technicalAnalysis(List<? extends Map<String, ?>> records,
+                                                 Map<String, ? extends List<Integer>> horizons,
+                                                 String primaryHorizon) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("records", records);
+        body.put("horizons", horizons);
+        body.put("primaryHorizon", primaryHorizon);
+        return postAnalysis("/internal/v1/analysis/technical", body);
+    }
+
+    public Map<String, Object> fundamentalAnalysis(List<? extends Map<String, ?>> periods) {
+        return postAnalysis("/internal/v1/analysis/fundamental", Map.of("periods", periods));
+    }
+
+    public Map<String, Object> fundamentalAnalysis(String code, String market) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", code);
+        body.put("market", market);
+        body.put("periods", List.of());
+        return postAnalysis("/internal/v1/analysis/fundamental", body);
+    }
+
+    public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records) {
+        return postAnalysis("/internal/v1/analysis/fund", Map.of("records", records));
+    }
+
+    public Map<String, Object> backtest(List<? extends Map<String, ?>> records,
+                                        Map<String, ? extends List<Integer>> horizons) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("records", records);
+        body.put("horizons", horizons);
+        return postAnalysis("/internal/v1/analysis/backtest", body);
+    }
+
+    @SuppressWarnings("unchecked")
+    public ResolvedProduct resolveProduct(String productType, String code) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("product_type", productType);
+        body.put("code", code);
+        Map<String, Object> response = restClient.post()
+                .uri("/internal/v1/products/resolve")
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) throw new IllegalStateException("分析服务返回空产品响应");
+        Object dataDate = response.get("dataDate");
+        return new ResolvedProduct(
+                String.valueOf(response.get("productType")),
+                String.valueOf(response.get("code")),
+                String.valueOf(response.get("name")),
+                String.valueOf(response.get("market")),
+                String.valueOf(response.get("currency")),
+                String.valueOf(response.get("provider")),
+                dataDate == null ? null : LocalDate.parse(String.valueOf(dataDate)),
+                decimal(response, "latestPrice"), decimal(response, "previousClose"),
+                decimal(response, "changeAmount"), decimal(response, "changePercent"),
+                decimal(response, "openPrice"), decimal(response, "highPrice"),
+                decimal(response, "lowPrice"), decimal(response, "volume"),
+                decimal(response, "amount"), decimal(response, "turnoverRate"),
+                decimal(response, "volumeRatio"), decimal(response, "amplitude"),
+                response.get("warnings") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of()
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    public RealtimeQuote realtimeQuote(String code, String market) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", code);
+        body.put("market", market);
+        Map<String, Object> response = restClient.post()
+                .uri("/internal/v1/quotes/realtime")
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) throw new IllegalStateException("分析服务返回空实时报价响应");
+        return new RealtimeQuote(
+                String.valueOf(response.get("code")),
+                String.valueOf(response.get("market")),
+                decimal(response, "latestPrice"),
+                LocalDate.parse(String.valueOf(response.get("dataDate"))),
+                OffsetDateTime.parse(String.valueOf(response.get("fetchedAt"))).toLocalDateTime(),
+                decimal(response, "previousClose"), decimal(response, "changeAmount"),
+                decimal(response, "changePercent"), decimal(response, "openPrice"),
+                decimal(response, "highPrice"), decimal(response, "lowPrice"),
+                decimal(response, "volume"), decimal(response, "amount"),
+                decimal(response, "turnoverRate"), decimal(response, "volumeRatio"),
+                decimal(response, "amplitude"),
+                String.valueOf(response.get("provider")),
+                response.get("warnings") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of()
+        );
+    }
+
+    private static BigDecimal decimal(Map<String, Object> response, String key) {
+        Object value = response.get(key);
+        return value == null ? null : new BigDecimal(String.valueOf(value));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> postAnalysis(String path, Map<String, ?> body) {
+        Map<String, Object> response = restClient.post()
+                .uri(path)
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) {
+            throw new IllegalStateException("分析服务返回空分析结果");
+        }
+        return response;
+    }
+}

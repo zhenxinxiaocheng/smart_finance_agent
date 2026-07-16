@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.dto.HorizonProfileResponse;
 
 public interface InvestmentHorizonService {
     ResolvedHorizonProfile resolve(Long userId, Long assetId);
+    HorizonProfileResponse describe(ResolvedHorizonProfile profile);
     HorizonProfileResponse global(Long userId);
     HorizonProfileResponse saveGlobal(Long userId, HorizonProfileRequest request);
     HorizonProfileResponse saveAssetOverride(Long userId, Long assetId, HorizonProfileRequest request);
