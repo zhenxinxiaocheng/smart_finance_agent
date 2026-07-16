@@ -20,6 +20,7 @@ public class InvestmentHorizonSetting {
     private Integer sortOrder;
     private Integer minHoldingDays;
     private Integer maxHoldingDays;
+    @TableField("is_primary")
     private Boolean primary;
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

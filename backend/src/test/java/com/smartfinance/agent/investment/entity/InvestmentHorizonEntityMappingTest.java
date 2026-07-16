@@ -1,6 +1,7 @@
 package com.smartfinance.agent.investment.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentHorizonProfileMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentHorizonSettingMapper;
@@ -18,6 +19,12 @@ class InvestmentHorizonEntityMappingTest {
                 .isEqualTo("investment_horizon_setting");
         assertThat(BaseMapper.class).isAssignableFrom(InvestmentHorizonProfileMapper.class);
         assertThat(BaseMapper.class).isAssignableFrom(InvestmentHorizonSettingMapper.class);
+        try {
+            assertThat(InvestmentHorizonSetting.class.getDeclaredField("primary")
+                    .getAnnotation(TableField.class).value()).isEqualTo("is_primary");
+        } catch (NoSuchFieldException exception) {
+            throw new AssertionError(exception);
+        }
 
         InvestmentHorizonProfile profile = new InvestmentHorizonProfile();
         profile.setScopeType("ASSET");
