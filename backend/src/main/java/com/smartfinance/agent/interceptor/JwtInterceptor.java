@@ -27,6 +27,7 @@ public class JwtInterceptor implements HandlerInterceptor {
 
         String authHeader = request.getHeader("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json;charset=utf-8");
             response.getWriter().write(objectMapper.writeValueAsString(Result.unauthorized("未登录或token已过期")));
             return false;
@@ -34,6 +35,7 @@ public class JwtInterceptor implements HandlerInterceptor {
 
         String token = authHeader.substring(7);
         if (!jwtUtils.isTokenValid(token)) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json;charset=utf-8");
             response.getWriter().write(objectMapper.writeValueAsString(Result.unauthorized("token无效或已过期")));
             return false;

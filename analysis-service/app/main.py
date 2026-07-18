@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import os
-from datetime import date
-from typing import Any
+import threading
+from datetime import date, datetime, timezone
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .analysis import analyze_fund, analyze_fundamentals, analyze_technical, backtest_horizons
+from .data_quality import (
+    AdjustType,
+    DataQualityService,
+    ProductType,
+    SnapshotIntegrityError,
+    SnapshotNotFoundError,
+)
 
 from .providers import (
     ProviderRegistry,
@@ -18,9 +26,18 @@ from .providers import (
     fetch_stock_fundamentals,
     resolve_product_metadata,
 )
+from .quant.config import load_quant_config
+from .quant.jobs import QuantJobService, default_quant_storage_root
 
 app = FastAPI(title="Smart Finance Analysis Service", version="1.0.0")
 registry = ProviderRegistry()
+quality_service = DataQualityService(
+    registry,
+    fetch_a_share_trade_calendar,
+    lambda: datetime.now(timezone.utc),
+)
+_quant_job_service: QuantJobService | None = None
+_quant_job_lock = threading.Lock()
 
 
 class QuoteRequest(BaseModel):
@@ -29,6 +46,36 @@ class QuoteRequest(BaseModel):
     product_type: str = Field(min_length=2, max_length=30)
     start_date: date
     end_date: date
+
+
+class DataQualityValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    product_type: ProductType = Field(alias="productType")
+    code: str = Field(min_length=1, max_length=40)
+    market: str = Field(min_length=2, max_length=20)
+    frequency: Literal["DAY"]
+    adjust_type: AdjustType = Field(alias="adjustType")
+    start_date: date = Field(alias="startDate")
+    end_date: date = Field(alias="endDate")
+    quality_config_version: str = Field(alias="qualityConfigVersion", min_length=1)
+
+
+class DataQualityReplayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    dataset_version: str = Field(alias="datasetVersion", pattern=r"^[0-9a-f]{64}$")
+    secondary_dataset_version: str | None = Field(
+        default=None, alias="secondaryDatasetVersion", pattern=r"^[0-9a-f]{64}$"
+    )
+    quality_config_version: str = Field(alias="qualityConfigVersion", min_length=1)
+
+
+class DataQualityClaimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    dataset_version: str = Field(alias="datasetVersion", pattern=r"^[0-9a-f]{64}$")
+    quality_config_version: str = Field(alias="qualityConfigVersion", min_length=1)
 
 
 class FxRequest(BaseModel):
@@ -53,7 +100,7 @@ class AnalysisRequest(BaseModel):
 
 
 class TechnicalAnalysisRequest(AnalysisRequest):
-    records: list[dict[str, Any]] = Field(min_length=20)
+    records: list[dict[str, Any]]
     horizons: dict[str, list[int]]
     primary_horizon: str = Field(
         validation_alias=AliasChoices("primary_horizon", "primaryHorizon"),
@@ -79,17 +126,47 @@ class FundamentalAnalysisRequest(AnalysisRequest):
 
 
 class FundAnalysisRequest(AnalysisRequest):
-    records: list[dict[str, Any]] = Field(min_length=20)
+    records: list[dict[str, Any]]
 
 
 class BacktestRequest(AnalysisRequest):
-    records: list[dict[str, Any]] = Field(min_length=40)
+    records: list[dict[str, Any]]
     horizons: dict[str, list[int]]
 
     @field_validator("horizons")
     @classmethod
     def validate_horizons(cls, value: dict[str, list[int]]) -> dict[str, list[int]]:
         return _validated_horizons(value)
+
+
+class QuantJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["FACTOR_ANALYSIS", "TRAIN_PREDICT", "BACKTEST"]
+    dataset_version: str | None = Field(
+        default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
+    )
+    product_type: Literal["STOCK", "MUTUAL_FUND"] | None = Field(default=None, alias="productType")
+    horizon_profile_version: str | None = Field(default=None, alias="horizonProfileVersion")
+    horizon_code: str | None = Field(default=None, alias="horizonCode", min_length=1, max_length=32)
+    horizon_days: int | None = Field(default=None, alias="horizonDays", ge=1)
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    benchmark_records: list[dict[str, Any]] = Field(default_factory=list, alias="benchmarkRecords")
+    fundamentals: list[dict[str, Any]] = Field(default_factory=list)
+    prices: list[float] = Field(default_factory=list)
+    signals: list[float] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_job_payload(self) -> "QuantJobRequest":
+        if self.type in {"FACTOR_ANALYSIS", "TRAIN_PREDICT"}:
+            if not self.dataset_version or not self.product_type or self.horizon_days is None:
+                raise ValueError("analysis jobs require datasetVersion, productType and horizonDays")
+            if len(self.records) < 2:
+                raise ValueError("analysis jobs require market records")
+        if self.type == "BACKTEST":
+            if len(self.prices) < 2 or len(self.prices) != len(self.signals):
+                raise ValueError("backtest jobs require equal prices and signals")
+        return self
 
 
 def _validated_horizons(value: dict[str, list[int]]) -> dict[str, list[int]]:
@@ -113,6 +190,16 @@ def internal_auth(x_internal_token: str | None = Header(default=None)) -> None:
     configured = os.getenv("ANALYSIS_INTERNAL_TOKEN", "dev-analysis-token")
     if x_internal_token != configured:
         raise HTTPException(status_code=401, detail="invalid internal token")
+
+
+def quant_jobs() -> QuantJobService:
+    global _quant_job_service
+    if _quant_job_service is None:
+        with _quant_job_lock:
+            if _quant_job_service is None:
+                config = load_quant_config()
+                _quant_job_service = QuantJobService(default_quant_storage_root(config), config)
+    return _quant_job_service
 
 
 @app.get("/health")
@@ -157,6 +244,58 @@ def daily_quotes(request: QuoteRequest):
         "records": [item.json_dict() for item in records],
         "warnings": warnings,
     }
+
+
+@app.post("/internal/v1/data-quality/validate", dependencies=[Depends(internal_auth)])
+def validate_data_quality(request: DataQualityValidateRequest):
+    try:
+        return quality_service.validate(
+            product_type=request.product_type,
+            code=request.code,
+            market=request.market,
+            frequency=request.frequency,
+            adjust_type=request.adjust_type,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            quality_config_version=request.quality_config_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SnapshotIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/internal/v1/data-quality/replay", dependencies=[Depends(internal_auth)])
+def replay_data_quality(request: DataQualityReplayRequest):
+    try:
+        return quality_service.replay(
+            dataset_version=request.dataset_version,
+            secondary_dataset_version=request.secondary_dataset_version,
+            quality_config_version=request.quality_config_version,
+        )
+    except SnapshotNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SnapshotIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/internal/v1/data-quality/claim", dependencies=[Depends(internal_auth)])
+def claim_data_quality_snapshot(request: DataQualityClaimRequest):
+    try:
+        return quality_service.claim(
+            dataset_version=request.dataset_version,
+            quality_config_version=request.quality_config_version,
+        )
+    except SnapshotNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SnapshotIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/internal/v1/market-data/fx/daily", dependencies=[Depends(internal_auth)])
@@ -218,3 +357,21 @@ def fund_analysis(request: FundAnalysisRequest):
 @app.post("/internal/v1/analysis/backtest", dependencies=[Depends(internal_auth)])
 def backtest_analysis(request: BacktestRequest):
     return backtest_horizons(request.records, request.horizons)
+
+
+@app.post("/internal/v1/quant/jobs", dependencies=[Depends(internal_auth)])
+def create_quant_job(request: QuantJobRequest):
+    try:
+        return quant_jobs().submit(request.model_dump(by_alias=True, exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/internal/v1/quant/jobs/{jobId}", dependencies=[Depends(internal_auth)])
+def get_quant_job(jobId: str):
+    try:
+        return quant_jobs().get(jobId)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="quant job was not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid quant job id") from exc

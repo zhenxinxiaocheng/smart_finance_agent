@@ -449,3 +449,338 @@ CREATE TABLE IF NOT EXISTS `agent_schedule_run`
     CONSTRAINT `fk_agent_schedule_run_schedule` FOREIGN KEY (`schedule_id`) REFERENCES `agent_schedule` (`id`) ON DELETE CASCADE,
     CONSTRAINT `fk_agent_schedule_run_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent scheduled task run history';
+
+-- Investment analysis module
+CREATE TABLE IF NOT EXISTS `investment_product` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `product_type` VARCHAR(30) NOT NULL,
+    `market` VARCHAR(30) NOT NULL,
+    `code` VARCHAR(40) NOT NULL,
+    `name` VARCHAR(160) NOT NULL,
+    `currency` VARCHAR(3) NOT NULL DEFAULT 'CNY',
+    `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_investment_product` (`product_type`, `market`, `code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Investment product master';
+
+CREATE TABLE IF NOT EXISTS `investment_account` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_name` VARCHAR(120) NOT NULL,
+    `account_type` VARCHAR(30) NOT NULL,
+    `base_currency` VARCHAR(3) NOT NULL DEFAULT 'CNY',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted` TINYINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    KEY `idx_investment_account_user` (`user_id`, `deleted`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Investment account';
+
+CREATE TABLE IF NOT EXISTS `investment_transaction` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `product_id` BIGINT NULL,
+    `event_type` VARCHAR(30) NOT NULL,
+    `trade_date` DATE NOT NULL,
+    `settlement_date` DATE NULL,
+    `currency` VARCHAR(3) NOT NULL,
+    `quantity` DECIMAL(28,10) NULL,
+    `price` DECIMAL(28,10) NULL,
+    `amount` DECIMAL(28,8) NULL,
+    `fee` DECIMAL(28,8) NOT NULL DEFAULT 0,
+    `factor` DECIMAL(28,10) NULL,
+    `source` VARCHAR(30) NOT NULL DEFAULT 'MANUAL',
+    `external_ref` VARCHAR(120) NULL,
+    `reversal_transaction_id` BIGINT NULL,
+    `note` VARCHAR(500) NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_investment_transaction_ref` (`user_id`, `source`, `external_ref`),
+    KEY `idx_investment_transaction_account` (`user_id`, `account_id`, `trade_date`),
+    KEY `idx_investment_transaction_product` (`account_id`, `product_id`, `trade_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable investment ledger';
+
+CREATE TABLE IF NOT EXISTS `investment_cash_balance` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `currency` VARCHAR(3) NOT NULL,
+    `balance` DECIMAL(28,8) NOT NULL DEFAULT 0,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_investment_cash_balance` (`account_id`, `currency`),
+    KEY `idx_investment_cash_user` (`user_id`, `account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Investment account cash projection';
+
+CREATE TABLE IF NOT EXISTS `investment_cash_ledger` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `transaction_id` BIGINT NOT NULL,
+    `currency` VARCHAR(3) NOT NULL,
+    `event_type` VARCHAR(30) NOT NULL,
+    `amount` DECIMAL(28,8) NOT NULL,
+    `external_flow` TINYINT NOT NULL DEFAULT 0,
+    `occurred_on` DATE NOT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_investment_cash_transaction` (`transaction_id`),
+    KEY `idx_investment_cash_ledger_account` (`user_id`, `account_id`, `occurred_on`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable investment cash ledger';
+
+CREATE TABLE IF NOT EXISTS `investment_position` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `product_id` BIGINT NOT NULL,
+    `quantity` DECIMAL(28,10) NOT NULL DEFAULT 0,
+    `cost_amount` DECIMAL(28,8) NOT NULL DEFAULT 0,
+    `average_cost` DECIMAL(28,10) NOT NULL DEFAULT 0,
+    `realized_pnl` DECIMAL(28,8) NOT NULL DEFAULT 0,
+    `latest_price` DECIMAL(28,10) NULL,
+    `market_value_cny` DECIMAL(28,8) NULL,
+    `unrealized_pnl_cny` DECIMAL(28,8) NULL,
+    `data_date` DATE NULL,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_investment_position` (`account_id`, `product_id`),
+    KEY `idx_investment_position_user` (`user_id`, `account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Rebuildable investment position';
+
+CREATE TABLE IF NOT EXISTS `product_daily_quote` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `product_id` BIGINT NOT NULL,
+    `trade_date` DATE NOT NULL,
+    `open_price` DECIMAL(28,10) NULL,
+    `high_price` DECIMAL(28,10) NULL,
+    `low_price` DECIMAL(28,10) NULL,
+    `close_price` DECIMAL(28,10) NOT NULL,
+    `volume` DECIMAL(28,8) NULL,
+    `adjust_type` VARCHAR(20) NOT NULL DEFAULT 'NONE',
+    `source` VARCHAR(40) NOT NULL,
+    `adapter_version` VARCHAR(40) NULL,
+    `synced_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_product_daily_quote` (`product_id`, `trade_date`, `adjust_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Normalized daily quote or fund NAV';
+
+CREATE TABLE IF NOT EXISTS `investment_import_batch` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `original_filename` VARCHAR(255) NOT NULL,
+    `status` VARCHAR(30) NOT NULL,
+    `payload` LONGTEXT NOT NULL,
+    `row_count` INT NOT NULL DEFAULT 0,
+    `error_count` INT NOT NULL DEFAULT 0,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_investment_import_user` (`user_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Investment CSV preview batch';
+
+CREATE TABLE IF NOT EXISTS `investment_sync_batch` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `job_type` VARCHAR(40) NOT NULL,
+    `provider` VARCHAR(40) NULL,
+    `status` VARCHAR(30) NOT NULL,
+    `rows_success` INT NOT NULL DEFAULT 0,
+    `rows_failed` INT NOT NULL DEFAULT 0,
+    `error_message` VARCHAR(500) NULL,
+    `started_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `finished_at` DATETIME NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_investment_sync_user` (`user_id`, `started_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Investment data synchronization batch';
+
+CREATE TABLE IF NOT EXISTS `investment_plan` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `product_id` BIGINT NOT NULL,
+    `amount` DECIMAL(28,8) NOT NULL,
+    `currency` VARCHAR(3) NOT NULL,
+    `frequency` VARCHAR(20) NOT NULL,
+    `execution_day` INT NOT NULL,
+    `next_execution_date` DATE NOT NULL,
+    `enabled` TINYINT NOT NULL DEFAULT 1,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_investment_plan_user` (`user_id`, `enabled`, `next_execution_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Recurring investment plan';
+
+CREATE TABLE IF NOT EXISTS `daily_exchange_rate` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `base_currency` VARCHAR(3) NOT NULL,
+    `quote_currency` VARCHAR(3) NOT NULL,
+    `rate_date` DATE NOT NULL,
+    `rate` DECIMAL(28,10) NOT NULL,
+    `source` VARCHAR(40) NOT NULL,
+    `adapter_version` VARCHAR(40),
+    `synced_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_daily_exchange_rate` (`base_currency`, `quote_currency`, `rate_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Normalized daily exchange rate';
+
+CREATE TABLE IF NOT EXISTS `investment_asset` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` BIGINT NOT NULL,
+    `account_id` BIGINT NOT NULL,
+    `product_id` BIGINT NOT NULL,
+    `quantity` DECIMAL(28,10),
+    `average_cost` DECIMAL(28,10),
+    `note` VARCHAR(500),
+    `current_transaction_id` BIGINT,
+    `sync_status` VARCHAR(30) NOT NULL DEFAULT 'NOT_SYNCED',
+    `sync_error` VARCHAR(500),
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted` TINYINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    KEY `idx_investment_asset_user` (`user_id`, `deleted`, `updated_at`),
+    KEY `idx_investment_asset_product` (`user_id`, `product_id`, `deleted`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='User managed investment asset';
+
+CREATE TABLE IF NOT EXISTS `wealth_baseline` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `entered_total_assets` DECIMAL(28,8) NOT NULL,
+    `baseline_non_investment_balance` DECIMAL(28,8) NOT NULL,
+    `baseline_at` DATETIME NOT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_wealth_baseline_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Unified wealth baseline';
+
+CREATE TABLE IF NOT EXISTS `investment_analysis_preference` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `asset_id` BIGINT NOT NULL,
+    `short_min_days` INT NOT NULL DEFAULT 5,
+    `short_max_days` INT NOT NULL DEFAULT 20,
+    `medium_min_days` INT NOT NULL DEFAULT 20,
+    `medium_max_days` INT NOT NULL DEFAULT 120,
+    `long_min_days` INT NOT NULL DEFAULT 120,
+    `long_max_days` INT NOT NULL DEFAULT 500,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_analysis_preference_user_asset` (`user_id`, `asset_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Per asset analysis horizon preference';
+
+CREATE TABLE IF NOT EXISTS `investment_horizon_profile` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `scope_type` VARCHAR(16) NOT NULL,
+    `asset_id` BIGINT,
+    `version` INT NOT NULL,
+    `template_version` VARCHAR(64) NOT NULL,
+    `source` VARCHAR(24) NOT NULL,
+    `active` TINYINT(1) NOT NULL DEFAULT 1,
+    `effective_from` DATETIME NOT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_horizon_profile_resolution` (`user_id`, `scope_type`, `asset_id`, `active`, `version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Versioned user and asset horizon profiles';
+
+CREATE TABLE IF NOT EXISTS `investment_horizon_setting` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `profile_id` BIGINT NOT NULL,
+    `horizon_code` VARCHAR(32) NOT NULL,
+    `display_name` VARCHAR(50) NOT NULL,
+    `sort_order` INT NOT NULL,
+    `min_holding_days` INT NOT NULL,
+    `max_holding_days` INT NOT NULL,
+    `target_holding_days` INT NOT NULL,
+    `is_primary` TINYINT(1) NOT NULL DEFAULT 0,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_horizon_setting_profile_code` (`profile_id`, `horizon_code`),
+    KEY `idx_horizon_setting_profile` (`profile_id`, `sort_order`),
+    CONSTRAINT `fk_horizon_setting_profile` FOREIGN KEY (`profile_id`)
+        REFERENCES `investment_horizon_profile` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Arbitrary settings inside a horizon profile version';
+
+CREATE TABLE IF NOT EXISTS `investment_analysis_snapshot` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `asset_id` BIGINT NOT NULL,
+    `rule_version` VARCHAR(40) NOT NULL,
+    `preference_hash` VARCHAR(64) NOT NULL,
+    `horizon_profile_version` VARCHAR(255),
+    `horizon_config_json` LONGTEXT,
+    `dataset_version` VARCHAR(64),
+    `quality_rule_set_version` VARCHAR(80),
+    `strategy_version` VARCHAR(80),
+    `analysis_cache_key` VARCHAR(64),
+    `quality_status` VARCHAR(16),
+    `historical_cache` TINYINT(1) NOT NULL DEFAULT 0,
+    `signal_hash` VARCHAR(64),
+    `quote_date` DATE,
+    `technical_json` LONGTEXT,
+    `fundamental_json` LONGTEXT,
+    `fund_json` LONGTEXT,
+    `backtest_json` LONGTEXT,
+    `source_status_json` TEXT,
+    `ai_explanation` TEXT,
+    `analysis_status` VARCHAR(30) NOT NULL DEFAULT 'READY',
+    `analyzed_at` DATETIME NOT NULL,
+    `ai_updated_at` DATETIME,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_analysis_snapshot_user_asset_rule` (`user_id`, `asset_id`, `rule_version`),
+    KEY `idx_analysis_cache_key` (`user_id`, `asset_id`, `analysis_cache_key`),
+    KEY `idx_analysis_dataset_version` (`dataset_version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Cached deterministic investment analysis';
+
+CREATE TABLE IF NOT EXISTS `investment_data_quality_snapshot` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `dataset_version` VARCHAR(64) NOT NULL,
+    `product_type` VARCHAR(30) NOT NULL,
+    `code` VARCHAR(40) NOT NULL,
+    `market` VARCHAR(20) NOT NULL,
+    `frequency` VARCHAR(16) NOT NULL,
+    `adjust_type` VARCHAR(16) NOT NULL,
+    `provider` VARCHAR(80) NOT NULL,
+    `adapter_version` VARCHAR(80) NOT NULL,
+    `quality_config_version` VARCHAR(80) NOT NULL,
+    `quality_rule_set_version` VARCHAR(80) NOT NULL,
+    `quality_status` VARCHAR(16) NOT NULL,
+    `decision` VARCHAR(16) NOT NULL,
+    `enforcement_mode` VARCHAR(16) NOT NULL,
+    `requested_start_date` DATE NOT NULL,
+    `requested_end_date` DATE NOT NULL,
+    `sample_start_date` DATE NOT NULL,
+    `sample_end_date` DATE NOT NULL,
+    `fetched_at` DATETIME NOT NULL,
+    `evaluated_at` DATETIME NOT NULL,
+    `manifest_json` LONGTEXT NOT NULL,
+    `report_json` LONGTEXT NOT NULL,
+    `secondary_dataset_versions_json` LONGTEXT,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_data_quality_dataset_rule` (`dataset_version`, `quality_config_version`),
+    KEY `idx_data_quality_dataset_version` (`dataset_version`),
+    KEY `idx_data_quality_product_range` (`product_type`, `code`, `market`, `requested_start_date`, `requested_end_date`),
+    KEY `idx_data_quality_status` (`quality_status`, `evaluated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable market dataset quality report';
+
+CREATE TABLE IF NOT EXISTS `investment_data_quality_issue` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `quality_snapshot_id` BIGINT NOT NULL,
+    `sequence_no` INT NOT NULL,
+    `rule_code` VARCHAR(80) NOT NULL,
+    `severity` VARCHAR(16) NOT NULL,
+    `outcome` VARCHAR(24) NOT NULL,
+    `message` TEXT NOT NULL,
+    `observed_json` LONGTEXT,
+    `expected_json` LONGTEXT,
+    `affected_dates_json` LONGTEXT,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_data_quality_issue_order` (`quality_snapshot_id`, `sequence_no`),
+    KEY `idx_data_quality_issue_rule` (`rule_code`, `severity`),
+    CONSTRAINT `fk_data_quality_issue_snapshot` FOREIGN KEY (`quality_snapshot_id`)
+        REFERENCES `investment_data_quality_snapshot` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Data quality rule evidence';

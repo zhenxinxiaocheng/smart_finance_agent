@@ -15,8 +15,8 @@ class ResolvedHorizonProfileTest {
                 "template:v1|global:4|asset:2",
                 "v1",
                 List.of(
-                        new HorizonSetting("WAVE", "波段", 10, 7, 45, true, "ASSET"),
-                        new HorizonSetting("POSITION", "配置", 20, 80, 260, false, "GLOBAL")
+                        new HorizonSetting("WAVE", "波段", 10, 7, 45, 21, true, "ASSET"),
+                        new HorizonSetting("POSITION", "配置", 20, 80, 260, 160, false, "GLOBAL")
                 ),
                 List.of()
         );
@@ -26,6 +26,7 @@ class ResolvedHorizonProfileTest {
                 .containsEntry("POSITION", List.of(80, 260));
         assertThat(profile.primaryCode()).isEqualTo("WAVE");
         assertThat(profile.requiredHistoryDays()).isEqualTo(260);
+        assertThat(profile.settings().get(0).targetHoldingDays()).isEqualTo(21);
     }
 
     @Test

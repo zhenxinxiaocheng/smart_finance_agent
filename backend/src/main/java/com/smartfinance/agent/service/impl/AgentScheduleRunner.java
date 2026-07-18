@@ -6,10 +6,12 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.entity.AgentSchedule;
 import com.smartfinance.agent.entity.AgentScheduleRun;
+import com.smartfinance.agent.entity.ChatConversation;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.AgentScheduleMapper;
 import com.smartfinance.agent.mapper.AgentScheduleRunMapper;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
+import com.smartfinance.agent.service.ChatConversationService;
 import com.smartfinance.agent.service.AgentReflectionService;
 import com.smartfinance.agent.util.AgentCronExpressions;
 import lombok.extern.slf4j.Slf4j;
@@ -39,17 +41,20 @@ public class AgentScheduleRunner {
     private final ChatMessageMapper chatMessageMapper;
     private final ReActAgentService reActAgentService;
     private final AgentReflectionService agentReflectionService;
+    private final ChatConversationService conversationService;
 
     public AgentScheduleRunner(AgentScheduleMapper scheduleMapper,
                                AgentScheduleRunMapper scheduleRunMapper,
                                ChatMessageMapper chatMessageMapper,
                                ReActAgentService reActAgentService,
-                               AgentReflectionService agentReflectionService) {
+                               AgentReflectionService agentReflectionService,
+                               ChatConversationService conversationService) {
         this.scheduleMapper = scheduleMapper;
         this.scheduleRunMapper = scheduleRunMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.reActAgentService = reActAgentService;
         this.agentReflectionService = agentReflectionService;
+        this.conversationService = conversationService;
     }
 
     @Transactional
@@ -200,8 +205,10 @@ public class AgentScheduleRunner {
     }
 
     private void saveChatReply(AgentSchedule schedule, String errorMessage) {
+        ChatConversation conversation = conversationService.ensureHistoricalConversation(schedule.getUserId());
         ChatMessage message = new ChatMessage();
         message.setUserId(schedule.getUserId());
+        message.setConversationId(conversation.getId());
         message.setRole("ASSISTANT");
         message.setTraceId(schedule.getTraceId());
         message.setContent(chatReplyContent(schedule, errorMessage));

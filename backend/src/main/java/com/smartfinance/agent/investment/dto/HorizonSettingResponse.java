@@ -5,6 +5,7 @@ public record HorizonSettingResponse(String code,
                                      int sortOrder,
                                      int minHoldingDays,
                                      int maxHoldingDays,
+                                     int targetHoldingDays,
                                      boolean primary,
                                      String sourceScope) {
 }

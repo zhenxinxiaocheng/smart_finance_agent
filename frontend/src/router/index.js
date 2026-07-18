@@ -24,6 +24,18 @@ const routes = [
     meta: { auth: true },
     children: [
       {
+        path: 'stocks',
+        name: 'InvestmentAnalysis',
+        component: () => import('../views/InvestmentAnalysis.vue'),
+        meta: { title: '投资分析' }
+      },
+      {
+        path: 'stocks/:assetId',
+        name: 'InvestmentAssetDetail',
+        component: () => import('../views/InvestmentAssetDetail.vue'),
+        meta: { title: '投资详情' }
+      },
+      {
         path: 'statistics',
         name: 'Statistics',
         component: () => import('../views/Statistics.vue'),

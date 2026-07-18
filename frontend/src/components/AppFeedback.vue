@@ -1,5 +1,5 @@
 <template>
-  <div class="pointer-events-none fixed right-4 top-4 z-50 flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-2">
+  <div class="pointer-events-none fixed right-4 top-4 z-[100] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-2">
     <div
       v-for="item in items"
       :key="item.id"

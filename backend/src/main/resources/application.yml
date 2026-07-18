@@ -7,6 +7,12 @@ server:
       force: true
 
 spring:
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+  task:
+    scheduling:
+      pool:
+        size: ${SCHEDULING_POOL_SIZE:3}
   config:
     import: optional:classpath:application-local.yml
   servlet:
@@ -19,9 +25,11 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
   sql:
     init:
-      mode: always
-      continue-on-error: true
+      mode: never
+      continue-on-error: false
       encoding: UTF-8
+  flyway:
+    enabled: false
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
@@ -68,3 +76,41 @@ agent:
     summary-model: ${AGENT_CONTEXT_SUMMARY_MODEL:}
     summary-trigger-tokens: ${AGENT_CONTEXT_SUMMARY_TRIGGER_TOKENS:4000}
     summary-keep-messages: ${AGENT_CONTEXT_SUMMARY_KEEP_MESSAGES:20}
+
+analysis-service:
+  base-url: ${ANALYSIS_SERVICE_URL:http://127.0.0.1:8090}
+  internal-token: ${ANALYSIS_INTERNAL_TOKEN:dev-analysis-token}
+
+investment:
+  quant:
+    initial-delay-ms: ${INVESTMENT_QUANT_INITIAL_DELAY_MS:3000}
+    poll-delay-ms: ${INVESTMENT_QUANT_POLL_DELAY_MS:3000}
+    job-batch-limit: ${INVESTMENT_QUANT_JOB_BATCH_LIMIT:20}
+    monitor:
+      initial-delay-ms: ${INVESTMENT_QUANT_MONITOR_INITIAL_DELAY_MS:15000}
+      poll-delay-ms: ${INVESTMENT_QUANT_MONITOR_POLL_DELAY_MS:3600000}
+      strategy-batch-limit: ${INVESTMENT_QUANT_MONITOR_STRATEGY_BATCH_LIMIT:20}
+    paper:
+      initial-cash-cny: ${INVESTMENT_QUANT_PAPER_INITIAL_CASH_CNY:1000000}
+      minimum-order-cny: ${INVESTMENT_QUANT_PAPER_MINIMUM_ORDER_CNY:100}
+      stock-lot-size: ${INVESTMENT_QUANT_PAPER_STOCK_LOT_SIZE:100}
+      fund-quantity-scale: ${INVESTMENT_QUANT_PAPER_FUND_QUANTITY_SCALE:4}
+      fee-bps: ${INVESTMENT_QUANT_PAPER_FEE_BPS:3}
+      slippage-bps: ${INVESTMENT_QUANT_PAPER_SLIPPAGE_BPS:5}
+      maximum-volume-participation: ${INVESTMENT_QUANT_PAPER_MAX_VOLUME_PARTICIPATION:0.01}
+      limit-lock-minimum-move-ratio: ${INVESTMENT_QUANT_PAPER_LIMIT_LOCK_MIN_MOVE_RATIO:0.04}
+      stock-execution-delay-days: ${INVESTMENT_QUANT_PAPER_STOCK_DELAY_DAYS:1}
+      fund-execution-delay-days: ${INVESTMENT_QUANT_PAPER_FUND_DELAY_DAYS:1}
+      initial-delay-ms: ${INVESTMENT_QUANT_PAPER_INITIAL_DELAY_MS:5000}
+      poll-delay-ms: ${INVESTMENT_QUANT_PAPER_POLL_DELAY_MS:60000}
+      order-batch-limit: ${INVESTMENT_QUANT_PAPER_ORDER_BATCH_LIMIT:50}
+      account-order-history-limit: ${INVESTMENT_QUANT_PAPER_ACCOUNT_ORDER_HISTORY_LIMIT:50}
+  realtime:
+    enabled: ${INVESTMENT_REALTIME_ENABLED:true}
+    interval-ms: ${INVESTMENT_REALTIME_INTERVAL_MS:3000}
+  fund-sync:
+    enabled: ${INVESTMENT_FUND_SYNC_ENABLED:true}
+    initial-delay-ms: ${INVESTMENT_FUND_SYNC_INITIAL_DELAY_MS:30000}
+    interval-ms: ${INVESTMENT_FUND_SYNC_INTERVAL_MS:7200000}
+  sync:
+    poll-delay-ms: ${INVESTMENT_SYNC_POLL_DELAY_MS:60000}

@@ -4,11 +4,13 @@ import com.smartfinance.agent.agent.ReActAgentService;
 import com.smartfinance.agent.dto.ReActResult;
 import com.smartfinance.agent.entity.AgentSchedule;
 import com.smartfinance.agent.entity.AgentScheduleRun;
+import com.smartfinance.agent.entity.ChatConversation;
 import com.smartfinance.agent.entity.ChatMessage;
 import com.smartfinance.agent.mapper.AgentScheduleMapper;
 import com.smartfinance.agent.mapper.AgentScheduleRunMapper;
 import com.smartfinance.agent.mapper.ChatMessageMapper;
 import com.smartfinance.agent.service.AgentReflectionService;
+import com.smartfinance.agent.service.ChatConversationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,6 +23,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,13 +41,18 @@ class AgentScheduleRunnerTest {
     private ReActAgentService reActAgentService;
     @Mock
     private AgentReflectionService agentReflectionService;
+    @Mock
+    private ChatConversationService conversationService;
 
     private AgentScheduleRunner runner;
 
     @BeforeEach
     void setUp() {
+        ChatConversation conversation = new ChatConversation();
+        conversation.setId(21L);
+        lenient().when(conversationService.ensureHistoricalConversation(1L)).thenReturn(conversation);
         runner = new AgentScheduleRunner(scheduleMapper, scheduleRunMapper, chatMessageMapper,
-                reActAgentService, agentReflectionService);
+                reActAgentService, agentReflectionService, conversationService);
     }
 
     @Test

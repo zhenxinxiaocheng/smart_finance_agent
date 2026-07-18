@@ -10,7 +10,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("investment_horizon_setting")
+@TableName(value = "investment_horizon_setting", autoResultMap = true)
 public class InvestmentHorizonSetting {
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -20,6 +20,7 @@ public class InvestmentHorizonSetting {
     private Integer sortOrder;
     private Integer minHoldingDays;
     private Integer maxHoldingDays;
+    private Integer targetHoldingDays;
     @TableField("is_primary")
     private Boolean primary;
     @TableField(fill = FieldFill.INSERT)

@@ -143,6 +143,60 @@ public class AnalysisServiceClient {
         return postAnalysis("/internal/v1/analysis/backtest", body);
     }
 
+    public Map<String, Object> createQuantJob(Map<String, ?> body) {
+        return postInternal("/internal/v1/quant/jobs", body, "量化任务");
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> quantJob(String jobId) {
+        Map<String, Object> response = restClient.get()
+                .uri("/internal/v1/quant/jobs/{jobId}", jobId)
+                .header("X-Internal-Token", internalToken)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) {
+            throw new IllegalStateException("分析服务返回空量化任务结果");
+        }
+        return response;
+    }
+
+    public Map<String, Object> validateDataQuality(InvestmentProduct product,
+                                                    LocalDate startDate,
+                                                    LocalDate endDate,
+                                                    String frequency,
+                                                    String adjustType,
+                                                    String qualityConfigVersion) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("productType", product.getProductType());
+        body.put("code", product.getCode());
+        body.put("market", product.getMarket());
+        body.put("frequency", frequency);
+        body.put("adjustType", adjustType);
+        body.put("startDate", startDate.toString());
+        body.put("endDate", endDate.toString());
+        body.put("qualityConfigVersion", qualityConfigVersion);
+        return postInternal("/internal/v1/data-quality/validate", body, "数据质量校验");
+    }
+
+    public Map<String, Object> replayDataQuality(String datasetVersion,
+                                                  String secondaryDatasetVersion,
+                                                  String qualityConfigVersion) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("datasetVersion", datasetVersion);
+        if (secondaryDatasetVersion != null && !secondaryDatasetVersion.isBlank()) {
+            body.put("secondaryDatasetVersion", secondaryDatasetVersion);
+        }
+        body.put("qualityConfigVersion", qualityConfigVersion);
+        return postInternal("/internal/v1/data-quality/replay", body, "数据质量重放");
+    }
+
+    public void claimDataQuality(String datasetVersion, String qualityConfigVersion) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("datasetVersion", datasetVersion);
+        body.put("qualityConfigVersion", qualityConfigVersion);
+        postInternal("/internal/v1/data-quality/claim", body, "数据快照认领");
+    }
+
     @SuppressWarnings("unchecked")
     public ResolvedProduct resolveProduct(String productType, String code) {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -212,6 +266,11 @@ public class AnalysisServiceClient {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> postAnalysis(String path, Map<String, ?> body) {
+        return postInternal(path, body, "分析");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> postInternal(String path, Map<String, ?> body, String operation) {
         Map<String, Object> response = restClient.post()
                 .uri(path)
                 .header("X-Internal-Token", internalToken)
@@ -220,7 +279,7 @@ public class AnalysisServiceClient {
                 .retrieve()
                 .body(Map.class);
         if (response == null) {
-            throw new IllegalStateException("分析服务返回空分析结果");
+            throw new IllegalStateException("分析服务返回空" + operation + "结果");
         }
         return response;
     }

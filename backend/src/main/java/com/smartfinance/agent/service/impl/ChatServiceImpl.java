@@ -196,7 +196,8 @@ public class ChatServiceImpl implements ChatService {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(payload));
         } catch (Exception e) {
-            throw new IllegalStateException("SSE send failed", e);
+            log.debug("Skip SSE event because client connection is unavailable: event={}, error={}",
+                    eventName, e.getMessage());
         }
     }
 

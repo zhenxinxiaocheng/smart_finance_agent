@@ -4,6 +4,7 @@ import com.smartfinance.agent.investment.entity.InvestmentAnalysisSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,10 +42,19 @@ class InvestmentAnalysisSignalTest {
 
     @Test
     void quoteRefreshUsesTheResolvedProfileHistoryRequirement() {
-        assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(20)).isGreaterThan(20);
-        assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(900)).isGreaterThan(900);
+        var properties = InvestmentSyncWorkerTest.horizonProperties(2500);
+        assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(20, properties)).isGreaterThan(20);
+        assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(900, properties)).isGreaterThan(900);
         assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(320, 900, false)).isTrue();
         assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(920, 900, false)).isFalse();
         assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(920, 900, true)).isTrue();
+    }
+
+    @Test
+    void missingStrategyScoreDoesNotFallBackToAFabricatedNeutralValue() {
+        assertThat(InvestmentAnalysisServiceImpl.score(Map.of(
+                "status", "INSUFFICIENT", "verdict", "WAIT"))).isNull();
+        assertThat(InvestmentAnalysisServiceImpl.score(Map.of("score", 71.5)))
+                .isEqualByComparingTo("71.5");
     }
 }

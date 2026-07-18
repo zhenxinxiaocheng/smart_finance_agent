@@ -82,6 +82,17 @@ public class ChatConversationServiceImpl implements ChatConversationService {
 
     @Override
     @Transactional
+    public ChatConversation ensureHistoricalConversation(Long userId) {
+        requireUser(userId);
+        ChatConversation historical = conversationMapper.selectHistoricalConversation(userId);
+        if (historical != null) {
+            return historical;
+        }
+        return create(userId, HISTORY_TITLE);
+    }
+
+    @Override
+    @Transactional
     public void updateTitleFromFirstMessage(Long userId, Long conversationId, String message) {
         ChatConversation conversation = loadOwned(userId, conversationId);
         if (!DEFAULT_TITLE.equals(conversation.getTitle())) {
@@ -100,10 +111,7 @@ public class ChatConversationServiceImpl implements ChatConversationService {
         if (count == null || count <= 0) {
             return;
         }
-        ChatConversation historical = conversationMapper.selectHistoricalConversation(userId);
-        if (historical == null) {
-            historical = create(userId, HISTORY_TITLE);
-        }
+        ChatConversation historical = ensureHistoricalConversation(userId);
         chatMessageMapper.assignOrphanMessages(userId, historical.getId());
     }
 

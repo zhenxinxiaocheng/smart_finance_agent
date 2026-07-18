@@ -1,6 +1,12 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic==2.11.7
+pyarrow==25.0.0
+numpy==2.5.1
+pandas==3.0.3
+scipy==1.18.0
+scikit-learn==1.7.1
+xgboost==3.0.2
 akshare==1.18.40
 baostock==0.8.9
 tushare==1.4.24

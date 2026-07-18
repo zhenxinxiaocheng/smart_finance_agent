@@ -388,8 +388,8 @@
     </div>
 
     <Dialog v-model:open="traceDrawerVisible">
-      <DialogContent class="max-h-[85vh] max-w-2xl overflow-y-auto">
-        <DialogHeader>
+      <DialogContent class="trace-dialog">
+        <DialogHeader class="trace-dialog-header">
           <DialogTitle>Agent 运行详情</DialogTitle>
           <DialogDescription>查看本次 Agent 响应的执行步骤、工具调用和 Skill 调用。</DialogDescription>
         </DialogHeader>
@@ -1621,7 +1621,13 @@ function formatTime(value) {
 }
 
 .messages-area.is-populated {
-  justify-content: flex-end;
+  justify-content: flex-start;
+}
+
+.messages-area.is-populated::before {
+  content: "";
+  flex: 0 0 auto;
+  margin-top: auto;
 }
 
 .messages-area::-webkit-scrollbar {
@@ -2310,23 +2316,46 @@ function formatTime(value) {
   margin-top: 2px;
 }
 
+.trace-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-width: min(680px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border-color: var(--border);
+  background: color-mix(in oklab, var(--popover) 94%, var(--background) 6%);
+  padding: 0;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.35);
+}
+
+.trace-dialog-header {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--popover) 96%, var(--background) 4%);
+  padding: 18px 42px 14px 18px;
+}
+
 .trace-detail {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 18px;
 }
 
 .trace-section {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: color-mix(in oklab, var(--card) 94%, var(--background) 6%);
   padding: 14px;
 }
 
 .trace-section h3 {
   margin: 0 0 10px;
-  color: #172033;
+  color: var(--card-foreground);
   font-size: 15px;
 }
 
@@ -2335,7 +2364,7 @@ function formatTime(value) {
 .skill-invocation-card p,
 .reflection-card p {
   margin: 0 0 10px;
-  color: #475569;
+  color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -2345,7 +2374,7 @@ function formatTime(value) {
   overflow-wrap: anywhere;
   border-radius: var(--radius);
   background: var(--muted);
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-size: 12px;
   padding: 8px;
 }
@@ -2361,7 +2390,7 @@ function formatTime(value) {
 .trace-title-row span,
 .trace-step-head strong,
 .skill-invocation-card time {
-  color: #64748b;
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -2378,9 +2407,9 @@ function formatTime(value) {
 .trace-step-card,
 .skill-invocation-card,
 .reflection-card {
-  border: 1px solid var(--chat-border);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--muted);
+  background: color-mix(in oklab, var(--muted) 86%, var(--card) 14%);
   padding: 12px;
 }
 
@@ -2409,13 +2438,13 @@ function formatTime(value) {
 }
 
 .trace-raw {
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border);
   margin-top: 8px;
   padding-top: 8px;
 }
 
 .trace-raw summary {
-  color: var(--primary);
+  color: var(--foreground);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
@@ -2425,8 +2454,8 @@ function formatTime(value) {
   overflow: auto;
   max-height: 220px;
   border-radius: var(--radius);
-  background: #0f172a;
-  color: #e2e8f0;
+  background: color-mix(in oklab, var(--background) 92%, black 8%);
+  color: var(--foreground);
   font-size: 12px;
   line-height: 1.5;
   margin: 8px 0 0;
@@ -2435,7 +2464,7 @@ function formatTime(value) {
 }
 
 .trace-empty {
-  color: #64748b;
+  color: var(--muted-foreground);
   font-size: 13px;
   padding: 18px;
   text-align: center;

@@ -21,19 +21,20 @@
       </Alert>
 
       <div class="space-y-3">
-        <div class="hidden grid-cols-[1fr_1.4fr_90px_20px_90px_64px_36px] gap-2 px-1 text-xs text-muted-foreground sm:grid">
-          <span>代码</span><span>显示名称</span><span>最少天数</span><span /><span>最多天数</span><span>主周期</span><span />
+        <div class="hidden grid-cols-[1fr_1.3fr_82px_18px_82px_90px_64px_36px] gap-2 px-1 text-xs text-muted-foreground sm:grid">
+          <span>代码</span><span>显示名称</span><span>最少天数</span><span /><span>最多天数</span><span>目标天数</span><span>主周期</span><span />
         </div>
         <div
           v-for="(item, index) in draft.settings"
           :key="`${item.code}-${index}`"
-          class="grid gap-2 rounded-lg border bg-muted/15 p-3 sm:grid-cols-[1fr_1.4fr_90px_20px_90px_64px_36px] sm:items-center sm:border-0 sm:bg-transparent sm:p-0"
+          class="grid gap-2 rounded-lg border bg-muted/15 p-3 sm:grid-cols-[1fr_1.3fr_82px_18px_82px_90px_64px_36px] sm:items-center sm:border-0 sm:bg-transparent sm:p-0"
         >
           <Input v-model="item.code" aria-label="周期代码" placeholder="例如 WAVE" @blur="item.code = item.code.trim().toUpperCase()" />
           <Input v-model="item.displayName" aria-label="周期名称" placeholder="例如 波段" />
           <Input v-model.number="item.minHoldingDays" aria-label="最少天数" type="number" min="1" />
           <span class="hidden text-center text-muted-foreground sm:block">至</span>
           <Input v-model.number="item.maxHoldingDays" aria-label="最多天数" type="number" min="1" />
+          <Input v-model.number="item.targetHoldingDays" aria-label="目标持有天数" type="number" min="1" />
           <label class="flex items-center gap-2 text-sm sm:justify-center">
             <input
               :checked="item.primary"
@@ -120,7 +121,7 @@ function addSetting() {
   const sortOrder = Math.max(0, ...draft.value.settings.map(item => Number(item.sortOrder) || 0)) + 10
   draft.value.settings.push({
     code: '', displayName: '', sortOrder,
-    minHoldingDays: null, maxHoldingDays: null,
+    minHoldingDays: null, maxHoldingDays: null, targetHoldingDays: null,
     primary: draft.value.settings.length === 0,
   })
 }

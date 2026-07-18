@@ -1,4 +1,5 @@
 import request from './request'
+import { handleSessionExpired, resetSessionExpiryHandling } from '../lib/sessionExpiry'
 
 export function sendChatAPI(data) {
   return request.post('/chat', data, {
@@ -8,6 +9,9 @@ export function sendChatAPI(data) {
 
 export async function streamReactChatAPI(data, handlers = {}, signal) {
   const token = localStorage.getItem('token')
+  if (token) {
+    resetSessionExpiryHandling()
+  }
   const response = await fetch('/api/chat/react/stream', {
     method: 'POST',
     headers: {
@@ -20,10 +24,7 @@ export async function streamReactChatAPI(data, handlers = {}, signal) {
   })
 
   if (response.status === 401) {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    const router = await import('../router/index.js')
-    router.default.push('/login')
+    await handleSessionExpired()
     throw new Error('登录已过期')
   }
 

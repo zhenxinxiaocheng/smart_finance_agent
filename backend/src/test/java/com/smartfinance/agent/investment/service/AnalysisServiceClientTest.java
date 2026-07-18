@@ -18,6 +18,35 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
+    void quantJobs_shouldUseAsynchronousInternalContract() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/quant/jobs"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Token", "secret-token"))
+                .andExpect(content().json("""
+                        {"type":"FACTOR_ANALYSIS","datasetVersion":"%s","productType":"STOCK",
+                         "horizonCode":"WAVE","horizonDays":37,"records":[{"close":"10"}]}
+                        """.formatted("a".repeat(64))))
+                .andRespond(withSuccess("{\"jobId\":\"%s\",\"status\":\"QUEUED\"}"
+                        .formatted("b".repeat(32)), MediaType.APPLICATION_JSON));
+        server.expect(requestTo("http://analysis.test/internal/v1/quant/jobs/" + "b".repeat(32)))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{\"jobId\":\"%s\",\"status\":\"SUCCEEDED\"}"
+                        .formatted("b".repeat(32)), MediaType.APPLICATION_JSON));
+
+        Map<String, Object> created = client.createQuantJob(Map.of(
+                "type", "FACTOR_ANALYSIS", "datasetVersion", "a".repeat(64),
+                "productType", "STOCK", "horizonCode", "WAVE", "horizonDays", 37,
+                "records", List.of(Map.of("close", "10"))));
+        Map<String, Object> completed = client.quantJob(String.valueOf(created.get("jobId")));
+
+        assertThat(completed.get("status")).isEqualTo("SUCCEEDED");
+        server.verify();
+    }
+
+    @Test
     void aShareTradingDates_shouldReadCalendarFromAnalysisService() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

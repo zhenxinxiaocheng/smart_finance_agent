@@ -30,11 +30,13 @@ class InvestmentSqliteMigrationTest {
                          "SELECT name FROM sqlite_master WHERE type='table' AND name IN (" +
                                  "'user','investment_transaction','investment_position','investment_asset'," +
                                  "'wealth_baseline','investment_analysis_preference','investment_analysis_snapshot'," +
-                                 "'investment_horizon_profile','investment_horizon_setting')")) {
+                                 "'investment_horizon_profile','investment_horizon_setting'," +
+                                 "'quant_feature_set','quant_model_version','quant_strategy_version'," +
+                                 "'quant_prediction','quant_paper_order')")) {
                 try (var result = statement.executeQuery()) {
                     int count = 0;
                     while (result.next()) count++;
-                    assertThat(count).isEqualTo(9);
+                    assertThat(count).isEqualTo(14);
                 }
             }
             try (var connection = DriverManager.getConnection(url);
@@ -50,8 +52,12 @@ class InvestmentSqliteMigrationTest {
                         .isTrue();
                 assertThat(columnExists(connection, "investment_analysis_snapshot", "horizon_config_json"))
                         .isTrue();
+                assertThat(columnExists(connection, "investment_horizon_setting", "target_holding_days"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_prediction", "benchmark_code"))
+                        .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -88,7 +94,8 @@ class InvestmentSqliteMigrationTest {
             try (var connection = DriverManager.getConnection(url);
                  var statement = connection.prepareStatement("""
                          SELECT p.scope_type, p.version, p.source, p.active,
-                                s.horizon_code, s.min_holding_days, s.max_holding_days
+                                s.horizon_code, s.min_holding_days, s.max_holding_days,
+                                s.target_holding_days
                          FROM investment_horizon_profile p
                          JOIN investment_horizon_setting s ON s.profile_id = p.id
                          WHERE p.user_id = 7 AND p.asset_id = 11
@@ -100,7 +107,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("8");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -158,5 +165,7 @@ class InvestmentSqliteMigrationTest {
         assertThat(result.getString("horizon_code")).isEqualTo(code);
         assertThat(result.getInt("min_holding_days")).isEqualTo(minimum);
         assertThat(result.getInt("max_holding_days")).isEqualTo(maximum);
+        assertThat(result.getInt("target_holding_days"))
+                .isEqualTo(minimum + (maximum - minimum) / 2);
     }
 }

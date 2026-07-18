@@ -8,16 +8,35 @@ from app.main import (
     BacktestRequest,
     FundAnalysisRequest,
     FundamentalAnalysisRequest,
+    QuantJobRequest,
     TechnicalAnalysisRequest,
     backtest_analysis,
     fund_analysis,
     fundamental_analysis,
     technical_analysis,
+    app,
 )
 from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_quant_job_contract_uses_versioned_dataset_and_dynamic_horizon(self):
+        request = QuantJobRequest(
+            type="FACTOR_ANALYSIS",
+            datasetVersion="a" * 64,
+            productType="STOCK",
+            horizonCode="WAVE",
+            horizonDays=37,
+            records=price_records(180),
+        )
+
+        payload = request.model_dump(by_alias=True)
+        paths = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
+
+        self.assertEqual(37, payload["horizonDays"])
+        self.assertIn(("/internal/v1/quant/jobs", "POST"), paths)
+        self.assertIn(("/internal/v1/quant/jobs/{jobId}", "GET"), paths)
+
     def test_technical_endpoint_keeps_financial_context_out_of_request(self):
         request = TechnicalAnalysisRequest(
             records=price_records(260),

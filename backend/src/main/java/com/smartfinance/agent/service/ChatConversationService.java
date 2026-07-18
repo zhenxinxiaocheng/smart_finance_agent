@@ -16,5 +16,7 @@ public interface ChatConversationService {
 
     ChatConversation ensureConversation(Long userId, Long conversationId);
 
+    ChatConversation ensureHistoricalConversation(Long userId);
+
     void updateTitleFromFirstMessage(Long userId, Long conversationId, String message);
 }

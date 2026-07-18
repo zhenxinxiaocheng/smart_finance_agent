@@ -66,6 +66,19 @@
                 <Label>固定支出</Label>
                 <Input v-model.number="form.fixedExpense" min="0" step="100" type="number" />
               </div>
+              <div class="flex flex-col gap-2 md:col-span-2">
+                <div class="flex items-center justify-between gap-3">
+                  <Label>当前日常现金余额</Label>
+                  <Badge :variant="wealth.initialized ? 'secondary' : 'outline'">
+                    {{ wealth.initialized ? '已建立基准' : '待填写' }}
+                  </Badge>
+                </div>
+                <Input v-model="cashBalance" min="0" step="100" type="number" placeholder="例如 50000" />
+                <div class="flex flex-col gap-1 text-xs leading-5 text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                  <span>填写银行卡、现金等日常资金，不包含投资账户余额。</span>
+                  <span v-if="wealth.cashBaselineAt">基准时间：{{ formatDateTime(wealth.cashBaselineAt) }}</span>
+                </div>
+              </div>
             </div>
 
             <Separator class="my-5" />
@@ -302,6 +315,8 @@ import {
   updateAgentMemoryPreferencesAPI,
   resetAgentMemoriesAPI
 } from '../api/agentMemory'
+import { getWealthOverviewAPI, updateWealthBaselineAPI } from '../api/wealth'
+import { hasCashBaselineChanged } from '@/lib/wealthProfile'
 
 const route = useRoute()
 const saving = ref(false)
@@ -316,6 +331,9 @@ const memoryResetting = ref(false)
 const totalBudgetId = ref(null)
 const totalBudgetThreshold = ref(80)
 const currentBudgetMonth = ref(currentMonth())
+const wealth = ref({ initialized: false })
+const cashBalance = ref('')
+const originalCashBaseline = ref(null)
 
 const form = reactive({
   lifeStage: '',
@@ -415,21 +433,34 @@ function applyMemoryPreferences(data) {
   memoryPreferences.skipToolAssistedMemory = Boolean(data?.skipToolAssistedMemory)
 }
 
+function applyWealthOverview(data) {
+  wealth.value = data || { initialized: false }
+  if (wealth.value.initialized) {
+    cashBalance.value = String(wealth.value.cashBaseline ?? 0)
+    originalCashBaseline.value = Number(wealth.value.cashBaseline ?? 0)
+  } else {
+    cashBalance.value = ''
+    originalCashBaseline.value = null
+  }
+}
+
 async function loadProfile() {
   loading.value = true
   try {
-    const [profileRes, budgetRes, alertRes, categoryRes, memoryRes] = await Promise.all([
+    const [profileRes, budgetRes, alertRes, categoryRes, memoryRes, wealthRes] = await Promise.all([
       getFinancialProfileAPI(),
       getBudgetsAPI(currentBudgetMonth.value),
       getRecentAlertsAPI(5),
       listCategoriesAPI(),
-      getAgentMemoryPreferencesAPI()
+      getAgentMemoryPreferencesAPI(),
+      getWealthOverviewAPI()
     ])
     applyProfile(profileRes.data || {})
     applyBudgetData(budgetRes.data || {})
     recentAlerts.value = alertRes.data || []
     categories.value = categoryRes.data || []
     applyMemoryPreferences(memoryRes.data || {})
+    applyWealthOverview(wealthRes.data || {})
   } finally {
     loading.value = false
   }
@@ -442,6 +473,10 @@ async function handleSave() {
     const profileRes = await saveFinancialProfileAPI({ ...form })
     applyProfile(profileRes.data || {})
     await syncBudgets()
+    if (hasCashBaselineChanged(wealth.value.initialized, originalCashBaseline.value, cashBalance.value)) {
+      const wealthRes = await updateWealthBaselineAPI(Number(cashBalance.value))
+      applyWealthOverview(wealthRes.data || {})
+    }
     const [budgetRes, alertRes] = await Promise.all([
       getBudgetsAPI(currentBudgetMonth.value),
       getRecentAlertsAPI(5)
@@ -494,6 +529,10 @@ function validateProfile() {
   const failed = checks.find(([value]) => Number(value || 0) < 0)
   if (failed) {
     feedback.warning(failed[1])
+    return false
+  }
+  if (cashBalance.value !== '' && Number(cashBalance.value) < 0) {
+    feedback.warning('当前日常现金余额不能为负数')
     return false
   }
   if (Number(totalBudgetThreshold.value || 0) < 1 || Number(totalBudgetThreshold.value || 0) > 100) {
@@ -557,6 +596,14 @@ function currentMonth() {
   const now = new Date()
   const month = `${now.getMonth() + 1}`.padStart(2, '0')
   return `${now.getFullYear()}-${month}`
+}
+
+function formatDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  }).format(date)
 }
 
 onMounted(loadProfile)

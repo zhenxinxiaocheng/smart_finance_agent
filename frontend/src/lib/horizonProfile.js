@@ -12,6 +12,7 @@ export function normalizeHorizonProfile(value) {
         sortOrder: integer(item?.sortOrder) ?? (index + 1) * 10,
         minHoldingDays: integer(item?.minHoldingDays),
         maxHoldingDays: integer(item?.maxHoldingDays),
+        targetHoldingDays: integer(item?.targetHoldingDays),
         primary: Boolean(item?.primary),
         sourceScope: item?.sourceScope == null ? undefined : String(item.sourceScope),
       }))
@@ -41,6 +42,7 @@ export function validateHorizonSettings(settings) {
     const displayName = String(item?.displayName ?? '').trim()
     const minimum = integer(item?.minHoldingDays)
     const maximum = integer(item?.maxHoldingDays)
+    const target = integer(item?.targetHoldingDays)
     if (!code || !displayName) errors.push(`${label}的代码和名称不能为空`)
     if (code && codes.has(code)) errors.push(`周期代码 ${code} 重复`)
     codes.add(code)
@@ -48,6 +50,8 @@ export function validateHorizonSettings(settings) {
       errors.push(`${label}的天数必须为正整数`)
     } else if (minimum > maximum) {
       errors.push(`${label}的最小天数不能大于最大天数`)
+    } else if (target == null || target < minimum || target > maximum) {
+      errors.push(`${label}的目标天数必须位于最小和最大天数之间`)
     }
     if (item?.primary) primaryCount += 1
   })
@@ -64,6 +68,7 @@ export function profileSavePayload(profile) {
       sortOrder: integer(item.sortOrder) ?? (index + 1) * 10,
       minHoldingDays: item.minHoldingDays,
       maxHoldingDays: item.maxHoldingDays,
+      targetHoldingDays: item.targetHoldingDays,
       primary: item.primary,
     })),
   }

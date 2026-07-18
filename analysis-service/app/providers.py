@@ -3,11 +3,26 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Iterable
+from functools import lru_cache
+from typing import Any, Iterable, Sequence
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
+
+from .data_quality.models import AdjustType, DataSnapshotContext, ProductType
+from .strategy_config import load_strategy_config
+
+
+STRATEGY = load_strategy_config()
+
+
+def _provider_integer(name: str) -> int:
+    return STRATEGY.integer(f"providers.{name}")
+
+
+def _market_zone() -> ZoneInfo:
+    return ZoneInfo(str(STRATEGY.value("providers.market_timezone")))
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,109 @@ class NormalizedQuote:
         return value
 
 
+@dataclass(frozen=True)
+class ProviderBatch:
+    product_type: ProductType
+    code: str
+    market: str
+    frequency: str
+    adjust_type: AdjustType
+    provider: str
+    adapter_version: str
+    fetched_at: datetime
+    records: tuple[NormalizedQuote, ...]
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        try:
+            product_type = self.product_type if isinstance(self.product_type, ProductType) else ProductType(self.product_type)
+        except (TypeError, ValueError) as error:
+            raise ValueError("product_type must be STOCK or MUTUAL_FUND") from error
+        try:
+            adjust_type = self.adjust_type if isinstance(self.adjust_type, AdjustType) else AdjustType(self.adjust_type)
+        except (TypeError, ValueError) as error:
+            raise ValueError("adjust_type must be QFQ, HFQ, or NONE") from error
+        object.__setattr__(self, "product_type", product_type)
+        object.__setattr__(self, "adjust_type", adjust_type)
+        for field_name in ("code", "market", "provider", "adapter_version"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-blank")
+        if self.frequency != "DAY":
+            raise ValueError("frequency must be DAY")
+        if self.fetched_at.tzinfo is None or self.fetched_at.utcoffset() is None:
+            raise ValueError("fetched_at must be timezone-aware")
+        records = tuple(self.records)
+        warnings = tuple(self.warnings)
+        object.__setattr__(self, "records", records)
+        object.__setattr__(self, "warnings", warnings)
+        if not records:
+            raise ValueError("records must be non-empty")
+        if product_type is ProductType.MUTUAL_FUND and adjust_type is not AdjustType.NONE:
+            raise ValueError("MUTUAL_FUND batches require adjustType=NONE")
+        for warning in warnings:
+            if not isinstance(warning, str) or not warning.strip():
+                raise ValueError("warnings must contain non-blank strings")
+        for record in records:
+            if not isinstance(record, NormalizedQuote):
+                raise ValueError("records must contain NormalizedQuote values")
+            expected = {
+                "product_code": self.code,
+                "market": self.market,
+                "provider": self.provider,
+                "adapter_version": self.adapter_version,
+            }
+            for field_name, expected_value in expected.items():
+                if getattr(record, field_name) != expected_value:
+                    raise ValueError(f"record {field_name.removeprefix('product_')} conflicts with batch")
+            for field_name in ("open", "high", "low", "close", "volume"):
+                value = getattr(record, field_name)
+                if value is not None and (isinstance(value, bool) or not isinstance(value, Decimal) or not value.is_finite()):
+                    raise ValueError(f"record {field_name} must be a finite decimal")
+
+    def to_snapshot_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for record in self.records:
+            is_fund = self.product_type is ProductType.MUTUAL_FUND
+            rows.append({
+                "product_code": self.code,
+                "product_type": self.product_type.value,
+                "market": self.market,
+                "frequency": self.frequency,
+                "adjust_type": self.adjust_type.value,
+                "provider": self.provider,
+                "adapter_version": self.adapter_version,
+                "data_date": record.data_date,
+                "observed_at": self.fetched_at,
+                "open": None if is_fund else record.open,
+                "high": None if is_fund else record.high,
+                "low": None if is_fund else record.low,
+                "close": None if is_fund else record.close,
+                "volume": None if is_fund else record.volume,
+                "nav": record.close if is_fund else None,
+                "trading_status": None,
+                "adjustment_factor": None,
+                "corporate_action_reference": None,
+                "nav_type": "UNIT_NAV" if is_fund else None,
+                "estimated": False if is_fund else None,
+            })
+        return rows
+
+    def snapshot_context(self, start_date: date, end_date: date) -> DataSnapshotContext:
+        return DataSnapshotContext(
+            product_type=self.product_type,
+            market=self.market,
+            code=self.code,
+            frequency=self.frequency,
+            adjust_type=self.adjust_type,
+            provider=self.provider,
+            adapter_version=self.adapter_version,
+            requested_start_date=start_date,
+            requested_end_date=end_date,
+            fetched_at=self.fetched_at,
+        )
+
+
 def normalize_quote(
     *,
     product_code: str,
@@ -41,6 +159,7 @@ def normalize_quote(
     raw: dict[str, Any],
     provider: str,
     adapter_version: str = "1",
+    fetched_at: datetime | None = None,
 ) -> NormalizedQuote:
     data_date = trade_date if isinstance(trade_date, date) else date.fromisoformat(str(trade_date))
     close = _decimal(raw.get("close"))
@@ -57,7 +176,7 @@ def normalize_quote(
         volume=_decimal(raw.get("volume")),
         provider=provider.strip().upper(),
         adapter_version=adapter_version,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=fetched_at if fetched_at is not None else datetime.now(timezone.utc),
     )
 
 
@@ -78,14 +197,15 @@ def fetch_realtime_stock_quote(code: str, market: str, opener=urlopen, clock=Non
     prefix = {"SSE": "sh", "BSE": "bj"}.get(normalized_market, "sz")
     errors: list[str] = []
     try:
-        with opener(f"http://qt.gtimg.cn/q={prefix}{normalized_code}", timeout=5) as response:
+        with opener(f"http://qt.gtimg.cn/q={prefix}{normalized_code}",
+                    timeout=_provider_integer("realtime_http_timeout_seconds")) as response:
             payload = response.read().decode("gbk")
         fields = payload.split('"')[1].split("~")
         latest_price = _decimal(fields[3])
         if latest_price is None or latest_price <= 0 or len(fields) <= 49:
             raise ValueError("实时行情缺少有效价格或时间")
         quote_at = datetime.strptime(fields[30], "%Y%m%d%H%M%S").replace(
-            tzinfo=ZoneInfo("Asia/Shanghai")
+            tzinfo=_market_zone()
         )
         metrics = {
             "previousClose": _decimal(fields[4]),
@@ -95,8 +215,10 @@ def fetch_realtime_stock_quote(code: str, market: str, opener=urlopen, clock=Non
             "highPrice": _decimal(fields[33]),
             "lowPrice": _decimal(fields[34]),
             # 腾讯 A 股成交量单位为手、成交额单位为万元，统一换算为股和元。
-            "volume": _multiply(_decimal(fields[36]), Decimal("100")),
-            "amount": _multiply(_decimal(fields[37]), Decimal("10000")),
+            "volume": _multiply(_decimal(fields[36]), Decimal(
+                _provider_integer("tencent_volume_lot_size"))),
+            "amount": _multiply(_decimal(fields[37]), Decimal(
+                _provider_integer("tencent_amount_unit"))),
             "turnoverRate": _decimal(fields[38]),
             "amplitude": _decimal(fields[43]),
             "volumeRatio": _decimal(fields[49]),
@@ -113,7 +235,7 @@ def fetch_realtime_stock_quote(code: str, market: str, opener=urlopen, clock=Non
             f"http://hq.sinajs.cn/list={prefix}{normalized_code}",
             headers={"Referer": "https://finance.sina.com.cn/"},
         )
-        with opener(request, timeout=5) as response:
+        with opener(request, timeout=_provider_integer("realtime_http_timeout_seconds")) as response:
             payload = response.read().decode("gbk")
         fields = payload.split('"')[1].split(",")
         latest_price = _decimal(fields[3])
@@ -121,7 +243,7 @@ def fetch_realtime_stock_quote(code: str, market: str, opener=urlopen, clock=Non
             raise ValueError("实时行情缺少有效价格或时间")
         quote_at = datetime.strptime(
             f"{fields[30]} {fields[31]}", "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        ).replace(tzinfo=_market_zone())
         previous_close = _decimal(fields[2])
         high_price = _decimal(fields[4])
         low_price = _decimal(fields[5])
@@ -159,7 +281,7 @@ def _realtime_quote_result(
     clock=None,
     metrics: dict[str, Decimal | None] | None = None,
 ) -> dict[str, Any]:
-    fetched_at = clock() if clock is not None else datetime.now(ZoneInfo("Asia/Shanghai"))
+    fetched_at = clock() if clock is not None else datetime.now(_market_zone())
     result = {
         "code": code,
         "market": market,
@@ -322,7 +444,10 @@ def fetch_stock_fundamentals(code: str, ak_module: Any = None) -> tuple[list[dic
     warnings: list[str] = []
     try:
         frame = ak_module.stock_financial_analysis_indicator(
-            symbol=code, start_year=str(max(2000, date.today().year - 5))
+            symbol=code, start_year=str(max(
+                STRATEGY.integer("fundamental.provider_minimum_start_year"),
+                date.today().year - STRATEGY.integer("fundamental.provider_lookback_years"),
+            ))
         )
         rows = frame.to_dict("records")
     except Exception as exc:
@@ -341,7 +466,8 @@ def fetch_stock_fundamentals(code: str, ak_module: Any = None) -> tuple[list[dic
     rows = [row for row in rows if period(row)]
     rows.sort(key=period, reverse=True)
     annual = [row for row in rows if period(row).endswith("12-31")]
-    selected = (annual if len(annual) >= 3 else rows)[:5]
+    selected = (annual if len(annual) >= STRATEGY.integer("fundamental.minimum_periods") else rows)[
+        :STRATEGY.integer("fundamental.provider_max_periods")]
     periods: list[dict[str, Any]] = []
     for row in selected:
         periods.append({
@@ -385,6 +511,12 @@ class MarketDataProvider:
     def daily_quotes(self, code: str, market: str, product_type: str, start_date: date, end_date: date) -> list[NormalizedQuote]:
         raise NotImplementedError
 
+    def daily_quality_batch(
+        self, code: str, market: str, product_type: ProductType | str,
+        start_date: date, end_date: date, adjust_type: AdjustType | str, fetched_at: datetime,
+    ) -> ProviderBatch | None:
+        raise ProviderUnavailable(f"{self.name}: strict daily batch is not supported")
+
 
 class TencentHistoryProvider(MarketDataProvider):
     name = "TENCENT"
@@ -395,19 +527,34 @@ class TencentHistoryProvider(MarketDataProvider):
     def supports(self, market: str, product_type: str) -> bool:
         return market.upper() in {"SSE", "SZSE", "BSE"} and product_type.upper() in {"STOCK", "ETF"}
 
+    def _history_rows(
+        self, symbol: str, start_date: date, end_date: date, token: str, payload_key: str,
+    ) -> list[list[Any]]:
+        rows_by_date: dict[str, list[Any]] = {}
+        chunk_days = _provider_integer("tencent_history_chunk_calendar_days")
+        cursor = start_date
+        while cursor <= end_date:
+            chunk_end = min(end_date, cursor + timedelta(days=chunk_days - 1))
+            url = (
+                "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
+                f"{symbol},day,{cursor.isoformat()},{chunk_end.isoformat()},"
+                f"{_provider_integer('tencent_history_max_records')},{token}"
+            )
+            with self.opener(url, timeout=_provider_integer("history_http_timeout_seconds")) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            for row in ((payload.get("data") or {}).get(symbol) or {}).get(payload_key) or []:
+                if len(row) >= 6:
+                    rows_by_date[str(row[0])] = row
+            cursor = chunk_end + timedelta(days=1)
+        return [rows_by_date[key] for key in sorted(rows_by_date)]
+
     def daily_quotes(self, code: str, market: str, product_type: str,
                      start_date: date, end_date: date) -> list[NormalizedQuote]:
         market_prefix = {"SSE": "sh", "SZSE": "sz", "BSE": "bj"}.get(market.upper())
         if market_prefix is None:
             raise ProviderUnavailable(f"unsupported market: {market}")
         symbol = f"{market_prefix}{code.strip()}"
-        url = (
-            "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
-            f"{symbol},day,{start_date.isoformat()},{end_date.isoformat()},1000,qfq"
-        )
-        with self.opener(url, timeout=8) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        rows = ((payload.get("data") or {}).get(symbol) or {}).get("qfqday") or []
+        rows = self._history_rows(symbol, start_date, end_date, "qfq", "qfqday")
         records = []
         for row in rows:
             if len(row) < 6:
@@ -423,11 +570,45 @@ class TencentHistoryProvider(MarketDataProvider):
                     "low": low_price,
                     "close": close_price,
                     # 腾讯日线成交量单位为手，统一转换为股。
-                    "volume": str(Decimal(str(volume)) * Decimal("100")),
+                    "volume": str(Decimal(str(volume)) * Decimal(
+                        _provider_integer("tencent_volume_lot_size"))),
                 },
                 provider=self.name,
             ))
         return [item for item in records if start_date <= item.data_date <= end_date]
+
+    def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
+                            start_date: date, end_date: date, adjust_type: AdjustType | str,
+                            fetched_at: datetime) -> ProviderBatch | None:
+        product = _product_type(product_type)
+        adjustment = _adjust_type(adjust_type)
+        _validate_quality_request(code, market, product, start_date, end_date, adjustment, fetched_at)
+        if product is not ProductType.STOCK:
+            raise ProviderUnavailable("TENCENT: MUTUAL_FUND is not supported")
+        market_prefix = {"SSE": "sh", "SZSE": "sz", "BSE": "bj"}.get(market.upper())
+        if market_prefix is None:
+            raise ProviderUnavailable(f"TENCENT: unsupported market: {market}")
+        token, payload_key = {
+            AdjustType.QFQ: ("qfq", "qfqday"),
+            AdjustType.HFQ: ("hfq", "hfqday"),
+            AdjustType.NONE: ("none", "day"),
+        }[adjustment]
+        symbol = f"{market_prefix}{code.strip()}"
+        rows = self._history_rows(symbol, start_date, end_date, token, payload_key)
+        records = []
+        for row in rows:
+            if len(row) < 6:
+                continue
+            trade_date, open_price, close_price, high_price, low_price, volume = row[:6]
+            records.append(_quality_quote(
+                code=code, market=market, trade_date=trade_date,
+                raw={"open": open_price, "high": high_price, "low": low_price,
+                     "close": close_price,
+                     "volume": str(Decimal(str(volume)) * Decimal(_provider_integer("tencent_volume_lot_size")))},
+                provider=self.name, fetched_at=fetched_at,
+            ))
+        return _provider_batch(product, code, market, adjustment, self.name, fetched_at,
+                               [item for item in records if start_date <= item.data_date <= end_date])
 
 
 class AkshareProvider(MarketDataProvider):
@@ -447,7 +628,10 @@ class AkshareProvider(MarketDataProvider):
         if product_type.upper() == "ETF" and market in {"SSE", "SZSE", "BSE"}:
             frame = ak.fund_etf_hist_em(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
         elif market in {"SSE", "SZSE", "BSE"}:
-            frame = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+            frame = ak.stock_zh_a_hist(
+                symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq",
+                timeout=_provider_integer("history_http_timeout_seconds"),
+            )
         elif market == "HKEX":
             frame = ak.stock_hk_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="")
         elif market in {"NYSE", "NASDAQ", "AMEX"}:
@@ -456,6 +640,39 @@ class AkshareProvider(MarketDataProvider):
             frame = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
         return [item for item in _frame_to_quotes(frame, code, market, self.name)
                 if start_date <= item.data_date <= end_date]
+
+    def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
+                            start_date: date, end_date: date, adjust_type: AdjustType | str,
+                            fetched_at: datetime) -> ProviderBatch | None:
+        product = _product_type(product_type)
+        adjustment = _adjust_type(adjust_type)
+        _validate_quality_request(code, market, product, start_date, end_date, adjustment, fetched_at)
+        try:
+            import akshare as ak
+        except ImportError as exc:
+            raise ProviderUnavailable("AKShare is not installed") from exc
+        market = market.upper()
+        start = start_date.strftime("%Y%m%d")
+        end = end_date.strftime("%Y%m%d")
+        if product is ProductType.MUTUAL_FUND:
+            frame = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        else:
+            argument = {AdjustType.QFQ: "qfq", AdjustType.HFQ: "hfq", AdjustType.NONE: ""}[adjustment]
+            if market in {"SSE", "SZSE", "BSE"}:
+                frame = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start,
+                                           end_date=end, adjust=argument,
+                                           timeout=_provider_integer("history_http_timeout_seconds"))
+            elif market == "HKEX":
+                frame = ak.stock_hk_hist(symbol=code, period="daily", start_date=start,
+                                         end_date=end, adjust=argument)
+            elif market in {"NYSE", "NASDAQ", "AMEX"}:
+                frame = ak.stock_us_hist(symbol=akshare_us_symbol(code, market), period="daily",
+                                         start_date=start, end_date=end, adjust=argument)
+            else:
+                raise ProviderUnavailable(f"AKSHARE: unsupported market: {market}")
+        records = [item for item in _frame_to_quotes(frame, code, market, self.name, fetched_at=fetched_at)
+                   if start_date <= item.data_date <= end_date]
+        return _provider_batch(product, code, market, adjustment, self.name, fetched_at, records)
 
 
 class BaostockProvider(MarketDataProvider):
@@ -486,6 +703,37 @@ class BaostockProvider(MarketDataProvider):
         finally:
             bs.logout()
 
+    def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
+                            start_date: date, end_date: date, adjust_type: AdjustType | str,
+                            fetched_at: datetime) -> ProviderBatch | None:
+        product = _product_type(product_type)
+        adjustment = _adjust_type(adjust_type)
+        _validate_quality_request(code, market, product, start_date, end_date, adjustment, fetched_at)
+        if product is not ProductType.STOCK:
+            raise ProviderUnavailable("BAOSTOCK: MUTUAL_FUND is not supported")
+        try:
+            import baostock as bs
+        except ImportError as exc:
+            raise ProviderUnavailable("BaoStock is not installed") from exc
+        prefix = "sh" if market.upper() == "SSE" else "sz"
+        login = bs.login()
+        if login.error_code != "0":
+            raise ProviderUnavailable(login.error_msg)
+        try:
+            result = bs.query_history_k_data_plus(
+                f"{prefix}.{code}", "date,open,high,low,close,volume",
+                start_date=start_date.isoformat(), end_date=end_date.isoformat(), frequency="d",
+                adjustflag={AdjustType.HFQ: "1", AdjustType.QFQ: "2", AdjustType.NONE: "3"}[adjustment],
+            )
+            rows = []
+            while result.error_code == "0" and result.next():
+                rows.append(dict(zip(result.fields, result.get_row_data())))
+            records = [_quality_quote(code=code, market=market, trade_date=row["date"], raw=row,
+                                      provider=self.name, fetched_at=fetched_at) for row in rows]
+            return _provider_batch(product, code, market, adjustment, self.name, fetched_at, records)
+        finally:
+            bs.logout()
+
 
 class TushareProvider(MarketDataProvider):
     name = "TUSHARE"
@@ -513,12 +761,43 @@ class TushareProvider(MarketDataProvider):
             frame = pro.daily(**kwargs)
         return _frame_to_quotes(frame, code, market, self.name)
 
+    def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
+                            start_date: date, end_date: date, adjust_type: AdjustType | str,
+                            fetched_at: datetime) -> ProviderBatch | None:
+        product = _product_type(product_type)
+        adjustment = _adjust_type(adjust_type)
+        _validate_quality_request(code, market, product, start_date, end_date, adjustment, fetched_at)
+        if product is not ProductType.STOCK:
+            raise ProviderUnavailable("TUSHARE: MUTUAL_FUND is not supported")
+        if adjustment is not AdjustType.NONE:
+            raise ProviderUnavailable(f"TUSHARE: raw daily cannot deliver requested {adjustment.value} adjustment")
+        try:
+            import tushare as ts
+        except ImportError as exc:
+            raise ProviderUnavailable("Tushare is not installed") from exc
+        token = os.getenv("TUSHARE_TOKEN")
+        if not token:
+            raise ProviderUnavailable("TUSHARE_TOKEN is not configured")
+        pro = ts.pro_api(token)
+        normalized_market = market.upper()
+        suffix = {"SSE": ".SH", "SZSE": ".SZ", "BSE": ".BJ", "HKEX": ".HK"}.get(normalized_market, "")
+        kwargs = {"ts_code": code + suffix, "start_date": start_date.strftime("%Y%m%d"),
+                  "end_date": end_date.strftime("%Y%m%d")}
+        if normalized_market == "HKEX":
+            frame = pro.hk_daily(**kwargs)
+        elif normalized_market in {"NYSE", "NASDAQ", "AMEX"}:
+            frame = pro.us_daily(ts_code=code, start_date=kwargs["start_date"], end_date=kwargs["end_date"])
+        else:
+            frame = pro.daily(**kwargs)
+        records = _frame_to_quotes(frame, code, normalized_market, self.name, fetched_at=fetched_at)
+        return _provider_batch(product, code, normalized_market, AdjustType.NONE, self.name, fetched_at, records)
+
 
 class ProviderRegistry:
     def __init__(self, providers: Iterable[MarketDataProvider] | None = None):
-        self.providers = list(providers or (
+        self.providers = list((
             TencentHistoryProvider(), AkshareProvider(), BaostockProvider(), TushareProvider()
-        ))
+        ) if providers is None else providers)
 
     def daily_quotes(self, code: str, market: str, product_type: str, start_date: date, end_date: date):
         warnings: list[str] = []
@@ -533,6 +812,70 @@ class ProviderRegistry:
             except Exception as exc:
                 warnings.append(f"{provider.name}: {exc}")
         raise ProviderUnavailable("; ".join(warnings) or "no provider supports this product")
+
+    def daily_quality_batches(
+        self, *, code: str, market: str, product_type: ProductType | str,
+        start_date: date, end_date: date, adjust_type: AdjustType | str, clock,
+        provider_names: Sequence[str] | None = None,
+        maximum_batches: int = 2,
+    ) -> tuple[tuple[ProviderBatch, ...], tuple[str, ...]]:
+        product = _product_type(product_type)
+        adjustment = _adjust_type(adjust_type)
+        if not callable(clock):
+            raise ValueError("clock must be callable")
+        if isinstance(maximum_batches, bool) or not isinstance(maximum_batches, int) or maximum_batches < 1:
+            raise ValueError("maximum_batches must be a positive integer")
+        fetched_at = clock()
+        normalized_code = code.strip().upper() if isinstance(code, str) else code
+        normalized_market = market.strip().upper() if isinstance(market, str) else market
+        _validate_quality_request(
+            normalized_code, normalized_market, product, start_date, end_date, adjustment, fetched_at
+        )
+        warnings: list[str] = []
+        batches: list[ProviderBatch] = []
+        selected_providers: set[str] = set()
+        providers = self.providers
+        if provider_names is not None:
+            providers_by_name = {provider.name.strip().upper(): provider for provider in self.providers}
+            normalized_names = tuple(name.strip().upper() for name in provider_names)
+            providers = []
+            for name in normalized_names:
+                provider = providers_by_name.get(name)
+                if provider is None:
+                    warnings.append(f"{name}: configured provider is not registered")
+                else:
+                    providers.append(provider)
+        for provider in providers:
+            try:
+                if not provider.supports(normalized_market, product.value):
+                    continue
+                value = provider.daily_quality_batch(
+                    normalized_code, normalized_market, product, start_date, end_date, adjustment, fetched_at
+                )
+            except Exception as exc:
+                warnings.append(f"{provider.name}: {exc}")
+                continue
+            if value is None:
+                warnings.append(f"{provider.name}: no records")
+                continue
+            if not isinstance(value, ProviderBatch):
+                warnings.append(f"{provider.name}: invalid ProviderBatch")
+                continue
+            mismatch = _batch_mismatch(value, product, normalized_code, normalized_market, adjustment)
+            if mismatch is not None:
+                warnings.append(f"{provider.name}: {mismatch}")
+                continue
+            if value.provider in selected_providers:
+                warnings.append(f"{provider.name}: duplicate provider batch skipped")
+                continue
+            batches.append(value)
+            warnings.extend(value.warnings)
+            selected_providers.add(value.provider)
+            if len(batches) >= maximum_batches:
+                break
+        if not batches:
+            raise ProviderUnavailable("; ".join(warnings) or "no provider supports this product")
+        return tuple(batches), tuple(warnings)
 
 
 def akshare_fx_rates(base_currency: str, quote_currency: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
@@ -556,25 +899,34 @@ def akshare_fx_rates(base_currency: str, quote_currency: str, start_date: date, 
     return records
 
 
-def fetch_a_share_trade_calendar(year: int, ak_module: Any = None) -> list[str]:
-    if ak_module is None:
-        try:
-            import akshare as ak_module
-        except ImportError as exc:
-            raise ProviderUnavailable("AKShare is not installed") from exc
+@lru_cache(maxsize=1)
+def _cached_a_share_trade_dates() -> tuple[date, ...]:
+    try:
+        import akshare as ak_module
+    except ImportError as exc:
+        raise ProviderUnavailable("AKShare is not installed") from exc
+    return _load_a_share_trade_dates(ak_module)
+
+
+def _load_a_share_trade_dates(ak_module: Any) -> tuple[date, ...]:
     try:
         frame = ak_module.tool_trade_date_hist_sina()
     except Exception as exc:
         raise ProviderUnavailable(f"AKSHARE 交易日历获取失败: {exc}") from exc
-    dates = []
+    dates: set[date] = set()
     for row in frame.to_dict("records"):
         value = row.get("trade_date", row.get("交易日", row.get("日期")))
-        if value is None:
-            continue
-        trading_date = date.fromisoformat(str(value)[:10])
-        if trading_date.year == year:
-            dates.append(trading_date.isoformat())
-    result = sorted(set(dates))
+        if value is not None:
+            dates.add(date.fromisoformat(str(value)[:10]))
+    return tuple(sorted(dates))
+
+
+def fetch_a_share_trade_calendar(year: int, ak_module: Any = None) -> list[str]:
+    if ak_module is None:
+        dates = _cached_a_share_trade_dates()
+    else:
+        dates = _load_a_share_trade_dates(ak_module)
+    result = [trading_date.isoformat() for trading_date in dates if trading_date.year == year]
     if not result:
         raise ProviderUnavailable(f"AKSHARE 未返回 {year} 年 A 股交易日历")
     return result
@@ -610,7 +962,8 @@ def akshare_us_symbol(code: str, market: str) -> str:
     return f"{prefix}.{normalized}"
 
 
-def _frame_to_quotes(frame: Any, code: str, market: str, provider: str) -> list[NormalizedQuote]:
+def _frame_to_quotes(frame: Any, code: str, market: str, provider: str,
+                     fetched_at: datetime | None = None) -> list[NormalizedQuote]:
     aliases = {
         "日期": "date", "净值日期": "date", "trade_date": "date",
         "开盘": "open", "最高": "high", "最低": "low", "收盘": "close",
@@ -619,5 +972,81 @@ def _frame_to_quotes(frame: Any, code: str, market: str, provider: str) -> list[
     records: list[NormalizedQuote] = []
     for original in frame.to_dict("records"):
         row = {aliases.get(str(key), str(key).lower()): value for key, value in original.items()}
-        records.append(normalize_quote(product_code=code, market=market, trade_date=str(row["date"])[:10], raw=row, provider=provider))
+        records.append(normalize_quote(product_code=code, market=market, trade_date=str(row["date"])[:10],
+                                       raw=row, provider=provider, fetched_at=fetched_at))
     return records
+
+
+def _quality_quote(*, code: str, market: str, trade_date: str | date, raw: dict[str, Any],
+                   provider: str, fetched_at: datetime) -> NormalizedQuote:
+    return normalize_quote(
+        product_code=code, market=market, trade_date=trade_date, raw=raw,
+        provider=provider, fetched_at=fetched_at,
+    )
+
+
+def _provider_batch(product_type: ProductType, code: str, market: str, adjust_type: AdjustType,
+                    provider: str, fetched_at: datetime,
+                    records: Iterable[NormalizedQuote]) -> ProviderBatch | None:
+    values = tuple(records)
+    if not values:
+        return None
+    return ProviderBatch(
+        product_type=product_type,
+        code=code.strip().upper(),
+        market=market.strip().upper(),
+        frequency="DAY",
+        adjust_type=adjust_type,
+        provider=provider,
+        adapter_version="1",
+        fetched_at=fetched_at,
+        records=values,
+        warnings=(),
+    )
+
+
+def _product_type(value: ProductType | str) -> ProductType:
+    try:
+        return value if isinstance(value, ProductType) else ProductType(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("product_type must be STOCK or MUTUAL_FUND") from error
+
+
+def _adjust_type(value: AdjustType | str) -> AdjustType:
+    try:
+        return value if isinstance(value, AdjustType) else AdjustType(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("adjust_type must be QFQ, HFQ, or NONE") from error
+
+
+def _validate_quality_request(code: str, market: str, product_type: ProductType,
+                              start_date: date, end_date: date, adjust_type: AdjustType,
+                              fetched_at: datetime) -> None:
+    if not isinstance(code, str) or not code.strip():
+        raise ValueError("code must be non-blank")
+    if not isinstance(market, str) or not market.strip():
+        raise ValueError("market must be non-blank")
+    if (not isinstance(start_date, date) or isinstance(start_date, datetime)
+            or not isinstance(end_date, date) or isinstance(end_date, datetime)):
+        raise ValueError("start_date and end_date must be dates")
+    if start_date > end_date:
+        raise ValueError("start_date cannot be after end_date")
+    if not isinstance(fetched_at, datetime) or fetched_at.tzinfo is None or fetched_at.utcoffset() is None:
+        raise ValueError("clock must return a timezone-aware datetime")
+    if product_type is ProductType.MUTUAL_FUND and adjust_type is not AdjustType.NONE:
+        raise ValueError("MUTUAL_FUND requests require adjustType=NONE")
+
+
+def _batch_mismatch(batch: ProviderBatch, product_type: ProductType, code: str, market: str,
+                    adjust_type: AdjustType) -> str | None:
+    expected = (
+        (batch.product_type, product_type, "product type"),
+        (batch.code, code, "code"),
+        (batch.market, market, "market"),
+        (batch.frequency, "DAY", "frequency"),
+        (batch.adjust_type, adjust_type, "actual adjust"),
+    )
+    for actual, requested, label in expected:
+        if actual != requested:
+            return f"{label} mismatch (requested {requested}, actual {actual})"
+    return None

@@ -44,8 +44,9 @@ class AnalysisEngineTest(unittest.TestCase):
         expected_ma5 = sum(float(item["close"]) for item in records[-5:]) / 5
         self.assertAlmostEqual(expected_ma5, latest["ma5"], places=4)
         self.assertIsNotNone(latest["macd"])
-        self.assertIsNotNone(latest["rsi14"])
-        self.assertIsNotNone(latest["atr14"])
+        self.assertIsNotNone(latest["rsi"])
+        self.assertIsNotNone(latest["atr"])
+        self.assertEqual("technical-strategy-v2", result["strategyVersion"])
         self.assertEqual({"SHORT", "MEDIUM", "LONG"}, set(result["horizons"]))
         self.assertIn(result["horizons"]["SHORT"]["verdict"], {"FAVORABLE", "WAIT", "WEAK"})
         self.assertLess(result["levels"]["support"]["low"], result["levels"]["support"]["high"])
@@ -113,9 +114,10 @@ class AnalysisEngineTest(unittest.TestCase):
 
         result = analyze_fund(records)
 
-        self.assertIn("oneMonthReturn", result)
-        self.assertIn("threeMonthReturn", result)
-        self.assertIn("oneYearReturn", result)
+        self.assertEqual(
+            ["ONE_MONTH", "THREE_MONTHS", "ONE_YEAR"],
+            [item["code"] for item in result["returnMetrics"]],
+        )
         self.assertGreater(result["annualizedVolatility"], 0)
         self.assertLess(result["maxDrawdown"], 0)
         self.assertIn(result["action"], {"ACCUMULATE", "HOLD", "PAUSE", "TAKE_PROFIT"})
@@ -124,12 +126,29 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertIn(result["verdict"], {"FAVORABLE", "WAIT", "WEAK"})
         self.assertIsNotNone(result["series"][-1]["ma20"])
 
+    def test_fund_analysis_accepts_canonical_nav_records(self):
+        records = [
+            {
+                "data_date": item["data_date"],
+                "nav": item["close"],
+            }
+            for item in price_records(260, step=0.04)
+        ]
+
+        result = analyze_fund(records)
+
+        self.assertEqual("READY", result["status"])
+        self.assertEqual(260, len(result["series"]))
+        self.assertGreater(result["score"], 0)
+
     def test_fundamental_analysis_requires_three_periods_and_four_dimensions(self):
         insufficient = analyze_fundamentals([
             {"period": "2025", "revenue": 100, "netProfit": 10, "roe": 8},
             {"period": "2024", "revenue": 90, "netProfit": 9, "roe": 7},
         ])
         self.assertEqual("INSUFFICIENT", insufficient["verdict"])
+        self.assertEqual(3, insufficient["requirements"]["minimumPeriods"])
+        self.assertIn("当前策略至少需要", insufficient["reason"])
 
         result = analyze_fundamentals([
             {"period": "2025", "revenue": 135, "netProfit": 18, "roe": 15, "grossMargin": 36,
@@ -145,6 +164,7 @@ class AnalysisEngineTest(unittest.TestCase):
 
         self.assertNotEqual("INSUFFICIENT", result["verdict"])
         self.assertGreaterEqual(result["coverage"], 4)
+        self.assertEqual(4, result["requirements"]["minimumDimensions"])
         self.assertEqual({"profitability", "growth", "cashQuality", "resilience", "valuation"},
                          set(result["dimensions"]))
 

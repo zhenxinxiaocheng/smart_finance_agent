@@ -14,5 +14,17 @@ public record HorizonSettingRequest(
         int sortOrder,
         @Min(1) int minHoldingDays,
         @Min(1) int maxHoldingDays,
+        @Min(1) Integer targetHoldingDays,
         boolean primary) {
+
+    public HorizonSettingRequest(String code, String displayName, int sortOrder,
+                                 int minHoldingDays, int maxHoldingDays, boolean primary) {
+        this(code, displayName, sortOrder, minHoldingDays, maxHoldingDays, null, primary);
+    }
+
+    public int resolvedTargetHoldingDays() {
+        return targetHoldingDays == null
+                ? minHoldingDays + (maxHoldingDays - minHoldingDays) / 2
+                : targetHoldingDays;
+    }
 }

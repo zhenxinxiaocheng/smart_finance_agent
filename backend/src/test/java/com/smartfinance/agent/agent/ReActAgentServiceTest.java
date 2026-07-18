@@ -173,6 +173,45 @@ class ReActAgentServiceTest {
     }
 
     @Test
+    void run_whenToolUseGateRequiresTool_shouldForceActionFromToolManifest() {
+        when(toolRegistry.manifest(1L)).thenReturn("- record_transaction: 记录一笔收入或支出。input: {userMessage, type, amount, category, description, date}");
+        when(chatModel.generate(anyList()))
+                .thenReturn(response("""
+                        {"type":"final","answer":"好的，已为您生成了待确认的记账记录：金额：50.00 元 分类：餐饮 日期：2026-07-09 备注：晚餐。"}
+                        """))
+                .thenReturn(response("""
+                        {"requiresTool":true,"tool":"record_transaction","reason":"最终回答声称生成了待确认记账，需要先调用工具。"}
+                        """))
+                .thenReturn(response("""
+                        {"type":"action","summary":"正在生成待确认记账","tool":"record_transaction","input":{"userMessage":"晚餐花了50","type":"EXPENSE","amount":50,"category":"餐饮","description":"晚餐","date":"2026-07-09"}}
+                        """))
+                .thenReturn(response("""
+                        {"type":"final","answer":"已生成待确认记账，请确认后入账。"}
+                        """));
+        when(toolRegistry.execute(eq("record_transaction"), any(), eq(1L), any(), eq("")))
+                .thenReturn(ToolRegistry.ToolObservation.builder()
+                        .success(true)
+                        .summary("已生成待确认记账，待确认ID：7")
+                        .rawResult("已生成待确认记账，待确认ID：7")
+                        .build());
+
+        var result = service.run(1L, "晚餐花了50");
+
+        assertEquals("已生成待确认记账，请确认后入账。", result.getFinalAnswer());
+        assertEquals(1, result.getSteps().size());
+        assertEquals("record_transaction", result.getSteps().get(0).getTool());
+        verify(toolRegistry).execute(eq("record_transaction"), any(), eq(1L), any(), eq(""));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> promptCaptor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel, org.mockito.Mockito.times(4)).generate(promptCaptor.capture());
+        String gatePrompt = promptCaptor.getAllValues().get(1).toString();
+        assertTrue(gatePrompt.contains("工具调用裁决器"));
+        assertTrue(gatePrompt.contains("record_transaction"));
+        assertTrue(gatePrompt.contains("记录一笔收入或支出"));
+    }
+
+    @Test
     void run_shouldKeepRawToolResultOutOfFollowUpPrompt() {
         String rawResult = "RAW_TRANSACTION_ROW_SHOULD_NOT_ENTER_PROMPT";
         when(chatModel.generate(anyList()))
@@ -249,9 +288,9 @@ class ReActAgentServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(chatModel).generate(captor.capture());
+        verify(chatModel, atLeastOnce()).generate(captor.capture());
 
-        String joined = captor.getValue().toString();
+        String joined = captor.getAllValues().get(0).toString();
         assertTrue(joined.contains("历史用户消息"));
         assertTrue(joined.contains("我这个月花了多少"));
         assertTrue(joined.contains("历史助手回复"));
@@ -271,8 +310,8 @@ class ReActAgentServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(chatModel).generate(captor.capture());
-        String joined = captor.getValue().toString();
+        verify(chatModel, atLeastOnce()).generate(captor.capture());
+        String joined = captor.getAllValues().get(0).toString();
         assertTrue(joined.contains("用户主动维护的长期财务画像"));
         assertTrue(joined.contains("风险偏好：保守"));
     }
@@ -291,8 +330,8 @@ class ReActAgentServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(chatModel).generate(captor.capture());
-        String joined = captor.getValue().toString();
+        verify(chatModel, atLeastOnce()).generate(captor.capture());
+        String joined = captor.getAllValues().get(0).toString();
         assertTrue(joined.contains("Agent 长期指令"));
         assertTrue(joined.contains("咖啡归为餐饮"));
     }
@@ -309,8 +348,8 @@ class ReActAgentServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(chatModel).generate(captor.capture());
-        String joined = captor.getValue().toString();
+        verify(chatModel, atLeastOnce()).generate(captor.capture());
+        String joined = captor.getAllValues().get(0).toString();
         assertTrue(joined.contains("系统知识库：下面是 RAG 检索到的理财知识片段"));
         assertTrue(joined.contains("紧急备用金建议覆盖 3-6 个月生活支出"));
     }
@@ -327,8 +366,8 @@ class ReActAgentServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(chatModel).generate(captor.capture());
-        String joined = captor.getValue().toString();
+        verify(chatModel, atLeastOnce()).generate(captor.capture());
+        String joined = captor.getAllValues().get(0).toString();
         assertTrue(joined.contains("如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言"));
         assertTrue(joined.contains("用英语对话"));
     }

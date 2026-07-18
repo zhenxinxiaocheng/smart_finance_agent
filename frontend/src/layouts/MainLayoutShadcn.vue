@@ -29,6 +29,8 @@
               v-for="item in group.items"
               :key="item.path || item.label"
               type="button"
+              :aria-label="item.label"
+              :title="isCollapse ? item.label : undefined"
               :data-developing="item.disabled ? 'true' : undefined"
               class="flex h-10 items-center justify-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors md:justify-start"
               :class="navItemClass(item)"
@@ -197,7 +199,9 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   BarChart3,
   Bell,
-  Bot,
+  Blocks,
+  CalendarClock,
+  ChartCandlestick,
   ChevronDown,
   ListChecks,
   LogOut,
@@ -205,7 +209,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
-  TrendingUp,
+  ShieldCheck,
   UploadCloud,
   UserRound,
   Zap
@@ -261,10 +265,10 @@ const navGroups = [
     items: [
       { path: '/chat', label: '新对话', icon: MessageSquareText },
       { path: '/profile', label: '财务画像', icon: UserRound },
-      { path: '/stocks', label: '股票分析', icon: TrendingUp, badge: '开发中', disabled: true },
-      { path: '/agent-audit', label: 'Agent 审计', icon: Bot },
-      { path: '/schedules', label: '周期任务', icon: TrendingUp },
-      { path: '/skills', label: 'Agent 技能', icon: Bot }
+      { path: '/stocks', label: '投资分析', icon: ChartCandlestick },
+      { path: '/agent-audit', label: 'Agent 审计', icon: ShieldCheck },
+      { path: '/schedules', label: '周期任务', icon: CalendarClock },
+      { path: '/skills', label: 'Agent 技能', icon: Blocks }
     ]
   },
   {

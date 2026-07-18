@@ -21,7 +21,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -113,6 +115,7 @@ public class ReActAgentService {
         String traceId = UUID.randomUUID().toString();
         List<ReActStepRecord> steps = new ArrayList<>();
         List<String> toolResults = new ArrayList<>();
+        Set<String> executedTools = new LinkedHashSet<>();
         List<ChatMessage> messages = new ArrayList<>();
         boolean usedTool = false;
 
@@ -150,6 +153,12 @@ public class ReActAgentService {
             String type = text(decision, "type");
             if ("final".equalsIgnoreCase(type)) {
                 finalAnswer = text(decision, "answer");
+                ToolGateDecision gateDecision = requiredToolBeforeFinal(userId, userMessage, finalAnswer, executedTools);
+                if (gateDecision.requiredTool() != null) {
+                    messages.add(AiMessage.from(raw == null ? "" : raw));
+                    messages.add(UserMessage.from(requiredToolCorrection(gateDecision, languageInstruction)));
+                    continue;
+                }
                 finalAnswer = verifyAndRepair(userMessage, finalAnswer, toolResults, messages, languageInstruction);
                 break;
             }
@@ -171,6 +180,7 @@ public class ReActAgentService {
             listener.onStepStarted(stepNumber, summary, tool);
             ToolRegistry.ToolObservation observation = toolRegistry.execute(tool, input, userId, traceId, skill);
             usedTool = true;
+            executedTools.add(tool);
             listener.onStepFinished(stepNumber, summary, tool, toJson(input), observation.getSummary(),
                     observation.isSuccess(), observation.isSuccess() ? null : observation.getSummary());
 
@@ -355,6 +365,7 @@ public class ReActAgentService {
                 - 当用户明确要求“做成 Skill / 记成 Skill / 包装成 Skill / 以后遇到这类问题按这个流程做”时，调用 create_custom_skill 生成自定义 Skill 草稿；普通偏好不要自动做成 Skill。
                 - 当用户明确要求“定期 / 每天 / 每周 / 每月 / 提醒我 / 自动帮我”执行某个财务分析、复盘或监控任务时，调用 create_agent_schedule 生成待确认周期任务；不要直接创建任务，不要把一次性偏好做成周期任务；input 必须包含 name、description、cronExpression、taskQuery、timezone。
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
+                - 如果任务需要读取或改变系统数据、生成待确认动作、查询实时信息，必须先根据可用 Skills 输出 action；没有对应 Observation，不允许声称已经查询、创建、设置、记录或完成。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案默认用中文，简洁自然，默认不超过 500 字；如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言。
                 - 如果当前问题和 Agent 长期记忆的语言要求冲突，以当前问题为准。
@@ -366,9 +377,79 @@ public class ReActAgentService {
                 """.formatted(now, toolSelectionService.manifest(userId, userMessage));
     }
 
+    private ToolGateDecision requiredToolBeforeFinal(Long userId,
+                                                     String userMessage,
+                                                     String finalAnswer,
+                                                     Set<String> executedTools) {
+        if (!executedTools.isEmpty()) {
+            return ToolGateDecision.none();
+        }
+        List<ChatMessage> gateMessages = List.of(
+                SystemMessage.from("""
+                        你是工具调用裁决器。你的任务是判断 ReAct 控制模型的 final answer 是否过早绕过了工具。
+                        只输出 JSON，不要输出 Markdown。
+
+                        输出格式：
+                        {"requiresTool":true|false,"tool":"需要先调用的工具名，若不需要则为空","reason":"一句话原因"}
+
+                        裁决规则：
+                        - 如果 final answer 只是通用建议、澄清、解释，且不依赖系统私有数据、外部实时信息或写操作，requiresTool=false。
+                        - 如果 final answer 声称已经查询、创建、设置、记录、删除、确认、导入、搜索或生成待确认动作，但当前尚未提供对应工具 Observation，requiresTool=true。
+                        - 如果用户请求需要系统私有数据、外部实时信息或会改变系统状态，且 final answer 没有先基于工具 Observation 回答，requiresTool=true。
+                        - tool 必须来自可用工具清单；根据工具描述和输入 schema 自行选择最匹配的工具。
+                        """),
+                UserMessage.from("""
+                        用户原始问题：
+                        %s
+
+                        待检查的 final answer：
+                        %s
+
+                        当前已执行工具：
+                        %s
+
+                        可用工具清单：
+                        %s
+                        """.formatted(
+                        userMessage == null ? "" : userMessage,
+                        finalAnswer == null ? "" : finalAnswer,
+                        String.join(", ", executedTools),
+                        toolRegistry.manifest(userId)))
+        );
+        JsonNode decision = parseDecision(generate(gateMessages));
+        if (decision == null || !decision.path("requiresTool").asBoolean(false)) {
+            return ToolGateDecision.none();
+        }
+        String requestedTool = text(decision, "tool");
+        String tool = toolRegistry.canonicalToolName(requestedTool);
+        if (tool == null || tool.isBlank()) {
+            tool = requestedTool;
+        }
+        if (tool == null || tool.isBlank() || executedTools.contains(tool)) {
+            return ToolGateDecision.none();
+        }
+        return new ToolGateDecision(tool, text(decision, "reason"));
+    }
+
+    private String requiredToolCorrection(ToolGateDecision decision, String languageInstruction) {
+        return """
+                工具调用裁决器认为你的上一条 final answer 过早绕过了工具。
+                请立即输出 action JSON 调用工具：%s。
+                理由：%s
+                input 必须根据用户原文、工具说明和 schema 填写；不要继续输出 final，也不要声称已经完成。
+                %s
+                """.formatted(decision.requiredTool(), decision.reason(), languageInstruction);
+    }
+
     private static String text(JsonNode node, String field) {
         JsonNode value = node == null ? null : node.get(field);
         return value == null || value.isNull() ? "" : value.asText("");
+    }
+
+    private record ToolGateDecision(String requiredTool, String reason) {
+        private static ToolGateDecision none() {
+            return new ToolGateDecision(null, "");
+        }
     }
 
     private static String sanitizeSummary(String summary, String tool) {

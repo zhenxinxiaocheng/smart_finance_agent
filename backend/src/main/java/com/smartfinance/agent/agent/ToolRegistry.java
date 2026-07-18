@@ -56,6 +56,13 @@ public class ToolRegistry {
             Map.entry("\u9884\u7b97\u72b6\u6001", "get_budget_status"),
             Map.entry("\u9884\u7b97\u9884\u8b66", "check_alerts"),
             Map.entry("\u9884\u8b66\u5386\u53f2", "get_alert_history"),
+            Map.entry("\u6295\u8d44\u603b\u89c8", "get_investment_overview"),
+            Map.entry("\u6295\u8d44\u6301\u4ed3", "get_investment_positions"),
+            Map.entry("\u7ec4\u5408\u5206\u6790", "get_investment_analysis"),
+            Map.entry("\u6295\u8d44\u5efa\u8bae", "get_investment_recommendations"),
+            Map.entry("\u91cf\u5316\u4fe1\u53f7", "get_investment_quant_signal"),
+            Map.entry("\u91cf\u5316\u7b56\u7565\u72b6\u6001", "get_investment_quant_strategy_status"),
+            Map.entry("\u6a21\u62df\u76d8", "get_investment_paper_account"),
             Map.entry("\u5b9a\u65f6\u4efb\u52a1", "create_agent_schedule"),
             Map.entry("\u5468\u671f\u4efb\u52a1", "create_agent_schedule"),
             Map.entry("\u5b9a\u671f\u6267\u884c", "create_agent_schedule"),
@@ -74,6 +81,7 @@ public class ToolRegistry {
                         BudgetTool budgetTool,
                         CustomSkillTool customSkillTool,
                         AgentScheduleTool agentScheduleTool,
+                        InvestmentAgentTools investmentAgentTools,
                         SkillInvocationRecordService skillInvocationRecordService,
                         AgentSkillService agentSkillService) {
         this.skillInvocationRecordService = skillInvocationRecordService;
@@ -120,6 +128,22 @@ public class ToolRegistry {
                 input -> budgetTool.checkAlerts());
         register("get_alert_history", "查看近期预算预警历史。input: {limit}",
                 input -> budgetTool.getAlertHistory(integer(input, "limit", 5)));
+        register("get_investment_overview", "读取投资组合总资产、净投入、盈亏和数据日期，仅解释结构化结果。input: {}",
+                input -> investmentAgentTools.overview());
+        register("get_investment_positions", "读取用户投资持仓及成本、市值、盈亏，不生成交易指令。input: {}",
+                input -> investmentAgentTools.positions());
+        register("get_investment_analysis", "读取已计算的组合暴露、集中度和风险提示；数据不足时保持不确定性。input: {}",
+                input -> investmentAgentTools.analysis());
+        register("get_investment_data_quality", "只读查询持仓数据的数据来源、版本、质量状态和问题明细；不得修改规则或绕过门禁。input: {}",
+                input -> investmentAgentTools.dataQuality());
+        register("get_investment_recommendations", "读取规则引擎生成的风险提醒及证据，不推荐具体买卖数量。input: {}",
+                input -> investmentAgentTools.recommendations());
+        register("get_investment_quant_signal", "只读查询已验证并持久化的量化信号、因子贡献和风险原因；不得触发训练或绕过门禁。input: {assetId, horizonCode}",
+                input -> investmentAgentTools.quantSignal(longValue(input, "assetId", null), text(input, "horizonCode", "")));
+        register("get_investment_quant_strategy_status", "只读查询当前量化模型和策略的验证状态及版本。input: {}",
+                input -> investmentAgentTools.quantStrategyStatus());
+        register("get_investment_paper_account", "只读查询模拟盘资金和持仓；不能创建或修改订单。input: {}",
+                input -> investmentAgentTools.paperAccount());
         register("search_web", "搜索实时财经、汇率、市场新闻。input: {query}",
                 input -> webSearchTool.searchWeb(text(input, "query", "")));
         register("create_custom_skill", "Create a user-defined Skill draft. input: {name, description, triggerText, instructionText, boundTools, category, riskLevel}",
@@ -285,6 +309,9 @@ public class ToolRegistry {
     }
 
     private static String categoryFor(String name) {
+        if (name.contains("investment")) {
+            return "投资分析";
+        }
         if (name.contains("schedule")) {
             return "Agent \u81ea\u52a8\u5316";
         }
@@ -331,6 +358,11 @@ public class ToolRegistry {
     private static int integer(JsonNode input, String field, int defaultValue) {
         JsonNode node = input.get(field);
         return node == null || !node.canConvertToInt() ? defaultValue : node.asInt();
+    }
+
+    private static Long longValue(JsonNode input, String field, Long defaultValue) {
+        JsonNode node = input.get(field);
+        return node == null || !node.canConvertToLong() ? defaultValue : node.asLong();
     }
 
     private static BigDecimal decimal(JsonNode input, String field, BigDecimal defaultValue) {

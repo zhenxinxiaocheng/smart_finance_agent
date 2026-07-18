@@ -25,6 +25,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -36,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -240,6 +243,42 @@ class ChatServiceImplTest {
             assertThat(sent).contains("usageRatio=0.5");
             assertThat(sent).contains("compressedKeys=[rag-knowledge]");
         });
+    }
+
+    @Test
+    void streamReactChat_shouldFinishRunWhenClientDisconnects() throws Exception {
+        CountDownLatch runStarted = new CountDownLatch(1);
+        CountDownLatch continueRun = new CountDownLatch(1);
+        when(chatMessageMapper.selectRecentByConversation(1L, 99L, 12)).thenReturn(List.of());
+        when(pendingActionService.listPending(1L)).thenReturn(List.of());
+        when(reactAgentService.run(eq(1L), eq(99L), eq("分析预算"),
+                org.mockito.ArgumentMatchers.<List<ChatMessage>>any(), any()))
+                .thenAnswer(invocation -> {
+                    ReActAgentService.ReActEventListener listener = invocation.getArgument(4);
+                    listener.onRunStarted("trace-disconnected");
+                    runStarted.countDown();
+                    assertTrue(continueRun.await(2, TimeUnit.SECONDS));
+                    listener.onStepStarted(1, "正在分析预算", "get_budget_status");
+                    listener.onFinal("预算状态正常。", "trace-disconnected");
+                    return ReActResult.builder()
+                            .traceId("trace-disconnected")
+                            .finalAnswer("预算状态正常。")
+                            .steps(List.of())
+                            .build();
+                });
+
+        SseEmitter emitter = chatService.streamReactChat(1L, 99L, "分析预算");
+        assertTrue(runStarted.await(2, TimeUnit.SECONDS));
+        emitter.complete();
+        continueRun.countDown();
+
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                verify(chatMessageMapper).insert(argThat(message ->
+                        "ASSISTANT".equals(message.getRole())
+                                && "预算状态正常。".equals(message.getContent())
+                                && "trace-disconnected".equals(message.getTraceId()))));
+        verify(agentRunService, never()).failRun(any(), any(), any());
+        verify(agentRunService).completeRun("trace-disconnected", "预算状态正常。");
     }
 
     @Test

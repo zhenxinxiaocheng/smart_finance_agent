@@ -10,6 +10,7 @@ export function getChartTheme() {
   const border = cssVar('--border', '#e2e8f0')
   const card = cssVar('--card', '#ffffff')
   const primary = cssVar('--primary', '#00a86b')
+  const positive = cssVar('--chart-positive', '#10b981')
   const destructive = cssVar('--destructive', '#ef4444')
   const chart2 = cssVar('--chart-2', '#0ea5e9')
   const chart3 = cssVar('--chart-3', '#f59e0b')
@@ -22,6 +23,7 @@ export function getChartTheme() {
     border,
     card,
     primary,
+    positive,
     destructive,
     palette: [primary, chart2, chart3, chart4, chart5, destructive],
     tooltip: {

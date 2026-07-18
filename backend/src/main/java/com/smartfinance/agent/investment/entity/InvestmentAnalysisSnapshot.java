@@ -17,6 +17,12 @@ public class InvestmentAnalysisSnapshot {
     private String preferenceHash;
     private String horizonProfileVersion;
     private String horizonConfigJson;
+    private String datasetVersion;
+    private String qualityRuleSetVersion;
+    private String strategyVersion;
+    private String analysisCacheKey;
+    private String qualityStatus;
+    private Boolean historicalCache;
     private String signalHash;
     private LocalDate quoteDate;
     private String technicalJson;

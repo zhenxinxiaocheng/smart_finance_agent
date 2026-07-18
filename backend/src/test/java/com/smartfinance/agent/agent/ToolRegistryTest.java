@@ -31,6 +31,8 @@ class ToolRegistryTest {
     @Mock
     private AgentScheduleTool agentScheduleTool;
     @Mock
+    private InvestmentAgentTools investmentAgentTools;
+    @Mock
     private SkillInvocationRecordService skillInvocationRecordService;
     @Mock
     private AgentSkillService agentSkillService;
@@ -40,7 +42,7 @@ class ToolRegistryTest {
     @BeforeEach
     void setUp() {
         registry = new ToolRegistry(financialTools, transactionRecorder, webSearchTool, budgetTool, customSkillTool,
-                agentScheduleTool,
+                agentScheduleTool, investmentAgentTools,
                 skillInvocationRecordService, agentSkillService);
     }
 
@@ -164,6 +166,36 @@ class ToolRegistryTest {
         verify(skillInvocationRecordService).record(eq(1L), eq("trace-schedule"),
                 eq("create_agent_schedule"), eq("Agent 自动化"), eq("BUILT_IN"), eq("REQUIRES_CONFIRMATION"),
                 any(), eq(true), eq(false), any(Long.class), any(), eq("pending schedule"));
+    }
+
+    @Test
+    void execute_investmentOverview_shouldUseReadOnlyInvestmentTool() {
+        when(agentSkillService.resolveInvocationSkill(1L, "get_investment_overview", null))
+                .thenReturn(builtInSkill("get_investment_overview", "投资分析", "BUILT_IN", "READ_ONLY", 1));
+        when(investmentAgentTools.overview()).thenReturn("{\"totalAssetCny\":10000}");
+
+        ToolRegistry.ToolObservation observation =
+                registry.execute("get_investment_overview", null, 1L, "trace-investment");
+
+        assertThat(observation.isSuccess()).isTrue();
+        assertThat(observation.getRawResult()).contains("totalAssetCny");
+        verify(skillInvocationRecordService).record(eq(1L), eq("trace-investment"),
+                eq("get_investment_overview"), eq("投资分析"), eq("BUILT_IN"), eq("READ_ONLY"),
+                any(), eq(true), eq(false), any(Long.class), any(), any());
+    }
+
+    @Test
+    void execute_quantStrategyStatus_shouldRemainReadOnly() {
+        when(agentSkillService.resolveInvocationSkill(1L, "get_investment_quant_strategy_status", null))
+                .thenReturn(builtInSkill("get_investment_quant_strategy_status", "投资分析", "BUILT_IN", "READ_ONLY", 1));
+        when(investmentAgentTools.quantStrategyStatus()).thenReturn("{\"status\":\"READY\"}");
+
+        ToolRegistry.ToolObservation observation = registry.execute(
+                "get_investment_quant_strategy_status", null, 1L, "trace-quant");
+
+        assertThat(observation.isSuccess()).isTrue();
+        assertThat(observation.getRawResult()).contains("READY");
+        verify(investmentAgentTools).quantStrategyStatus();
     }
 
     private AgentSkill builtInSkill(String key, String category, String sourceType, String riskLevel, int enabled) {

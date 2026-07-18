@@ -139,6 +139,7 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
             entity.setSortOrder(item.sortOrder());
             entity.setMinHoldingDays(item.minHoldingDays());
             entity.setMaxHoldingDays(item.maxHoldingDays());
+            entity.setTargetHoldingDays(item.targetHoldingDays());
             entity.setPrimary(item.primary());
             settingMapper.insert(entity);
         }
@@ -151,7 +152,8 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
         List<HorizonSetting> settings = request.settings().stream()
                 .map(item -> new HorizonSetting(
                         item.code(), item.displayName(), item.sortOrder(),
-                        item.minHoldingDays(), item.maxHoldingDays(), item.primary(), sourceScope))
+                        item.minHoldingDays(), item.maxHoldingDays(), item.resolvedTargetHoldingDays(),
+                        item.primary(), sourceScope))
                 .toList();
         return new ResolvedHorizonProfile(
                 "validation", "validation", settings, List.of()).settings();
@@ -183,15 +185,22 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
         if (source.stream().anyMatch(item -> Boolean.TRUE.equals(item.getPrimary()))) {
             target.replaceAll((code, item) -> new HorizonSetting(
                     item.code(), item.displayName(), item.sortOrder(),
-                    item.minHoldingDays(), item.maxHoldingDays(), false, item.sourceScope()));
+                    item.minHoldingDays(), item.maxHoldingDays(), item.targetHoldingDays(),
+                    false, item.sourceScope()));
         }
         for (InvestmentHorizonSetting item : source) {
             HorizonSetting value = new HorizonSetting(
                     item.getHorizonCode(), item.getDisplayName(), item.getSortOrder(),
-                    item.getMinHoldingDays(), item.getMaxHoldingDays(),
+                    item.getMinHoldingDays(), item.getMaxHoldingDays(), resolvedTargetHoldingDays(item),
                     Boolean.TRUE.equals(item.getPrimary()), sourceScope);
             target.put(value.code(), value);
         }
+    }
+
+    private static int resolvedTargetHoldingDays(InvestmentHorizonSetting item) {
+        if (item.getTargetHoldingDays() != null) return item.getTargetHoldingDays();
+        return item.getMinHoldingDays()
+                + (item.getMaxHoldingDays() - item.getMinHoldingDays()) / 2;
     }
 
     private HorizonProfileResponse response(ResolvedHorizonProfile profile) {
@@ -203,7 +212,7 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
         List<HorizonSettingResponse> settings = profile.settings().stream()
                 .map(item -> new HorizonSettingResponse(
                         item.code(), item.displayName(), item.sortOrder(),
-                        item.minHoldingDays(), item.maxHoldingDays(),
+                        item.minHoldingDays(), item.maxHoldingDays(), item.targetHoldingDays(),
                         item.primary(), item.sourceScope()))
                 .toList();
         return new HorizonProfileResponse(

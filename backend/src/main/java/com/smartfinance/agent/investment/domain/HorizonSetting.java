@@ -8,8 +8,17 @@ public record HorizonSetting(String code,
                              int sortOrder,
                              int minHoldingDays,
                              int maxHoldingDays,
+                             int targetHoldingDays,
                              boolean primary,
                              String sourceScope) {
+
+    public HorizonSetting(String code, String displayName, int sortOrder,
+                          int minHoldingDays, int maxHoldingDays,
+                          boolean primary, String sourceScope) {
+        this(code, displayName, sortOrder, minHoldingDays, maxHoldingDays,
+                minHoldingDays + (maxHoldingDays - minHoldingDays) / 2,
+                primary, sourceScope);
+    }
 
     public HorizonSetting {
         code = Objects.requireNonNull(code, "周期代码不能为空").trim().toUpperCase(Locale.ROOT);
@@ -20,6 +29,9 @@ public record HorizonSetting(String code,
         }
         if (minHoldingDays < 1 || maxHoldingDays < minHoldingDays) {
             throw new IllegalArgumentException("周期天数必须为正整数，且最小天数不能大于最大天数");
+        }
+        if (targetHoldingDays < minHoldingDays || targetHoldingDays > maxHoldingDays) {
+            throw new IllegalArgumentException("目标持有天数必须位于最小和最大天数之间");
         }
     }
 }

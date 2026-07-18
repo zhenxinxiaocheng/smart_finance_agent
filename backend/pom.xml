@@ -24,6 +24,8 @@
         <mybatis-plus.version>3.5.6</mybatis-plus.version>
         <langchain4j.version>0.35.0</langchain4j.version>
         <jjwt.version>0.12.5</jjwt.version>
+        <flyway.version>12.10.0</flyway.version>
+        <sqlite.version>3.53.1.0</sqlite.version>
     </properties>
 
     <dependencies>
@@ -54,6 +56,30 @@
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <!-- Versioned database migrations and local desktop storage -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+        <!-- Flyway 12 uses Jackson 3, whose compatibility annotations are newer than Boot 3.2's managed version. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.21</version>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>${sqlite.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- LangChain4j -->

@@ -278,9 +278,11 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { createAgentScheduleAPI, deleteAgentScheduleAPI, listAgentScheduleRunsAPI, listAgentSchedulesAPI, retryAgentScheduleAPI, setAgentScheduleEnabledAPI, updateAgentScheduleAPI } from '@/api/agentSchedules'
+import { useChatConversationsStore } from '@/stores/chatConversations'
 
 const route = useRoute()
 const router = useRouter()
+const conversationStore = useChatConversationsStore()
 const schedules = ref([])
 const selectedSchedule = ref(null)
 const scheduleRuns = ref([])
@@ -375,13 +377,7 @@ async function executeScheduleNow(schedule) {
     Object.assign(schedule, res.data || {}, { executingNow: false })
     feedback.success('已立即执行一次任务')
     await loadRuns(schedule)
-    router.push({
-      path: '/chat',
-      query: {
-        scheduleTraceId: schedule.traceId || res.data?.traceId || '',
-        refresh: Date.now()
-      }
-    })
+    await openScheduleConversation({ scheduleTraceId: schedule.traceId || res.data?.traceId || '' })
   } catch {
     schedule.executingNow = false
   }
@@ -566,8 +562,19 @@ function lastStatusLabel(schedule) {
   return isEnabled(schedule) ? '运行中' : '已停用'
 }
 
-function openTrace(traceId) {
-  router.push({ path: '/chat', query: { traceId } })
+async function openTrace(traceId) {
+  await openScheduleConversation({ traceId })
+}
+
+async function openScheduleConversation(extraQuery = {}) {
+  await conversationStore.loadConversations()
+  const historicalConversation = conversationStore.conversations.find(item => item.title === '历史对话')
+  const query = {
+    ...(historicalConversation?.id ? { conversationId: String(historicalConversation.id) } : {}),
+    ...extraQuery,
+    refresh: Date.now()
+  }
+  router.push({ name: 'Chat', query })
 }
 
 function formatTime(value) {

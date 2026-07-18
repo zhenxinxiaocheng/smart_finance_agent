@@ -20,16 +20,15 @@ export const useChatConversationsStore = defineStore('chatConversations', () => 
   const editingConversationTitle = ref('')
 
   async function syncConversationRoute(router, route, conversationId, replace = true) {
-    const query = { ...route.query }
+    const query = {}
     if (conversationId) {
       query.conversationId = String(conversationId)
-    } else {
-      delete query.conversationId
     }
+    const target = { name: 'Chat', query }
     if (replace) {
-      await router.replace({ path: route.path, query })
+      await router.replace(target)
     } else {
-      await router.push({ path: route.path, query })
+      await router.push(target)
     }
   }
 
@@ -68,7 +67,8 @@ export const useChatConversationsStore = defineStore('chatConversations', () => 
   }
 
   async function selectConversation(conversationId, route, router, replace = false) {
-    if (!conversationId || Number(conversationId) === Number(normalizeConversationId(route))) return
+    if (!conversationId) return
+    if (route?.name === 'Chat' && Number(conversationId) === Number(normalizeConversationId(route))) return
     await syncConversationRoute(router, route, conversationId, replace)
   }
 

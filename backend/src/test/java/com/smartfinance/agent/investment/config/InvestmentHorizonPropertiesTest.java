@@ -23,6 +23,8 @@ class InvestmentHorizonPropertiesTest {
             assertThat(properties.getTemplateVersion()).isEqualTo("horizon-template-v1");
             assertThat(properties.getDefaults()).extracting(InvestmentHorizonProperties.TemplateHorizon::getCode)
                     .containsExactly("SHORT", "MEDIUM", "LONG");
+            assertThat(properties.getHistoryMultiplier()).isEqualTo(3);
+            assertThat(properties.getMinimumHistoryTradingDays()).isEqualTo(20);
             assertThat(properties.toTemplateProfile().analysisRanges().get("SHORT"))
                     .containsExactly(5, 20);
         });
@@ -33,6 +35,14 @@ class InvestmentHorizonPropertiesTest {
         InvestmentHorizonProperties properties = new InvestmentHorizonProperties();
         properties.setTemplateVersion("custom-v9");
         properties.setMaxHistoryTradingDays(3000);
+        properties.setAnalysisRuleVersion("custom-rule-v9");
+        properties.setHistoryMultiplier(4);
+        properties.setInteractiveHistoryMultiplier(2);
+        properties.setIndicatorWarmupTradingDays(100);
+        properties.setMinimumHistoryTradingDays(11);
+        properties.setCalendarDaysPerYear(366);
+        properties.setTradingDaysPerYear(242);
+        properties.setCalendarBufferDays(17);
         properties.setDefaults(List.of(
                 configured("WAVE", "我的波段", 20, 9, 77, false),
                 configured("CORE", "核心配置", 10, 120, 880, true)

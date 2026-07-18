@@ -32,9 +32,9 @@ test('分析周期来自后端画像且单资产设置可恢复为全局配置',
 })
 
 test('数据不足的周期不展示伪造评分', () => {
-  assert.match(pageSource, /activeAnalysis\.status !== 'INSUFFICIENT'/)
   assert.match(pageSource, /item\.data\.status === 'INSUFFICIENT'/)
   assert.match(pageSource, /历史数据不足，暂不生成评分/)
+  assert.match(pageSource, /quant\.value\.status !== 'READY'/)
 })
 
 test('风险警告与技术结果在页面上分区呈现', () => {
@@ -63,7 +63,7 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', ()
 
 test('复杂模块提供可悬停和键盘访问的问号说明', () => {
   assert.match(pageSource, /InfoTooltip/)
-  assert.match(pageSource, /helpText\.technicalScore/)
+  assert.match(pageSource, /helpText\.quantProbability/)
   assert.match(pageSource, /helpText\.quantityReference/)
   assert.match(pageSource, /helpText\.backtest/)
   assert.match(tooltipSource, /TooltipTrigger/)
@@ -74,12 +74,25 @@ test('复杂模块提供可悬停和键盘访问的问号说明', () => {
 test('只解释专业指标且说明用户如何阅读结果', () => {
   assert.doesNotMatch(pageSource, /helpText\.aiExplanation/)
   assert.doesNotMatch(pageSource, /helpText\.financialWarnings/)
-  assert.match(investmentHelpText.technicalScore, /65–100/)
-  assert.match(investmentHelpText.technicalScore, /45–64/)
+  assert.match(investmentHelpText.technicalScore, /策略版本/)
+  assert.match(investmentHelpText.quantProbability, /扣除交易成本/)
   assert.match(investmentHelpText.priceZones, /买入\/加仓/)
-  assert.match(investmentHelpText.quantityReference, /100 股一手/)
+  assert.match(investmentHelpText.quantityReference, /当前整手配置/)
   assert.match(investmentHelpText.backtest, /样本次数/)
   assert.doesNotMatch(JSON.stringify(investmentHelpText), /方便理解|用通俗中文解释|不保证未来一定上涨/)
+})
+
+test('基金收益窗口由策略结果动态渲染', () => {
+  assert.match(pageSource, /technical\.value\.returnMetrics/)
+  assert.match(pageSource, /v-for="metric in fundReturnMetrics"/)
+  assert.doesNotMatch(pageSource, /oneMonthReturn|threeMonthReturn|oneYearReturn/)
+})
+
+test('基本面数据要求与 AI 冷却时间由后端结果动态展示', () => {
+  assert.match(pageSource, /fundamental\.reason/)
+  assert.doesNotMatch(pageSource, /至少需要三期数据和四个有效维度/)
+  assert.match(pageSource, /ai\.cooldownMinutes/)
+  assert.doesNotMatch(pageSource, /最短刷新间隔 30 分钟/)
 })
 
 test('页面和帮助文案不向用户展示分析过程', () => {
@@ -98,9 +111,21 @@ test('数量为零时显示原因且次要分析默认收起', () => {
   assert.match(pageSource, /查看详细分析/)
 })
 
-test('当前周期的评分结论和关键价位使用同一份周期分析', () => {
+test('当前周期的关键价位沿用兼容分析且主要结论来自量化模型', () => {
   assert.match(pageSource, /:levels="activeLevels"/)
   assert.match(pageSource, /activeAnalysis\.value\.levels/)
   assert.match(pageSource, /activeAnalysis\.value\.actionZones/)
-  assert.match(pageSource, /isFund\.value\s*\?\s*technical\.value\.score\s*:\s*activeAnalysis\.value\.score/)
+  assert.match(pageSource, /quantActionLabel\(quant\.action\)/)
+  assert.doesNotMatch(pageSource, /label:\s*'技术评分'.*topMetrics/)
+})
+
+test('量化模型结论替代技术评分成为主要交易判断', () => {
+  assert.match(investmentApiSource, /getInvestmentQuantAnalysisAPI/)
+  assert.match(investmentApiSource, /refreshInvestmentQuantAnalysisAPI/)
+  assert.match(investmentApiSource, /getInvestmentQuantJobAPI/)
+  assert.match(pageSource, /probabilityPositiveExcess/)
+  assert.match(pageSource, /expectedExcessReturn/)
+  assert.match(pageSource, /topFactors/)
+  assert.match(pageSource, /NO_TRADE/)
+  assert.match(horizonDialogSource, /targetHoldingDays/)
 })

@@ -1,0 +1,23 @@
+{
+  "version": "data-quality-v1",
+  "ruleSet": "data-quality-v1",
+  "schemaVersion": "market-data-schema-v1",
+  "enforcementMode": "OBSERVE",
+  "storageRootEnv": "ANALYSIS_DATA_ROOT",
+  "orphanRetentionHours": 24,
+  "warningFailuresToBlock": 3,
+  "stock": {
+    "maxStaleTradingDays": 1,
+    "maxMissingRatio": 0.02,
+    "crossSourceEnabled": true,
+    "minimumOverlapDays": 1,
+    "maxPriceDeviationRatio": 0.01,
+    "extremeReturnRatio": 0.20,
+    "corporateActionEvidenceReturnRatio": 0.30,
+    "extremeVolumeMultiplier": 20
+  },
+  "fund": {
+    "maxStaleCalendarDays": 3,
+    "maxMissingNavRatio": 0.05
+  }
+}

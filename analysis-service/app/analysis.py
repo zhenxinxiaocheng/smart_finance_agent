@@ -5,8 +5,11 @@ import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from .strategy_config import StrategyConfig, load_strategy_config
+
 
 NUMBER = int | float
+STRATEGY: StrategyConfig = load_strategy_config()
 
 
 def _number(value: Any, default: float | None = None) -> float | None:
@@ -23,8 +26,16 @@ def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None or not math.isfinite(value) else round(value, digits)
 
 
-def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _score_clamp(value: float) -> float:
+    return _clamp(
+        value,
+        STRATEGY.number("score.minimum"),
+        STRATEGY.number("score.maximum"),
+    )
 
 
 def _moving_average(values: Sequence[float], period: int) -> list[float | None]:
@@ -51,7 +62,7 @@ def _ema(values: Sequence[float], period: int) -> list[float]:
     return result
 
 
-def _rsi(values: Sequence[float], period: int = 14) -> list[float | None]:
+def _rsi(values: Sequence[float], period: int) -> list[float | None]:
     result: list[float | None] = [None] * len(values)
     if len(values) <= period:
         return result
@@ -75,7 +86,7 @@ def _rsi(values: Sequence[float], period: int = 14) -> list[float | None]:
     return result
 
 
-def _atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int = 14) -> list[float | None]:
+def _atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int) -> list[float | None]:
     if not closes:
         return []
     true_ranges = [highs[0] - lows[0]]
@@ -96,7 +107,7 @@ def _atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float],
     return result
 
 
-def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int = 9) -> tuple[list[float | None], list[float | None], list[float | None]]:
+def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int) -> tuple[list[float | None], list[float | None], list[float | None]]:
     k_values: list[float | None] = [None] * len(closes)
     d_values: list[float | None] = [None] * len(closes)
     j_values: list[float | None] = [None] * len(closes)
@@ -117,7 +128,12 @@ def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float],
 def _normalized_quotes(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for record in records:
-        close = _number(record.get("close") or record.get("unit_nav") or record.get("unitNav"))
+        close = _number(
+            record.get("close")
+            or record.get("nav")
+            or record.get("unit_nav")
+            or record.get("unitNav")
+        )
         if close is None or close <= 0:
             continue
         open_price = _number(record.get("open"), close) or close
@@ -135,23 +151,28 @@ def _normalized_quotes(records: Iterable[Mapping[str, Any]]) -> list[dict[str, A
     return normalized
 
 
-def _trend_score(closes: Sequence[float], ma20: Sequence[float | None], ma60: Sequence[float | None], lookback: int) -> float:
+def _trend_score(closes: Sequence[float], fast_average: Sequence[float | None],
+                 slow_average: Sequence[float | None], lookback: int) -> float:
     index = len(closes) - 1
     start = max(0, index - max(lookback, 2) + 1)
     first = closes[start]
     momentum = 0.0 if first == 0 else (closes[index] / first - 1) * 100
-    score = 50 + max(-20, min(20, momentum * 1.8))
-    if ma20[index] is not None:
-        score += 10 if closes[index] >= ma20[index] else -10
-    if ma20[index] is not None and ma60[index] is not None:
-        score += 10 if ma20[index] >= ma60[index] else -10
-    return _clamp(score)
+    clip = STRATEGY.number("technical.trend.momentum_clip")
+    score = STRATEGY.number("technical.trend.base_score") + max(
+        -clip, min(clip, momentum * STRATEGY.number("technical.trend.momentum_weight")))
+    price_adjustment = STRATEGY.number("technical.trend.price_vs_average_adjustment")
+    alignment_adjustment = STRATEGY.number("technical.trend.average_alignment_adjustment")
+    if fast_average[index] is not None:
+        score += price_adjustment if closes[index] >= fast_average[index] else -price_adjustment
+    if fast_average[index] is not None and slow_average[index] is not None:
+        score += alignment_adjustment if fast_average[index] >= slow_average[index] else -alignment_adjustment
+    return _score_clamp(score)
 
 
 def _verdict(score: float) -> str:
-    if score >= 65:
+    if score >= STRATEGY.number("score.favorable_minimum"):
         return "FAVORABLE"
-    if score >= 45:
+    if score >= STRATEGY.number("score.wait_minimum"):
         return "WAIT"
     return "WEAK"
 
@@ -169,7 +190,7 @@ def _cluster_levels(points: Sequence[float], tolerance: float) -> list[tuple[flo
 
 
 def _price_levels(highs: Sequence[float], lows: Sequence[float], close: float, atr: float) -> dict[str, Any]:
-    window = 3
+    window = STRATEGY.integer("technical.levels.swing_window")
     swing_highs: list[float] = []
     swing_lows: list[float] = []
     for index in range(window, len(highs) - window):
@@ -177,16 +198,20 @@ def _price_levels(highs: Sequence[float], lows: Sequence[float], close: float, a
             swing_highs.append(highs[index])
         if lows[index] <= min(lows[index - window:index + window + 1]):
             swing_lows.append(lows[index])
-    tolerance = max(atr, close * 0.005)
-    high_clusters = _cluster_levels(swing_highs[-60:], tolerance)
-    low_clusters = _cluster_levels(swing_lows[-60:], tolerance)
+    tolerance = max(atr, close * STRATEGY.number("technical.levels.close_tolerance_ratio"))
+    sample_size = STRATEGY.integer("technical.levels.cluster_sample_size")
+    high_clusters = _cluster_levels(swing_highs[-sample_size:], tolerance)
+    low_clusters = _cluster_levels(swing_lows[-sample_size:], tolerance)
     support_candidates = [(level, count) for level, count in low_clusters if level <= close]
     resistance_candidates = [(level, count) for level, count in high_clusters if level >= close]
     support_level, support_count = max(support_candidates, default=(close - atr, 1), key=lambda item: item[0])
     resistance_level, resistance_count = min(resistance_candidates, default=(close + atr, 1), key=lambda item: item[0])
     if resistance_level <= support_level:
         resistance_level = max(close + atr, support_level + atr)
-    half_width = max(atr * 0.5, close * 0.002)
+    half_width = max(
+        atr * STRATEGY.number("technical.levels.zone_atr_half_width"),
+        close * STRATEGY.number("technical.levels.zone_close_half_width_ratio"),
+    )
 
     def zone(level: float, touches: int) -> dict[str, Any]:
         return {
@@ -205,49 +230,74 @@ def analyze_technical(
     primary_horizon: str,
 ) -> dict[str, Any]:
     quotes = _normalized_quotes(records)
-    if len(quotes) < 20:
-        return {"status": "INSUFFICIENT", "series": [], "horizons": {}, "levels": {}}
+    minimum_history = STRATEGY.integer("technical.minimum_history_days")
+    if len(quotes) < minimum_history:
+        return {
+            "status": "INSUFFICIENT", "series": [], "horizons": {}, "levels": {},
+            "strategyVersion": STRATEGY.version,
+            "reason": "可用历史数据不足以启动当前策略",
+            "availableHistoryDays": len(quotes),
+            "requiredHistoryDays": minimum_history,
+        }
     closes = [item["close"] for item in quotes]
     highs = [item["high"] for item in quotes]
     lows = [item["low"] for item in quotes]
     volumes = [item["volume"] for item in quotes]
-    ma = {period: _moving_average(closes, period) for period in (5, 10, 20, 60, 120, 250)}
-    volume_ma = {period: _moving_average(volumes, period) for period in (5, 10)}
-    ema12 = _ema(closes, 12)
-    ema26 = _ema(closes, 26)
-    diff = [fast - slow for fast, slow in zip(ema12, ema26)]
-    dea = _ema(diff, 9)
-    histogram = [(value - signal) * 2 for value, signal in zip(diff, dea)]
-    rsi14 = _rsi(closes)
-    atr14 = _atr(highs, lows, closes)
-    k_values, d_values, j_values = _kdj(highs, lows, closes)
-    boll_mid = ma[20]
+    trend_fast = STRATEGY.integer("technical.trend.fast_moving_average")
+    trend_slow = STRATEGY.integer("technical.trend.slow_moving_average")
+    signal_fast = STRATEGY.integer("technical.signals.fast_moving_average")
+    signal_slow = STRATEGY.integer("technical.signals.slow_moving_average")
+    boll_period = STRATEGY.integer("technical.bollinger.period")
+    ma_periods = sorted(set(STRATEGY.integer_list("technical.moving_average_periods")
+                            + [trend_fast, trend_slow, signal_fast, signal_slow, boll_period]))
+    volume_signal_period = STRATEGY.integer("technical.signals.volume_moving_average")
+    volume_periods = sorted(set(STRATEGY.integer_list("technical.volume_moving_average_periods")
+                                + [volume_signal_period]))
+    ma = {period: _moving_average(closes, period) for period in ma_periods}
+    volume_ma = {period: _moving_average(volumes, period) for period in volume_periods}
+    macd_fast_period = STRATEGY.integer("technical.macd.fast_period")
+    macd_slow_period = STRATEGY.integer("technical.macd.slow_period")
+    macd_signal_period = STRATEGY.integer("technical.macd.signal_period")
+    ema_fast = _ema(closes, macd_fast_period)
+    ema_slow = _ema(closes, macd_slow_period)
+    diff = [fast - slow for fast, slow in zip(ema_fast, ema_slow)]
+    dea = _ema(diff, macd_signal_period)
+    histogram_multiplier = STRATEGY.number("technical.macd.histogram_multiplier")
+    histogram = [(value - signal) * histogram_multiplier for value, signal in zip(diff, dea)]
+    rsi_period = STRATEGY.integer("technical.rsi.period")
+    atr_period = STRATEGY.integer("technical.atr.period")
+    kdj_period = STRATEGY.integer("technical.kdj.period")
+    rsi_values = _rsi(closes, rsi_period)
+    atr_values = _atr(highs, lows, closes, atr_period)
+    k_values, d_values, j_values = _kdj(highs, lows, closes, kdj_period)
+    boll_mid = ma[boll_period]
     boll_upper: list[float | None] = [None] * len(closes)
     boll_lower: list[float | None] = [None] * len(closes)
-    for index in range(19, len(closes)):
-        deviation = statistics.pstdev(closes[index - 19:index + 1])
-        boll_upper[index] = (boll_mid[index] or closes[index]) + 2 * deviation
-        boll_lower[index] = (boll_mid[index] or closes[index]) - 2 * deviation
+    boll_deviations = STRATEGY.number("technical.bollinger.standard_deviations")
+    for index in range(boll_period - 1, len(closes)):
+        deviation = statistics.pstdev(closes[index - boll_period + 1:index + 1])
+        boll_upper[index] = (boll_mid[index] or closes[index]) + boll_deviations * deviation
+        boll_lower[index] = (boll_mid[index] or closes[index]) - boll_deviations * deviation
 
     series: list[dict[str, Any]] = []
     for index, quote in enumerate(quotes):
         item = dict(quote)
         for period in ma:
             item[f"ma{period}"] = _round(ma[period][index])
+        for period in volume_ma:
+            item[f"volumeMa{period}"] = _round(volume_ma[period][index])
         item.update({
-            "volumeMa5": _round(volume_ma[5][index]),
-            "volumeMa10": _round(volume_ma[10][index]),
             "macd": _round(histogram[index]),
             "macdDiff": _round(diff[index]),
             "macdSignal": _round(dea[index]),
-            "rsi14": _round(rsi14[index]),
+            "rsi": _round(rsi_values[index]),
             "kdjK": _round(k_values[index]),
             "kdjD": _round(d_values[index]),
             "kdjJ": _round(j_values[index]),
             "bollMid": _round(boll_mid[index]),
             "bollUpper": _round(boll_upper[index]),
             "bollLower": _round(boll_lower[index]),
-            "atr14": _round(atr14[index]),
+            "atr": _round(atr_values[index]),
         })
         series.append(item)
 
@@ -255,7 +305,10 @@ def analyze_technical(
         raise ValueError("at least one horizon is required")
     if primary_horizon not in horizons:
         raise ValueError("primary horizon must exist in horizons")
-    latest_atr = atr14[-1] or max(closes[-1] * 0.02, 0.01)
+    latest_atr = atr_values[-1] or max(
+        closes[-1] * STRATEGY.number("technical.levels.default_atr_close_ratio"),
+        STRATEGY.number("technical.levels.default_atr_floor"),
+    )
     horizon_results: dict[str, dict[str, Any]] = {}
     for name, configured_bounds in horizons.items():
         bounds = list(configured_bounds)
@@ -270,12 +323,15 @@ def analyze_technical(
                 "reason": "可用历史数据不足以覆盖用户配置周期",
             }
             continue
-        score = _trend_score(closes, ma[20], ma[60], maximum)
-        level_lookback = min(len(closes), max(20, maximum * 3))
+        score = _trend_score(closes, ma[trend_fast], ma[trend_slow], maximum)
+        level_lookback = min(len(closes), max(
+            STRATEGY.integer("technical.levels.minimum_lookback_days"),
+            maximum * STRATEGY.integer("technical.levels.horizon_multiplier"),
+        ))
         level_highs = highs[-level_lookback:]
         level_lows = lows[-level_lookback:]
         level_closes = closes[-level_lookback:]
-        horizon_atr_series = _atr(level_highs, level_lows, level_closes)
+        horizon_atr_series = _atr(level_highs, level_lows, level_closes, atr_period)
         horizon_atr = horizon_atr_series[-1] or latest_atr
         horizon_levels = _price_levels(level_highs, level_lows, closes[-1], horizon_atr)
         horizon_support = horizon_levels["support"]
@@ -285,7 +341,9 @@ def analyze_technical(
             "add": {"low": horizon_support["low"], "high": horizon_support["price"]},
             "hold": {"low": horizon_support["price"], "high": horizon_resistance["price"]},
             "reduce": horizon_resistance,
-            "risk": {"price": _round(horizon_support["low"] - horizon_atr * 0.5)},
+            "risk": {"price": _round(
+                horizon_support["low"]
+                - horizon_atr * STRATEGY.number("technical.levels.risk_atr_multiplier"))},
         }
         horizon_results[name] = {
             "status": "READY",
@@ -298,13 +356,26 @@ def analyze_technical(
             "actionZones": horizon_action_zones,
         }
     result = {
+        "strategyVersion": STRATEGY.version,
+        "indicatorPeriods": {
+            "movingAverages": ma_periods,
+            "volumeMovingAverages": volume_periods,
+            "rsi": rsi_period,
+            "rsiBounds": [STRATEGY.number("technical.rsi.lower_bound"),
+                          STRATEGY.number("technical.rsi.upper_bound")],
+            "atr": atr_period,
+            "kdj": kdj_period,
+            "bollinger": boll_period,
+            "macd": {"fast": macd_fast_period, "slow": macd_slow_period,
+                     "signal": macd_signal_period},
+        },
         "horizons": horizon_results,
         "primaryHorizon": primary_horizon,
         "series": series,
         "signals": {
-            "movingAverageAlignment": "BULLISH" if (ma[5][-1] or 0) >= (ma[20][-1] or math.inf) else "BEARISH",
+            "movingAverageAlignment": "BULLISH" if (ma[signal_fast][-1] or 0) >= (ma[signal_slow][-1] or math.inf) else "BEARISH",
             "momentum": "POSITIVE" if histogram[-1] >= 0 else "NEGATIVE",
-            "volume": "EXPANDING" if volumes[-1] >= (volume_ma[5][-1] or volumes[-1]) else "CONTRACTING",
+            "volume": "EXPANDING" if volumes[-1] >= (volume_ma[volume_signal_period][-1] or volumes[-1]) else "CONTRACTING",
         },
     }
     primary = horizon_results[primary_horizon]
@@ -354,50 +425,87 @@ def _maximum_drawdown(values: Sequence[float]) -> tuple[float, int, int]:
 
 def analyze_fund(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     quotes = _normalized_quotes(records)
-    if len(quotes) < 20:
-        return {"status": "INSUFFICIENT", "series": []}
+    minimum_history = STRATEGY.integer("fund.minimum_history_days")
+    if len(quotes) < minimum_history:
+        return {
+            "status": "INSUFFICIENT", "series": [],
+            "strategyVersion": STRATEGY.version,
+            "reason": "可用历史数据不足以启动当前基金策略",
+            "availableHistoryDays": len(quotes),
+            "requiredHistoryDays": minimum_history,
+        }
     values = [item["close"] for item in quotes]
-    ma = {period: _moving_average(values, period) for period in (5, 10, 20, 60)}
+    fast_average_period = STRATEGY.integer("fund.fast_moving_average")
+    slow_average_period = STRATEGY.integer("fund.slow_moving_average")
+    ma_periods = sorted(set(STRATEGY.integer_list("fund.moving_average_periods")
+                            + [fast_average_period, slow_average_period]))
+    ma = {period: _moving_average(values, period) for period in ma_periods}
     daily_returns = [values[index] / values[index - 1] - 1 for index in range(1, len(values)) if values[index - 1]]
-    annualized_volatility = statistics.stdev(daily_returns) * math.sqrt(252) * 100 if len(daily_returns) > 1 else 0.0
+    annualized_volatility = statistics.stdev(daily_returns) * math.sqrt(
+        STRATEGY.integer("fund.annualization_days")) * 100 if len(daily_returns) > 1 else 0.0
     max_drawdown, peak_index, trough_index = _maximum_drawdown(values)
     recovered = values[-1] >= values[peak_index] if peak_index < len(values) else False
-    latest_ma20 = ma[20][-1] or values[-1]
-    latest_ma60 = ma[60][-1]
-    one_year_return = _period_return(values, 252)
-    one_month_return = _period_return(values, 21)
-    three_month_return = _period_return(values, 63)
-    score = 50.0
-    score += max(-12, min(12, (one_month_return or 0) * 1.5))
-    score += max(-12, min(12, (three_month_return or 0) * 0.8))
-    score += 8 if values[-1] >= latest_ma20 else -8
-    score -= max(0, min(16, abs(max_drawdown) - 10))
-    score = _clamp(score)
-    if max_drawdown <= -20 and values[-1] < latest_ma20:
+    latest_fast_average = ma[fast_average_period][-1] or values[-1]
+    latest_slow_average = ma[slow_average_period][-1]
+    return_metrics = []
+    returns_by_code: dict[str, float | None] = {}
+    for configured_period in STRATEGY.object_list("fund.return_periods"):
+        code = str(configured_period["code"])
+        days = int(configured_period["days"])
+        value = _period_return(values, days)
+        returns_by_code[code] = value
+        return_metrics.append({
+            "code": code,
+            "displayName": str(configured_period["display_name"]),
+            "days": days,
+            "value": _round(value, 2),
+        })
+    short_return = returns_by_code.get(STRATEGY.text("fund.short_return_code"))
+    medium_return = returns_by_code.get(STRATEGY.text("fund.medium_return_code"))
+    long_return = returns_by_code.get(STRATEGY.text("fund.long_return_code"))
+    score = STRATEGY.number("fund.score.base")
+    short_clip = STRATEGY.number("fund.score.short_return_clip")
+    medium_clip = STRATEGY.number("fund.score.medium_return_clip")
+    score += max(-short_clip, min(short_clip, (short_return or 0)
+                                  * STRATEGY.number("fund.score.short_return_weight")))
+    score += max(-medium_clip, min(medium_clip, (medium_return or 0)
+                                   * STRATEGY.number("fund.score.medium_return_weight")))
+    average_adjustment = STRATEGY.number("fund.score.above_average_adjustment")
+    score += average_adjustment if values[-1] >= latest_fast_average else -average_adjustment
+    score -= max(0, min(
+        STRATEGY.number("fund.score.drawdown_penalty_cap"),
+        abs(max_drawdown) - STRATEGY.number("fund.score.drawdown_penalty_start"),
+    ))
+    score = _score_clamp(score)
+    if (max_drawdown <= STRATEGY.number("fund.actions.pause_drawdown_maximum")
+            and values[-1] < latest_fast_average):
         action = "PAUSE"
-    elif one_year_return is not None and one_year_return >= 30 and values[-1] > latest_ma20 * 1.08:
+    elif (long_return is not None
+          and long_return >= STRATEGY.number("fund.actions.take_profit_long_return_minimum")
+          and values[-1] > latest_fast_average
+          * STRATEGY.number("fund.actions.take_profit_price_to_average_ratio")):
         action = "TAKE_PROFIT"
-    elif values[-1] >= latest_ma20 and (latest_ma60 is None or latest_ma20 >= latest_ma60):
+    elif (values[-1] >= latest_fast_average
+          and (latest_slow_average is None or latest_fast_average >= latest_slow_average)):
         action = "ACCUMULATE"
     else:
         action = "HOLD"
     series: list[dict[str, Any]] = []
     for index, quote in enumerate(quotes):
-        series.append({
+        item = {
             "date": quote["date"],
             "nav": quote["close"],
-            "ma5": _round(ma[5][index]),
-            "ma10": _round(ma[10][index]),
-            "ma20": _round(ma[20][index]),
-            "ma60": _round(ma[60][index]),
-        })
+        }
+        for period in ma:
+            item[f"ma{period}"] = _round(ma[period][index])
+        series.append(item)
     return {
         "status": "READY",
+        "strategyVersion": STRATEGY.version,
+        "indicatorPeriods": {"movingAverages": ma_periods},
         "score": _round(score, 1),
         "verdict": _verdict(score),
-        "oneMonthReturn": _round(one_month_return, 2),
-        "threeMonthReturn": _round(three_month_return, 2),
-        "oneYearReturn": _round(one_year_return, 2),
+        "returnMetrics": return_metrics,
         "annualizedVolatility": _round(annualized_volatility, 2),
         "maxDrawdown": _round(max_drawdown, 2),
         "drawdownRecovered": recovered,
@@ -420,8 +528,17 @@ def _average_available(periods: Sequence[Mapping[str, Any]], field: str) -> floa
 
 def analyze_fundamentals(periods: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     rows = list(periods)
-    if len(rows) < 3:
-        return {"status": "INSUFFICIENT", "verdict": "INSUFFICIENT", "coverage": 0, "dimensions": {}}
+    minimum_periods = STRATEGY.integer("fundamental.minimum_periods")
+    minimum_dimensions = STRATEGY.integer("fundamental.minimum_dimensions")
+    requirements = {
+        "minimumPeriods": minimum_periods,
+        "minimumDimensions": minimum_dimensions,
+    }
+    if len(rows) < minimum_periods:
+        return {"status": "INSUFFICIENT", "verdict": "INSUFFICIENT", "coverage": 0,
+                "dimensions": {}, "requirements": requirements,
+                "reason": f"当前只有 {len(rows)} 期数据，当前策略至少需要 {minimum_periods} 期",
+                "strategyVersion": STRATEGY.version}
     dimensions: dict[str, dict[str, Any]] = {}
     newest = rows[0]
     oldest = rows[-1]
@@ -430,77 +547,123 @@ def analyze_fundamentals(periods: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     direct_revenue_growth = _average_available(rows, "revenueGrowth")
     direct_profit_growth = _average_available(rows, "netProfitGrowth")
     if direct_revenue_growth is not None and direct_profit_growth is not None:
-        score = _clamp(50 + (direct_revenue_growth + direct_profit_growth) * 1.6)
+        score = _score_clamp(
+            STRATEGY.number("fundamental.base_score")
+            + (direct_revenue_growth + direct_profit_growth)
+            * STRATEGY.number("fundamental.direct_growth_weight"))
         dimensions["growth"] = {"score": _round(score, 1), "revenueGrowth": _round(direct_revenue_growth, 2), "profitGrowth": _round(direct_profit_growth, 2)}
     elif revenue_new is not None and revenue_old not in (None, 0) and profit_new is not None and profit_old not in (None, 0):
         years = max(1, len(rows) - 1)
         revenue_growth = (revenue_new / revenue_old) ** (1 / years) - 1 if revenue_new > 0 and revenue_old > 0 else -1
         profit_growth = (profit_new / profit_old) ** (1 / years) - 1 if profit_new > 0 and profit_old > 0 else -1
-        score = _clamp(50 + (revenue_growth + profit_growth) * 160)
+        score = _score_clamp(
+            STRATEGY.number("fundamental.base_score")
+            + (revenue_growth + profit_growth)
+            * STRATEGY.number("fundamental.cagr_growth_weight"))
         dimensions["growth"] = {"score": _round(score, 1), "revenueCagr": _round(revenue_growth * 100, 2), "profitCagr": _round(profit_growth * 100, 2)}
     roe = _average_available(rows, "roe")
     gross_margin = _average_available(rows, "grossMargin")
     net_margin = _average_available(rows, "netMargin")
-    if sum(value is not None for value in (roe, gross_margin, net_margin)) >= 2:
+    if sum(value is not None for value in (roe, gross_margin, net_margin)) >= STRATEGY.integer(
+            "fundamental.minimum_profitability_metrics"):
         score = 0.0
         weight = 0
-        for value, scale in ((roe, 3.5), (gross_margin, 1.7), (net_margin, 4.0)):
+        profitability_scales = STRATEGY.value("fundamental.profitability_scales")
+        for value, scale in (
+                (roe, float(profitability_scales["roe"])),
+                (gross_margin, float(profitability_scales["grossMargin"])),
+                (net_margin, float(profitability_scales["netMargin"]))):
             if value is not None:
-                score += _clamp(value * scale)
+                score += _score_clamp(value * scale)
                 weight += 1
         dimensions["profitability"] = {"score": _round(score / weight, 1), "roe": _round(roe, 2), "grossMargin": _round(gross_margin, 2), "netMargin": _round(net_margin, 2)}
     direct_cash_ratio = _average_available(rows, "cashToProfit")
     cash_flow = _average_available(rows, "operatingCashFlow")
     net_profit = _average_available(rows, "netProfit")
     if direct_cash_ratio is not None:
-        cash_ratio = direct_cash_ratio / 100 if direct_cash_ratio > 10 else direct_cash_ratio
-        dimensions["cashQuality"] = {"score": _round(_clamp(cash_ratio * 70), 1), "cashToProfit": _round(cash_ratio, 2)}
+        cash_ratio = (direct_cash_ratio / 100
+                      if direct_cash_ratio > STRATEGY.number("fundamental.cash_ratio_percent_boundary")
+                      else direct_cash_ratio)
+        dimensions["cashQuality"] = {"score": _round(_score_clamp(
+            cash_ratio * STRATEGY.number("fundamental.cash_quality_weight")), 1),
+            "cashToProfit": _round(cash_ratio, 2)}
     elif cash_flow is not None and net_profit not in (None, 0):
         cash_ratio = cash_flow / net_profit
-        dimensions["cashQuality"] = {"score": _round(_clamp(cash_ratio * 70), 1), "cashToProfit": _round(cash_ratio, 2)}
+        dimensions["cashQuality"] = {"score": _round(_score_clamp(
+            cash_ratio * STRATEGY.number("fundamental.cash_quality_weight")), 1),
+            "cashToProfit": _round(cash_ratio, 2)}
     debt_ratio = _average_available(rows, "debtRatio")
     current_ratio = _average_available(rows, "currentRatio")
     if debt_ratio is not None and current_ratio is not None:
-        resilience = _clamp(100 - debt_ratio + min(current_ratio, 3) * 15)
+        resilience = _score_clamp(
+            STRATEGY.number("score.maximum") - debt_ratio
+            + min(current_ratio, STRATEGY.number("fundamental.current_ratio_cap"))
+            * STRATEGY.number("fundamental.current_ratio_weight"))
         dimensions["resilience"] = {"score": _round(resilience, 1), "debtRatio": _round(debt_ratio, 2), "currentRatio": _round(current_ratio, 2)}
     pe = _average_available(rows, "pe")
     pb = _average_available(rows, "pb")
     dividend_yield = _average_available(rows, "dividendYield")
-    if sum(value is not None for value in (pe, pb, dividend_yield)) >= 2:
-        pe_score = 50.0 if pe is None else _clamp(100 - max(0, pe - 8) * 3)
-        pb_score = 50.0 if pb is None else _clamp(100 - max(0, pb - 1) * 15)
-        dividend_score = 50.0 if dividend_yield is None else _clamp(dividend_yield * 20)
+    if sum(value is not None for value in (pe, pb, dividend_yield)) >= STRATEGY.integer(
+            "fundamental.minimum_valuation_metrics"):
+        neutral = STRATEGY.number("fundamental.valuation_neutral_score")
+        pe_score = neutral if pe is None else _score_clamp(
+            STRATEGY.number("score.maximum")
+            - max(0, pe - STRATEGY.number("fundamental.pe_baseline"))
+            * STRATEGY.number("fundamental.pe_penalty_weight"))
+        pb_score = neutral if pb is None else _score_clamp(
+            STRATEGY.number("score.maximum")
+            - max(0, pb - STRATEGY.number("fundamental.pb_baseline"))
+            * STRATEGY.number("fundamental.pb_penalty_weight"))
+        dividend_score = neutral if dividend_yield is None else _score_clamp(
+            dividend_yield * STRATEGY.number("fundamental.dividend_weight"))
         dimensions["valuation"] = {"score": _round((pe_score + pb_score + dividend_score) / 3, 1), "pe": _round(pe, 2), "pb": _round(pb, 2), "dividendYield": _round(dividend_yield, 2)}
     coverage = len(dimensions)
-    if coverage < 4:
-        return {"status": "INSUFFICIENT", "verdict": "INSUFFICIENT", "coverage": coverage, "dimensions": dimensions}
+    if coverage < minimum_dimensions:
+        return {"status": "INSUFFICIENT", "verdict": "INSUFFICIENT", "coverage": coverage,
+                "dimensions": dimensions, "requirements": requirements,
+                "reason": f"当前只有 {coverage} 个有效维度，当前策略至少需要 {minimum_dimensions} 个",
+                "strategyVersion": STRATEGY.version}
     overall = statistics.mean(float(item["score"]) for item in dimensions.values())
-    verdict = "ATTRACTIVE" if overall >= 70 else "FAIR" if overall >= 50 else "CAUTIOUS"
-    return {"status": "READY", "verdict": verdict, "score": _round(overall, 1), "coverage": coverage, "dimensions": dimensions, "periods": len(rows)}
+    verdict = ("ATTRACTIVE" if overall >= STRATEGY.number("fundamental.attractive_minimum")
+               else "FAIR" if overall >= STRATEGY.number("fundamental.fair_minimum")
+               else "CAUTIOUS")
+    return {"status": "READY", "verdict": verdict, "score": _round(overall, 1),
+            "coverage": coverage, "dimensions": dimensions, "periods": len(rows),
+            "requirements": requirements,
+            "strategyVersion": STRATEGY.version}
 
 
 def backtest_signals(records: Iterable[Mapping[str, Any]], horizon_days: int) -> dict[str, Any]:
     quotes = _normalized_quotes(records)
     closes = [item["close"] for item in quotes]
-    if len(closes) < max(40, horizon_days + 20):
+    minimum_history = STRATEGY.integer("backtest.minimum_history_days")
+    warmup_days = STRATEGY.integer("backtest.warmup_days")
+    if len(closes) < max(minimum_history, horizon_days + warmup_days):
         return {"status": "INSUFFICIENT", "horizonDays": horizon_days, "occurrences": 0,
                 "winRate": None, "medianForwardReturn": None,
-                "maxDrawdown": _round(_maximum_drawdown(closes)[0], 2)}
-    ma5 = _moving_average(closes, 5)
-    ma20 = _moving_average(closes, 20)
+                "maxDrawdown": _round(_maximum_drawdown(closes)[0], 2),
+                "strategyVersion": STRATEGY.version}
+    fast_period = STRATEGY.integer("backtest.fast_moving_average")
+    slow_period = STRATEGY.integer("backtest.slow_moving_average")
+    fast_average = _moving_average(closes, fast_period)
+    slow_average = _moving_average(closes, slow_period)
     forward_returns: list[float] = []
     last_signal = -horizon_days
     # A signal is evaluated only with data available on that day. Forward prices
     # are used solely to score the historical outcome, never to create a signal.
-    for index in range(20, len(closes) - horizon_days):
-        bullish = ma5[index] is not None and ma20[index] is not None and ma5[index] >= ma20[index] and closes[index] >= ma20[index]
-        if bullish and index - last_signal >= max(5, horizon_days // 2):
+    for index in range(warmup_days, len(closes) - horizon_days):
+        bullish = (fast_average[index] is not None and slow_average[index] is not None
+                   and fast_average[index] >= slow_average[index]
+                   and closes[index] >= slow_average[index])
+        if bullish and index - last_signal >= max(
+                STRATEGY.integer("backtest.minimum_signal_spacing_days"), horizon_days // 2):
             forward_returns.append((closes[index + horizon_days] / closes[index] - 1) * 100)
             last_signal = index
     occurrences = len(forward_returns)
     win_rate = sum(value > 0 for value in forward_returns) / occurrences * 100 if occurrences else 0.0
     return {
         "status": "READY" if occurrences else "NO_SIGNALS",
+        "strategyVersion": STRATEGY.version,
         "horizonDays": horizon_days,
         "occurrences": occurrences,
         "winRate": _round(win_rate, 1),
@@ -528,4 +691,5 @@ def backtest_horizons(
         })
         results[code] = result
     has_usable_result = any(item["status"] != "INSUFFICIENT" for item in results.values())
-    return {"status": "READY" if has_usable_result else "INSUFFICIENT", "horizons": results}
+    return {"status": "READY" if has_usable_result else "INSUFFICIENT",
+            "strategyVersion": STRATEGY.version, "horizons": results}
