@@ -1,0 +1,109 @@
+{
+  "version": "quant-research-v1",
+  "randomSeed": 20260718,
+  "annualizationDays": 252,
+  "jobs": {
+    "storageRootEnv": "ANALYSIS_DATA_ROOT",
+    "maximumWorkers": 2
+  },
+  "factors": {
+    "minimumHistoryDays": 60,
+    "horizonWindowRatios": {
+      "short": 0.25,
+      "primary": 1.0,
+      "long": 2.0
+    },
+    "riskWindowRatio": 1.0,
+    "minimumRiskWindowDays": 20,
+    "rsiPeriodRatio": 0.5,
+    "minimumRsiPeriodDays": 7,
+    "atrPeriodRatio": 0.5,
+    "minimumAtrPeriodDays": 7,
+    "consistencyPositiveThreshold": 0.0
+  },
+  "labels": {
+    "roundTripCostBps": {
+      "STOCK": 18.0,
+      "MUTUAL_FUND": 45.0
+    }
+  },
+  "training": {
+    "minimumSamples": 120,
+    "walkForwardFolds": 5,
+    "embargoHorizonMultiplier": 1.0,
+    "calibrationFraction": 0.2,
+    "elasticNet": {
+      "classificationC": 0.5,
+      "l1Ratio": 0.35,
+      "regressionAlpha": 0.001,
+      "maximumIterations": 2000
+    },
+    "xgboost": {
+      "estimators": 48,
+      "maximumDepth": 3,
+      "learningRate": 0.05,
+      "subsample": 0.8,
+      "columnSample": 0.8,
+      "l1Regularization": 0.1,
+      "l2Regularization": 2.0
+    }
+  },
+  "promotion": {
+    "minimumAnnualizedExcessReturn": 0.0,
+    "minimumSharpe": 0.5,
+    "maximumDrawdown": 0.2,
+    "minimumBrierSkill": 0.0,
+    "minimumFoldPassRatio": 0.6,
+    "minimumPaperTradingDays": 60
+  },
+  "monitoring": {
+    "maximumBrierScore": 0.25,
+    "minimumRealizedExcessReturn": 0.0,
+    "consecutiveFailuresBeforeRetirement": 3
+  },
+  "prediction": {
+    "buyWatchProbability": 0.58,
+    "addProbability": 0.66,
+    "reduceProbability": 0.44,
+    "exitProbability": 0.34,
+    "minimumExpectedExcessReturn": 0.0,
+    "residualLowerQuantile": 0.1,
+    "residualUpperQuantile": 0.9,
+    "topFactorCount": 6
+  },
+  "risk": {
+    "targetAnnualizedVolatility": 0.12,
+    "minimumAnnualizedVolatility": 0.04,
+    "minimumTradeWeight": 0.01,
+    "maximumAssetWeight": {
+      "STOCK": 0.1,
+      "MUTUAL_FUND": 0.2
+    },
+    "confidenceMultiplier": {
+      "HIGH": 1.0,
+      "MEDIUM": 0.75,
+      "LOW": 0.4
+    },
+    "regimeMultiplier": {
+      "UPTREND": 1.0,
+      "RANGE": 0.75,
+      "DOWNTREND": 0.4,
+      "HIGH_VOLATILITY": 0.35
+    },
+    "actionMultiplier": {
+      "BUY_WATCH": 0.5,
+      "ADD": 1.0,
+      "REDUCE": 0.5
+    }
+  },
+  "regime": {
+    "highVolatility": 0.35,
+    "positiveTrend": 0.001,
+    "negativeTrend": -0.001
+  },
+  "backtest": {
+    "oneWayCostBps": 9.0,
+    "slippageBps": 5.0,
+    "minimumPrice": 0.000001
+  }
+}

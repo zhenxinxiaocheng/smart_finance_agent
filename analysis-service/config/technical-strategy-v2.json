@@ -1,0 +1,124 @@
+{
+  "version": "technical-strategy-v2",
+  "providers": {
+    "realtime_http_timeout_seconds": 5,
+    "history_http_timeout_seconds": 8,
+    "market_timezone": "Asia/Shanghai",
+    "tencent_history_max_records": 1000,
+    "tencent_history_chunk_calendar_days": 720,
+    "tencent_volume_lot_size": 100,
+    "tencent_amount_unit": 10000
+  },
+  "score": {
+    "minimum": 0,
+    "maximum": 100,
+    "favorable_minimum": 65,
+    "wait_minimum": 45
+  },
+  "technical": {
+    "minimum_history_days": 20,
+    "moving_average_periods": [5, 10, 20, 60, 120, 250],
+    "volume_moving_average_periods": [5, 10],
+    "trend": {
+      "fast_moving_average": 20,
+      "slow_moving_average": 60,
+      "base_score": 50,
+      "momentum_clip": 20,
+      "momentum_weight": 1.8,
+      "price_vs_average_adjustment": 10,
+      "average_alignment_adjustment": 10
+    },
+    "macd": {
+      "fast_period": 12,
+      "slow_period": 26,
+      "signal_period": 9,
+      "histogram_multiplier": 2
+    },
+    "rsi": { "period": 14, "lower_bound": 30, "upper_bound": 70 },
+    "atr": { "period": 14 },
+    "kdj": { "period": 9 },
+    "bollinger": {
+      "period": 20,
+      "standard_deviations": 2
+    },
+    "levels": {
+      "minimum_lookback_days": 20,
+      "horizon_multiplier": 3,
+      "swing_window": 3,
+      "cluster_sample_size": 60,
+      "close_tolerance_ratio": 0.005,
+      "zone_atr_half_width": 0.5,
+      "zone_close_half_width_ratio": 0.002,
+      "default_atr_close_ratio": 0.02,
+      "default_atr_floor": 0.01,
+      "risk_atr_multiplier": 0.5
+    },
+    "signals": {
+      "fast_moving_average": 5,
+      "slow_moving_average": 20,
+      "volume_moving_average": 5
+    }
+  },
+  "fund": {
+    "minimum_history_days": 20,
+    "moving_average_periods": [5, 10, 20, 60],
+    "fast_moving_average": 20,
+    "slow_moving_average": 60,
+    "annualization_days": 252,
+    "return_periods": [
+      { "code": "ONE_MONTH", "display_name": "近一月", "days": 21 },
+      { "code": "THREE_MONTHS", "display_name": "近三月", "days": 63 },
+      { "code": "ONE_YEAR", "display_name": "近一年", "days": 252 }
+    ],
+    "short_return_code": "ONE_MONTH",
+    "medium_return_code": "THREE_MONTHS",
+    "long_return_code": "ONE_YEAR",
+    "score": {
+      "base": 50,
+      "short_return_clip": 12,
+      "short_return_weight": 1.5,
+      "medium_return_clip": 12,
+      "medium_return_weight": 0.8,
+      "above_average_adjustment": 8,
+      "drawdown_penalty_cap": 16,
+      "drawdown_penalty_start": 10
+    },
+    "actions": {
+      "pause_drawdown_maximum": -20,
+      "take_profit_long_return_minimum": 30,
+      "take_profit_price_to_average_ratio": 1.08
+    }
+  },
+  "fundamental": {
+    "minimum_periods": 3,
+    "provider_lookback_years": 5,
+    "provider_minimum_start_year": 2000,
+    "provider_max_periods": 5,
+    "minimum_dimensions": 4,
+    "minimum_profitability_metrics": 2,
+    "minimum_valuation_metrics": 2,
+    "base_score": 50,
+    "direct_growth_weight": 1.6,
+    "cagr_growth_weight": 160,
+    "profitability_scales": { "roe": 3.5, "grossMargin": 1.7, "netMargin": 4.0 },
+    "cash_ratio_percent_boundary": 10,
+    "cash_quality_weight": 70,
+    "current_ratio_cap": 3,
+    "current_ratio_weight": 15,
+    "valuation_neutral_score": 50,
+    "pe_baseline": 8,
+    "pe_penalty_weight": 3,
+    "pb_baseline": 1,
+    "pb_penalty_weight": 15,
+    "dividend_weight": 20,
+    "attractive_minimum": 70,
+    "fair_minimum": 50
+  },
+  "backtest": {
+    "minimum_history_days": 40,
+    "warmup_days": 20,
+    "fast_moving_average": 5,
+    "slow_moving_average": 20,
+    "minimum_signal_spacing_days": 5
+  }
+}

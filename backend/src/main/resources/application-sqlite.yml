@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: ${SQLITE_URL:jdbc:sqlite:./data/smart-finance.db}
+    driver-class-name: org.sqlite.JDBC
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/migration/sqlite
+  sql:
+    init:
+      mode: never
+
+mybatis-plus:
+  configuration:
+    database-id: sqlite

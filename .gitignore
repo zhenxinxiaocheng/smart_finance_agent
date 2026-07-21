@@ -38,8 +38,34 @@ frontend/node_modules/
 frontend/dist/
 frontend/.local
 analysis-service/.venv/
-analysis-service/__pycache__/
-analysis-service/.pytest_cache/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === 本地环境与敏感配置 ===
+.env
+.env.*
+!.env.example
+
+# === 运行数据与测试临时文件 ===
+/.data/
+/analysis-service/.data/
+/analysis-service/.test-tmp/*
+!/analysis-service/.test-tmp/.gitkeep
+/backend/uploads/
+
+# === 本地 Agent / 调试状态 ===
+/.superpowers/
+/.codex-logs/
+
+# === 生成的交付物与部署包 ===
+/output/
+/outputs/
+/product-site-deploy.tar.gz
 
 # === 其他 ===
 .frontend/
