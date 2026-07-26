@@ -140,6 +140,9 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         experiment.setHorizonCode(horizon);
         experiment.setHorizonDays(horizonDays(horizon));
         experiment.setStatus("QUEUED");
+        experiment.setTrainingMode("TUNE");
+        experiment.setTriggerReason("USER_TUNING");
+        experiment.setSearchSummaryJson(writeJson(Map.of()));
         experiment.setExperimentFingerprint(fingerprint);
         experiment.setConfigJson(writeJson(Map.of(
                 "algorithm", algorithm,
@@ -335,6 +338,11 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         result.put("horizonCode", experiment.getHorizonCode());
         result.put("horizonDays", experiment.getHorizonDays());
         result.put("status", experiment.getStatus());
+        result.put("trainingMode", experiment.getTrainingMode());
+        result.put("triggerReason", experiment.getTriggerReason());
+        result.put("parentModelVersion", experiment.getParentModelVersion());
+        result.put("bestModelVersion", experiment.getBestModelVersion());
+        result.put("searchSummary", readJson(experiment.getSearchSummaryJson()));
         result.put("experimentFingerprint", experiment.getExperimentFingerprint());
         Map<String, Object> config = readJson(experiment.getConfigJson());
         result.put("algorithm", config.getOrDefault("algorithm", "VALIDATED_ENSEMBLE"));

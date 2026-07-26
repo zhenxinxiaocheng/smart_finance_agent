@@ -4,6 +4,8 @@ import com.smartfinance.agent.investment.quant.PaperTradingService;
 import com.smartfinance.agent.investment.quant.QuantPaperProperties;
 import com.smartfinance.agent.investment.quant.QuantPrediction;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
+import com.smartfinance.agent.investment.quant.QuantModelRegistryService;
+import com.smartfinance.agent.investment.quant.QuantPredictionQueryService;
 import com.smartfinance.agent.investment.quant.QuantService;
 import com.smartfinance.agent.investment.quant.QuantServiceImpl;
 import com.smartfinance.agent.investment.domain.HorizonSetting;
@@ -40,7 +42,11 @@ import static org.mockito.Mockito.when;
         "spring.datasource.password=",
         "spring.sql.init.mode=never"
 })
-@Import(QuantServiceImpl.class)
+@Import({
+        QuantServiceImpl.class,
+        QuantPredictionQueryService.class,
+        QuantModelRegistryService.class
+})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class QuantServiceImplIntegrationTest {
     private static final String JOB_ID = "a".repeat(32);
@@ -51,6 +57,10 @@ class QuantServiceImplIntegrationTest {
 
     @Autowired
     private QuantService quantService;
+    @Autowired
+    private QuantPredictionQueryService predictionQueryService;
+    @Autowired
+    private QuantModelRegistryService modelRegistryService;
     @Autowired
     private JdbcTemplate jdbc;
     @MockBean
@@ -87,14 +97,11 @@ class QuantServiceImplIntegrationTest {
         jdbc.update("""
                 INSERT INTO quant_job
                     (user_id, asset_id, external_job_id, job_type, status, dataset_version,
+                     quant_config_version, product_type, metrics_json,
                      horizon_profile_version, horizon_code, horizon_days, started_at)
-                VALUES (7, 12, ?, 'TRAIN_PREDICT', 'RUNNING', ?, 'profile-v1', 'WAVE', 20, CURRENT_TIMESTAMP)
-                """, JOB_ID, DATASET_VERSION);
-        jdbc.update("""
-                INSERT INTO quant_training_run
-                    (external_job_id, dataset_version, quant_config_version, product_type,
-                     horizon_days, status, metrics_json, started_at)
-                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'RUNNING', '{}', CURRENT_TIMESTAMP)
+                VALUES (7, 12, ?, 'TRAIN_PREDICT', 'RUNNING', ?,
+                        'quant-research-v2', 'STOCK', '{}',
+                        'profile-v1', 'WAVE', 20, CURRENT_TIMESTAMP)
                 """, JOB_ID, DATASET_VERSION);
     }
 
@@ -121,10 +128,10 @@ class QuantServiceImplIntegrationTest {
                 STRATEGY_VERSION
         )).isEqualTo("PAPER");
         assertThat(jdbc.queryForObject(
-                "SELECT status FROM quant_training_run WHERE external_job_id = ?",
+                "SELECT metrics_json FROM quant_job WHERE external_job_id = ?",
                 String.class,
                 JOB_ID
-        )).isEqualTo("SUCCEEDED");
+        )).contains("\"sharpe\":0.82");
         verify(paperTradingService).queueValidatedPrediction(
                 eq(7L),
                 any(),
@@ -144,11 +151,7 @@ class QuantServiceImplIntegrationTest {
                 String.class,
                 MODEL_VERSION
         )).isEqualTo("DRAFT");
-        assertThat(jdbc.queryForObject(
-                "SELECT target_weight FROM quant_prediction WHERE model_version = ?",
-                java.math.BigDecimal.class,
-                MODEL_VERSION
-        )).isEqualByComparingTo("0");
+        assertThat(count("quant_prediction")).isZero();
         verify(paperTradingService, never()).queueValidatedPrediction(any(), any(), any(), any());
     }
 
@@ -191,7 +194,7 @@ class QuantServiceImplIntegrationTest {
                         1.0, 0.20, -0.05, 0.35, 'HIGH', 'BUY', 0.75, '[]', '[]', '{}')
                 """, DATASET_VERSION, FEATURE_VERSION, MODEL_VERSION);
 
-        Map<String, Object> result = quantService.latestAnalysis(7L, 12L, "WAVE");
+        Map<String, Object> result = predictionQueryService.latestAnalysis(7L, 12L, "WAVE");
 
         assertThat(result)
                 .containsEntry("status", "UNAVAILABLE")
@@ -365,6 +368,38 @@ class QuantServiceImplIntegrationTest {
                 STRATEGY_VERSION
         )).isEqualTo("DRAFT");
         verify(paperTradingService, never()).queueValidatedPrediction(any(), any(), any(), any());
+    }
+
+    @Test
+    void validatedResearchModelCanBePromotedThroughModelRegistry() {
+        jdbc.update(
+                "UPDATE quant_job SET experiment_fingerprint = ? WHERE external_job_id = ?",
+                "f".repeat(64),
+                JOB_ID
+        );
+        when(analysisServiceClient.quantJob(JOB_ID)).thenReturn(completedRemoteJob());
+        quantService.job(7L, JOB_ID);
+
+        modelRegistryService.activatePaperModel(7L, MODEL_VERSION);
+
+        assertThat(jdbc.queryForMap(
+                """
+                SELECT status, deployment_role, user_id, asset_id, horizon_code
+                FROM quant_strategy_version
+                WHERE strategy_version = ?
+                """,
+                STRATEGY_VERSION
+        )).containsEntry("STATUS", "PAPER")
+                .containsEntry("DEPLOYMENT_ROLE", "CHALLENGER")
+                .containsEntry("USER_ID", 7L)
+                .containsEntry("ASSET_ID", 12L)
+                .containsEntry("HORIZON_CODE", "WAVE");
+        verify(paperTradingService).queueValidatedPrediction(
+                eq(7L),
+                any(),
+                any(QuantPrediction.class),
+                eq("VALIDATED")
+        );
     }
 
     @Test

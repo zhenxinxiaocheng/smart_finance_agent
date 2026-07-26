@@ -19,6 +19,11 @@ public class QuantExperiment {
     private String horizonCode;
     private Integer horizonDays;
     private String status;
+    private String trainingMode;
+    private String triggerReason;
+    private String parentModelVersion;
+    private String bestModelVersion;
+    private String searchSummaryJson;
     private String experimentFingerprint;
     private String configJson;
     private String datasetVersion;

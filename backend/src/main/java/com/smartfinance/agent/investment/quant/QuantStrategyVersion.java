@@ -14,7 +14,12 @@ public class QuantStrategyVersion {
     private Long id;
     private String strategyVersion;
     private String modelVersion;
+    private Long userId;
+    private Long assetId;
     private String productType;
+    private String modelFamily;
+    private String horizonCode;
+    private String deploymentRole;
     private String status;
     private String validationMetricsJson;
     private LocalDateTime activatedAt;

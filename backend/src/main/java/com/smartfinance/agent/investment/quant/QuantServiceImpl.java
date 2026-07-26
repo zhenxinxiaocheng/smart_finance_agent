@@ -51,24 +51,18 @@ public class QuantServiceImpl implements QuantService {
     private final AnalysisServiceClient analysisClient;
     private final QuantBenchmarkProfileService benchmarkProfileService;
     private final QuantJobMapper jobMapper;
-    private final QuantFeatureSetMapper featureSetMapper;
-    private final QuantTrainingRunMapper trainingRunMapper;
-    private final QuantBacktestRunMapper backtestRunMapper;
-    private final QuantPredictionMapper predictionMapper;
     private final QuantExperimentMapper experimentMapper;
     private final QuantResearchUniverseMapper universeMapper;
     private final QuantUniverseMembershipMapper membershipMapper;
-    private final QuantValidationReportMapper validationReportMapper;
-    private final QuantModelVersionMapper modelMapper;
-    private final QuantStrategyVersionMapper strategyMapper;
     private final InvestmentAccountMapper accountMapper;
     private final InvestmentCashBalanceMapper cashBalanceMapper;
     private final InvestmentPositionMapper positionMapper;
     private final WealthService wealthService;
-    private final PaperTradingService paperTradingService;
     private final QuantPaperOrderMapper paperOrderMapper;
     private final QuantPaperFillMapper paperFillMapper;
     private final QuantPaperProperties paperProperties;
+    private final QuantPredictionQueryService predictionQueryService;
+    private final QuantModelRegistryService modelRegistryService;
     private final ObjectMapper objectMapper;
 
     public QuantServiceImpl(InvestmentAssetMapper assetMapper,
@@ -79,24 +73,18 @@ public class QuantServiceImpl implements QuantService {
                             AnalysisServiceClient analysisClient,
                             QuantBenchmarkProfileService benchmarkProfileService,
                             QuantJobMapper jobMapper,
-                            QuantFeatureSetMapper featureSetMapper,
-                            QuantTrainingRunMapper trainingRunMapper,
-                            QuantBacktestRunMapper backtestRunMapper,
-                            QuantPredictionMapper predictionMapper,
                             QuantExperimentMapper experimentMapper,
                             QuantResearchUniverseMapper universeMapper,
                             QuantUniverseMembershipMapper membershipMapper,
-                            QuantValidationReportMapper validationReportMapper,
-                            QuantModelVersionMapper modelMapper,
-                            QuantStrategyVersionMapper strategyMapper,
                             InvestmentAccountMapper accountMapper,
                             InvestmentCashBalanceMapper cashBalanceMapper,
                             InvestmentPositionMapper positionMapper,
                             WealthService wealthService,
-                            PaperTradingService paperTradingService,
                             QuantPaperOrderMapper paperOrderMapper,
                             QuantPaperFillMapper paperFillMapper,
                             QuantPaperProperties paperProperties,
+                            QuantPredictionQueryService predictionQueryService,
+                            QuantModelRegistryService modelRegistryService,
                             ObjectMapper objectMapper) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
@@ -106,76 +94,24 @@ public class QuantServiceImpl implements QuantService {
         this.analysisClient = analysisClient;
         this.benchmarkProfileService = benchmarkProfileService;
         this.jobMapper = jobMapper;
-        this.featureSetMapper = featureSetMapper;
-        this.trainingRunMapper = trainingRunMapper;
-        this.backtestRunMapper = backtestRunMapper;
-        this.predictionMapper = predictionMapper;
         this.experimentMapper = experimentMapper;
         this.universeMapper = universeMapper;
         this.membershipMapper = membershipMapper;
-        this.validationReportMapper = validationReportMapper;
-        this.modelMapper = modelMapper;
-        this.strategyMapper = strategyMapper;
         this.accountMapper = accountMapper;
         this.cashBalanceMapper = cashBalanceMapper;
         this.positionMapper = positionMapper;
         this.wealthService = wealthService;
-        this.paperTradingService = paperTradingService;
         this.paperOrderMapper = paperOrderMapper;
         this.paperFillMapper = paperFillMapper;
         this.paperProperties = paperProperties;
+        this.predictionQueryService = predictionQueryService;
+        this.modelRegistryService = modelRegistryService;
         this.objectMapper = objectMapper;
     }
 
     @Override
     public Map<String, Object> latestAnalysis(Long userId, Long assetId, String horizonCode) {
-        InvestmentAsset asset = requireAsset(userId, assetId);
-        InvestmentProduct product = requireProduct(asset.getProductId());
-        String normalizedHorizon = normalizeHorizon(horizonCode);
-        ResolvedHorizonProfile profile = horizonService.resolve(userId, assetId);
-        HorizonSetting horizon = profile.settings().stream()
-                .filter(item -> item.code().equals(normalizedHorizon))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("未找到指定分析周期"));
-        InvestmentDataQualitySnapshot quality = latestQuality(product);
-        if (quality == null || quality.getDatasetVersion() == null) {
-            return unavailable(normalizedHorizon, "INSUFFICIENT_DATA",
-                    "研究数据不足，当前不生成交易建议。");
-        }
-        if ("BLOCKED".equalsIgnoreCase(quality.getQualityStatus())
-                || !"ALLOW".equalsIgnoreCase(quality.getDecision())) {
-            return unavailable(normalizedHorizon, "DATA_STALE",
-                    "最新研究数据尚未通过质量校验，当前不使用旧模型冒充有效结果。");
-        }
-        LambdaQueryWrapper<QuantPrediction> query = new LambdaQueryWrapper<QuantPrediction>()
-                .eq(QuantPrediction::getUserId, userId)
-                .eq(QuantPrediction::getAssetId, assetId)
-                .eq(QuantPrediction::getHorizonCode, normalizedHorizon)
-                .eq(QuantPrediction::getHorizonDays, horizon.targetHoldingDays())
-                .eq(QuantPrediction::getHorizonProfileVersion, profile.version())
-                .eq(QuantPrediction::getDatasetVersion, quality.getDatasetVersion())
-                .orderByDesc(QuantPrediction::getAsOfDate)
-                .orderByDesc(QuantPrediction::getCreatedAt);
-        Map<String, Object> result = null;
-        for (QuantPrediction prediction : predictionMapper.selectList(query)) {
-            Map<String, Object> candidate = predictionView(prediction);
-            if ("READY".equals(candidate.get("status"))) {
-                result = candidate;
-                break;
-            }
-        }
-        if (result == null) return unavailable(normalizedHorizon);
-        List<ProductDailyQuote> currentQuotes = loadQuotes(product);
-        BigDecimal latestPrice = currentQuotes.isEmpty()
-                ? null
-                : currentQuotes.get(currentQuotes.size() - 1).getClosePrice();
-        result.put("currentQuantity", asset.getQuantity());
-        result.put("currentWeight", PortfolioWeightCalculator.calculate(
-                asset.getQuantity(),
-                latestPrice,
-                wealthService.overview(userId).getTotalAssets()
-        ));
-        return result;
+        return predictionQueryService.latestAnalysis(userId, assetId, horizonCode);
     }
 
     @Override
@@ -338,12 +274,14 @@ public class QuantServiceImpl implements QuantService {
         job.setJobType("TRAIN_PREDICT");
         job.setStatus(String.valueOf(remote.getOrDefault("status", "QUEUED")));
         job.setDatasetVersion(quality.getDatasetVersion());
+        job.setQuantConfigVersion(text(remote.get("configVersion")));
+        job.setProductType(product.getProductType());
+        job.setMetricsJson(writeJson(Map.of()));
         job.setHorizonProfileVersion(profile.version());
         job.setHorizonCode(horizon.code());
         job.setHorizonDays(horizon.targetHoldingDays());
         job.setExperimentFingerprint(experimentFingerprint);
         jobMapper.insert(job);
-        persistTrainingSubmission(job, remote, product.getProductType());
         return jobView(job);
     }
 
@@ -370,12 +308,13 @@ public class QuantServiceImpl implements QuantService {
             job.setResultJson(writeJson(result));
             updateJobVersions(job, result);
             applyValidationOutcome(job, result);
+            Object metrics = result.get("backtestSummary");
+            job.setMetricsJson(writeJson(metrics == null ? Map.of() : metrics));
         }
         if ("SUCCEEDED".equals(status) || "FAILED".equals(status)) job.setFinishedAt(LocalDateTime.now());
         jobMapper.updateById(job);
-        updateTrainingRun(job, rawResult);
         if ("SUCCEEDED".equals(status) && rawResult instanceof Map<?, ?> result) {
-            persistResult(job, castMap(result));
+            modelRegistryService.persistArtifacts(job, castMap(result));
         }
         syncExperiment(job, rawResult);
         return jobView(job);
@@ -397,7 +336,6 @@ public class QuantServiceImpl implements QuantService {
         job.setUserMessage(text(remote.get("userMessage")));
         job.setFinishedAt(LocalDateTime.now());
         jobMapper.updateById(job);
-        updateTrainingRun(job, null);
         syncExperiment(job, null);
         return jobView(job);
     }
@@ -405,46 +343,7 @@ public class QuantServiceImpl implements QuantService {
     @Override
     @Transactional
     public void activatePaperModel(Long userId, String modelVersion) {
-        QuantModelVersion model = modelMapper.selectOne(new LambdaQueryWrapper<QuantModelVersion>()
-                .eq(QuantModelVersion::getModelVersion, modelVersion)
-                .last("LIMIT 1"));
-        if (model == null || !List.of("VALIDATED", "PAPER_VERIFIED").contains(model.getStatus())) {
-            throw new IllegalStateException("只有通过严格验证的模型才能晋级模拟盘");
-        }
-        QuantValidationReport report = validationReportMapper.selectOne(
-                new LambdaQueryWrapper<QuantValidationReport>()
-                        .eq(QuantValidationReport::getModelVersion, modelVersion)
-                        .eq(QuantValidationReport::getPassed, true)
-                        .orderByDesc(QuantValidationReport::getCreatedAt)
-                        .last("LIMIT 1"));
-        if (report == null) {
-            throw new IllegalStateException("缺少通过状态的严格验证报告，不能晋级模拟盘");
-        }
-        QuantPrediction prediction = predictionMapper.selectOne(
-                new LambdaQueryWrapper<QuantPrediction>()
-                        .eq(QuantPrediction::getUserId, userId)
-                        .eq(QuantPrediction::getModelVersion, modelVersion)
-                        .orderByDesc(QuantPrediction::getAsOfDate)
-                        .last("LIMIT 1"));
-        if (prediction == null) {
-            throw new IllegalStateException("模型没有可用于模拟盘的预测结果");
-        }
-        QuantStrategyVersion strategy = strategyMapper.selectOne(
-                new LambdaQueryWrapper<QuantStrategyVersion>()
-                        .eq(QuantStrategyVersion::getModelVersion, modelVersion)
-                        .last("LIMIT 1"));
-        if (strategy == null) {
-            throw new IllegalStateException("模型没有对应的策略版本");
-        }
-        if (!List.of("PAPER", "CHAMPION").contains(strategy.getStatus())) {
-            strategy.setStatus("PAPER");
-            strategy.setActivatedAt(LocalDateTime.now());
-            strategyMapper.updateById(strategy);
-        }
-        InvestmentProduct product = requireProduct(
-                requireAsset(userId, prediction.getAssetId()).getProductId());
-        paperTradingService.queueValidatedPrediction(
-                userId, product, prediction, model.getStatus());
+        modelRegistryService.activatePaperModel(userId, modelVersion);
     }
 
     @Override
@@ -489,19 +388,7 @@ public class QuantServiceImpl implements QuantService {
 
     @Override
     public Map<String, Object> strategyStatus(Long userId) {
-        List<QuantStrategyVersion> strategies = strategyMapper.selectList(
-                new LambdaQueryWrapper<QuantStrategyVersion>()
-                        .orderByDesc(QuantStrategyVersion::getUpdatedAt)
-                        .last("LIMIT 20"));
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("status", strategies.isEmpty() ? "NOT_READY" : "READY");
-        result.put("strategies", strategies.stream().map(item -> Map.of(
-                "strategyVersion", item.getStrategyVersion(),
-                "modelVersion", item.getModelVersion(),
-                "productType", item.getProductType(),
-                "status", item.getStatus()
-        )).toList());
-        return result;
+        return modelRegistryService.strategyStatus(userId);
     }
 
     @Override
@@ -605,165 +492,6 @@ public class QuantServiceImpl implements QuantService {
         job.setFinishedAt(LocalDateTime.now());
         jobMapper.insert(job);
         return jobView(job);
-    }
-
-    private void persistResult(QuantJob job, Map<String, Object> result) {
-        String featureSetVersion = text(result.get("featureSetVersion"));
-        String modelVersion = text(result.get("modelVersion"));
-        String strategyVersion = text(result.get("strategyVersion"));
-        boolean strictlyValidated = isStrictlyValidated(result);
-        if (featureSetVersion == null) return;
-        persistFeatureSet(job, result, featureSetVersion);
-        QuantPrediction existing = predictionMapper.selectOne(new LambdaQueryWrapper<QuantPrediction>()
-                .eq(QuantPrediction::getUserId, job.getUserId())
-                .eq(QuantPrediction::getAssetId, job.getAssetId())
-                .eq(QuantPrediction::getDatasetVersion, job.getDatasetVersion())
-                .eq(QuantPrediction::getHorizonCode, job.getHorizonCode())
-                .eq(modelVersion != null, QuantPrediction::getModelVersion, modelVersion)
-                .last("LIMIT 1"));
-        if (existing != null) return;
-        QuantPrediction prediction = new QuantPrediction();
-        prediction.setUserId(job.getUserId());
-        prediction.setAssetId(job.getAssetId());
-        prediction.setDatasetVersion(job.getDatasetVersion());
-        prediction.setFeatureSetVersion(featureSetVersion);
-        prediction.setModelVersion(modelVersion);
-        prediction.setStrategyVersion(strategyVersion);
-        prediction.setModelFamily(text(result.get("modelFamily")));
-        prediction.setHorizonProfileVersion(job.getHorizonProfileVersion());
-        prediction.setHorizonCode(job.getHorizonCode());
-        prediction.setHorizonDays(job.getHorizonDays());
-        prediction.setAsOfDate(LocalDate.parse(String.valueOf(result.get("asOfDate"))));
-        prediction.setProbabilityPositiveExcess(decimal(result.get("probabilityPositiveExcess")));
-        prediction.setExpectedExcessReturn(decimal(result.get("expectedExcessReturn")));
-        if (result.get("predictionInterval") instanceof List<?> interval && interval.size() == 2) {
-            prediction.setIntervalLower(decimal(interval.get(0)));
-            prediction.setIntervalUpper(decimal(interval.get(1)));
-        }
-        prediction.setConfidence(String.valueOf(result.getOrDefault("confidence", "LOW")));
-        prediction.setAction(strictlyValidated
-                ? String.valueOf(result.getOrDefault("action", "NO_TRADE"))
-                : "NO_TRADE");
-        prediction.setTargetWeight(strictlyValidated
-                ? Objects.requireNonNullElse(decimal(result.get("targetWeight")), BigDecimal.ZERO)
-                : BigDecimal.ZERO);
-        prediction.setMarketRegime(text(result.get("marketRegime")));
-        prediction.setBenchmarkCode(text(result.get("benchmarkCode")));
-        prediction.setRoundTripCostBps(decimal(result.get("roundTripCostBps")));
-        prediction.setFeatureVectorJson(writeJson(result.getOrDefault("featureVector", Map.of())));
-        prediction.setTopFactorsJson(writeJson(result.getOrDefault("topFactors", List.of())));
-        prediction.setRiskFlagsJson(writeJson(result.getOrDefault("riskFlags", List.of())));
-        prediction.setBacktestSummaryJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
-        predictionMapper.insert(prediction);
-        if (modelVersion != null) {
-            persistModelAndStrategy(job, result, modelVersion, strategyVersion, strictlyValidated);
-            persistValidationReport(job, result, modelVersion);
-            persistBacktestRun(job, result, modelVersion, strategyVersion);
-            if (strictlyValidated && job.getExperimentFingerprint() == null) {
-                InvestmentProduct product = requireProduct(
-                        requireAsset(job.getUserId(), job.getAssetId()).getProductId());
-                paperTradingService.queueValidatedPrediction(
-                        job.getUserId(), product, prediction, String.valueOf(result.get("modelStatus")));
-            }
-        }
-    }
-
-    private void persistFeatureSet(QuantJob job, Map<String, Object> result, String featureSetVersion) {
-        if (featureSetMapper.selectCount(new LambdaQueryWrapper<QuantFeatureSet>()
-                .eq(QuantFeatureSet::getFeatureSetVersion, featureSetVersion)) != 0) return;
-        InvestmentProduct product = requireProduct(requireAsset(job.getUserId(), job.getAssetId()).getProductId());
-        QuantFeatureSet featureSet = new QuantFeatureSet();
-        featureSet.setFeatureSetVersion(featureSetVersion);
-        featureSet.setQuantConfigVersion(String.valueOf(result.get("quantConfigVersion")));
-        featureSet.setProductType(product.getProductType());
-        featureSet.setSchemaJson(writeJson(result.getOrDefault("featureSchema", List.of())));
-        featureSet.setArtifactUri(text(result.get("featureArtifactUri")));
-        featureSet.setArtifactHash(text(result.get("featureArtifactHash")));
-        featureSetMapper.insert(featureSet);
-    }
-
-    private void persistTrainingSubmission(QuantJob job, Map<String, Object> remote, String productType) {
-        QuantTrainingRun run = new QuantTrainingRun();
-        run.setExternalJobId(job.getExternalJobId());
-        run.setDatasetVersion(job.getDatasetVersion());
-        run.setQuantConfigVersion(String.valueOf(remote.get("configVersion")));
-        run.setProductType(productType);
-        run.setHorizonDays(job.getHorizonDays());
-        run.setStatus(job.getStatus());
-        run.setMetricsJson(writeJson(Map.of()));
-        run.setStartedAt(LocalDateTime.now());
-        trainingRunMapper.insert(run);
-    }
-
-    private void persistBacktestRun(QuantJob job, Map<String, Object> result,
-                                    String modelVersion, String strategyVersion) {
-        if (backtestRunMapper.selectCount(new LambdaQueryWrapper<QuantBacktestRun>()
-                .eq(QuantBacktestRun::getModelVersion, modelVersion)
-                .eq(QuantBacktestRun::getDatasetVersion, job.getDatasetVersion())
-                .eq(QuantBacktestRun::getHorizonDays, job.getHorizonDays())) > 0) return;
-        QuantBacktestRun run = new QuantBacktestRun();
-        run.setModelVersion(modelVersion);
-        run.setStrategyVersion(strategyVersion);
-        run.setDatasetVersion(job.getDatasetVersion());
-        run.setHorizonDays(job.getHorizonDays());
-        run.setStatus("SUCCEEDED");
-        run.setMetricsJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
-        run.setStartedAt(Objects.requireNonNullElse(job.getStartedAt(), job.getCreatedAt()));
-        run.setFinishedAt(Objects.requireNonNullElse(job.getFinishedAt(), LocalDateTime.now()));
-        backtestRunMapper.insert(run);
-    }
-
-    private void updateTrainingRun(QuantJob job, Object rawResult) {
-        QuantTrainingRun run = trainingRunMapper.selectOne(new LambdaQueryWrapper<QuantTrainingRun>()
-                .eq(QuantTrainingRun::getExternalJobId, job.getExternalJobId())
-                .last("LIMIT 1"));
-        if (run == null) return;
-        run.setStatus(job.getStatus());
-        run.setFeatureSetVersion(job.getFeatureSetVersion());
-        if (rawResult instanceof Map<?, ?> result) {
-            Object metrics = result.get("backtestSummary");
-            run.setMetricsJson(writeJson(metrics == null ? Map.of() : metrics));
-        }
-        if (List.of("SUCCEEDED", "FAILED", "BLOCKED").contains(job.getStatus())) {
-            run.setFinishedAt(LocalDateTime.now());
-        }
-        trainingRunMapper.updateById(run);
-    }
-
-    private void persistModelAndStrategy(QuantJob job, Map<String, Object> result,
-                                         String modelVersion, String strategyVersion,
-                                         boolean strictlyValidated) {
-        boolean autoPaper = strictlyValidated && job.getExperimentFingerprint() == null;
-        if (modelMapper.selectCount(new LambdaQueryWrapper<QuantModelVersion>()
-                .eq(QuantModelVersion::getModelVersion, modelVersion)) == 0) {
-            QuantModelVersion model = new QuantModelVersion();
-            model.setModelVersion(modelVersion);
-            model.setFeatureSetVersion(String.valueOf(result.get("featureSetVersion")));
-            model.setQuantConfigVersion(String.valueOf(result.get("quantConfigVersion")));
-            InvestmentProduct product = requireProduct(requireAsset(job.getUserId(), job.getAssetId()).getProductId());
-            model.setProductType(product.getProductType());
-            model.setHorizonDays(job.getHorizonDays());
-            model.setStatus(strictlyValidated
-                    ? String.valueOf(result.getOrDefault("modelStatus", "VALIDATED"))
-                    : "DRAFT");
-            model.setArtifactUri("analysis-service://quant-models/" + modelVersion);
-            model.setArtifactHash(String.valueOf(result.get("modelFileHash")));
-            model.setMetricsJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
-            model.setTrainedAt(LocalDateTime.now());
-            modelMapper.insert(model);
-        }
-        if (strategyVersion != null && strategyMapper.selectCount(new LambdaQueryWrapper<QuantStrategyVersion>()
-                .eq(QuantStrategyVersion::getStrategyVersion, strategyVersion)) == 0) {
-            QuantStrategyVersion strategy = new QuantStrategyVersion();
-            strategy.setStrategyVersion(strategyVersion);
-            strategy.setModelVersion(modelVersion);
-            InvestmentProduct product = requireProduct(requireAsset(job.getUserId(), job.getAssetId()).getProductId());
-            strategy.setProductType(product.getProductType());
-            strategy.setStatus(autoPaper ? "PAPER" : "DRAFT");
-            strategy.setValidationMetricsJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
-            if (autoPaper) strategy.setActivatedAt(LocalDateTime.now());
-            strategyMapper.insert(strategy);
-        }
     }
 
     private List<ProductDailyQuote> loadQuotes(InvestmentProduct product) {
@@ -891,82 +619,10 @@ public class QuantServiceImpl implements QuantService {
         return result;
     }
 
-    private Map<String, Object> predictionView(QuantPrediction prediction) {
-        QuantModelVersion model = prediction.getModelVersion() == null
-                ? null
-                : modelMapper.selectOne(new LambdaQueryWrapper<QuantModelVersion>()
-                        .eq(QuantModelVersion::getModelVersion, prediction.getModelVersion())
-                        .last("LIMIT 1"));
-        String lifecycle = model == null ? "DRAFT" : model.getStatus();
-        boolean tradable = List.of("VALIDATED", "PAPER_VERIFIED").contains(lifecycle);
-        QuantStrategyVersion deployment = prediction.getStrategyVersion() == null
-                ? null
-                : strategyMapper.selectOne(new LambdaQueryWrapper<QuantStrategyVersion>()
-                        .eq(QuantStrategyVersion::getStrategyVersion, prediction.getStrategyVersion())
-                        .in(QuantStrategyVersion::getStatus, "PAPER", "CHAMPION", "CHALLENGER")
-                        .last("LIMIT 1"));
-        if (!tradable || deployment == null) {
-            return unavailable(
-                    prediction.getHorizonCode(),
-                    "MODEL_UNAVAILABLE",
-                    "暂无有效量化模型"
-            );
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("status", "READY");
-        result.put("modelLifecycle", lifecycle);
-        result.put("deploymentStatus", deployment.getStatus());
-        result.put("datasetVersion", prediction.getDatasetVersion());
-        result.put("featureSetVersion", prediction.getFeatureSetVersion());
-        result.put("modelVersion", prediction.getModelVersion());
-        result.put("strategyVersion", prediction.getStrategyVersion());
-        result.put("horizonProfileVersion", prediction.getHorizonProfileVersion());
-        result.put("horizonCode", prediction.getHorizonCode());
-        result.put("horizonDays", prediction.getHorizonDays());
-        result.put("asOfDate", prediction.getAsOfDate());
-        result.put("probabilityPositiveExcess", prediction.getProbabilityPositiveExcess());
-        result.put("expectedExcessReturn", prediction.getExpectedExcessReturn());
-        List<BigDecimal> predictionInterval = new ArrayList<>();
-        predictionInterval.add(prediction.getIntervalLower());
-        predictionInterval.add(prediction.getIntervalUpper());
-        result.put("predictionInterval", predictionInterval);
-        result.put("confidence", prediction.getConfidence());
-        result.put("action", prediction.getAction());
-        result.put("targetWeight", tradable ? prediction.getTargetWeight() : null);
-        result.put("recommendedTargetWeight", tradable ? prediction.getTargetWeight() : null);
-        result.put("marketRegime", prediction.getMarketRegime());
-        result.put("benchmarkCode", prediction.getBenchmarkCode());
-        result.put("roundTripCostBps", prediction.getRoundTripCostBps());
-        result.put("topFactors", readJsonValue(prediction.getTopFactorsJson(), List.of()));
-        result.put("riskFlags", readJsonValue(prediction.getRiskFlagsJson(), List.of()));
-        result.put("backtestSummary", readJsonValue(prediction.getBacktestSummaryJson(), Map.of()));
-        return result;
-    }
-
-    private static Map<String, Object> unavailable(String horizonCode) {
-        return unavailable(
-                horizonCode,
-                "MODEL_UNAVAILABLE",
-                "暂无有效量化模型"
-        );
-    }
-
-    private static Map<String, Object> unavailable(String horizonCode,
-                                                   String failureCode,
-                                                   String userMessage) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("status", "UNAVAILABLE");
-        result.put("horizonCode", horizonCode);
-        result.put("action", "PAUSE");
-        result.put("confidence", "LOW");
-        result.put("riskFlags", List.of(failureCode));
-        result.put("errorCode", failureCode);
-        result.put("userMessage", userMessage);
-        return result;
-    }
-
     private void updateJobVersions(QuantJob job, Map<?, ?> result) {
         job.setFeatureSetVersion(text(result.get("featureSetVersion")));
+        String configVersion = text(result.get("quantConfigVersion"));
+        if (configVersion != null) job.setQuantConfigVersion(configVersion);
         job.setModelVersion(text(result.get("modelVersion")));
         job.setStrategyVersion(text(result.get("strategyVersion")));
     }
@@ -992,34 +648,6 @@ public class QuantServiceImpl implements QuantService {
         job.setUserMessage("训练任务已完成，但模型未通过严格验证；不会生成交易金额或模拟订单。");
     }
 
-    private void persistValidationReport(QuantJob job,
-                                         Map<String, Object> result,
-                                         String modelVersion) {
-        if (validationReportMapper.selectCount(
-                new LambdaQueryWrapper<QuantValidationReport>()
-                        .eq(QuantValidationReport::getModelVersion, modelVersion)
-        ) > 0) {
-            return;
-        }
-        Object rawReport = result.get("validationReport");
-        if (!(rawReport instanceof Map<?, ?> report)) return;
-        QuantValidationReport entity = new QuantValidationReport();
-        entity.setExperimentId(findExperiment(job).map(QuantExperiment::getId).orElse(null));
-        entity.setModelVersion(modelVersion);
-        Object lifecycle = report.get("lifecycle");
-        entity.setLifecycle(lifecycle == null ? "DRAFT" : String.valueOf(lifecycle));
-        entity.setPassed(Boolean.TRUE.equals(report.get("passed")));
-        Object failureCodes = report.get("failureCodes");
-        Object checks = report.get("checks");
-        entity.setFailureCodesJson(writeJson(failureCodes == null ? List.of() : failureCodes));
-        entity.setChecksJson(writeJson(checks == null ? List.of() : checks));
-        entity.setMetricsJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
-        entity.setDatasetVersion(job.getDatasetVersion());
-        entity.setFeatureSetVersion(job.getFeatureSetVersion());
-        entity.setQuantConfigVersion(String.valueOf(result.get("quantConfigVersion")));
-        validationReportMapper.insert(entity);
-    }
-
     private void syncExperiment(QuantJob job, Object rawResult) {
         var existing = findExperiment(job);
         if (existing.isEmpty()) return;
@@ -1033,6 +661,13 @@ public class QuantServiceImpl implements QuantService {
         if (rawResult instanceof Map<?, ?> result) {
             String configVersion = text(result.get("quantConfigVersion"));
             if (configVersion != null) experiment.setQuantConfigVersion(configVersion);
+            String modelStatus = text(result.get("modelStatus"));
+            if (modelStatus != null
+                    && List.of("VALIDATED", "PAPER_VERIFIED").contains(modelStatus)) {
+                experiment.setBestModelVersion(job.getModelVersion());
+            }
+            Object summary = result.get("backtestSummary");
+            experiment.setSearchSummaryJson(writeJson(summary == null ? Map.of() : summary));
         }
         experiment.setLogsJson(writeJson(Map.of(
                 "jobId", job.getExternalJobId(),
@@ -1079,15 +714,6 @@ public class QuantServiceImpl implements QuantService {
         }
     }
 
-    private Object readJsonValue(String value, Object fallback) {
-        if (value == null || value.isBlank()) return fallback;
-        try {
-            return objectMapper.readValue(value, Object.class);
-        } catch (JsonProcessingException e) {
-            return fallback;
-        }
-    }
-
     private static String normalizeHorizon(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("分析周期不能为空");
         return value.trim().toUpperCase(Locale.ROOT);
@@ -1095,14 +721,6 @@ public class QuantServiceImpl implements QuantService {
 
     private static String defaultModelFamily(String productType) {
         return "STOCK".equalsIgnoreCase(productType) ? "A_SHARE_STOCK" : "ACTIVE_FUND";
-    }
-
-    private static boolean isStrictlyValidated(Map<String, Object> result) {
-        String lifecycle = text(result.get("modelStatus"));
-        if (!List.of("VALIDATED", "PAPER_VERIFIED").contains(lifecycle)) return false;
-        Object reportValue = result.get("validationReport");
-        if (!(reportValue instanceof Map<?, ?> report)) return false;
-        return Boolean.TRUE.equals(report.get("passed"));
     }
 
     private static String requiredText(Map<String, Object> value, String key) {
@@ -1115,10 +733,6 @@ public class QuantServiceImpl implements QuantService {
         if (value == null) return null;
         String text = String.valueOf(value).trim();
         return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
-    }
-
-    private static BigDecimal decimal(Object value) {
-        return value == null ? null : new BigDecimal(String.valueOf(value));
     }
 
     @SuppressWarnings("unchecked")

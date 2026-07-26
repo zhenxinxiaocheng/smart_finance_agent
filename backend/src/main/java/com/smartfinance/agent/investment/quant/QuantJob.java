@@ -24,6 +24,9 @@ public class QuantJob {
     private String errorSummary;
     private String datasetVersion;
     private String featureSetVersion;
+    private String quantConfigVersion;
+    private String productType;
+    private String metricsJson;
     private String modelVersion;
     private String strategyVersion;
     private String horizonProfileVersion;
