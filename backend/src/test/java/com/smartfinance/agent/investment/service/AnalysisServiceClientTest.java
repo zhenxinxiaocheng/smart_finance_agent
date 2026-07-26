@@ -18,6 +18,32 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
+    void quantRuntimeManifest_shouldExposeVersionedTrainingRuntime() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(
+                builder,
+                "http://analysis.test",
+                "secret-token"
+        );
+        server.expect(requestTo("http://analysis.test/internal/v1/quant/runtime-manifest"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("X-Internal-Token", "secret-token"))
+                .andRespond(withSuccess("""
+                        {"runtimeVersion":"%s","quantConfigVersion":"quant-research-v2",
+                         "configHash":"%s","codeHash":"%s","randomSeed":42}
+                        """.formatted("a".repeat(64), "b".repeat(64), "c".repeat(64)),
+                        MediaType.APPLICATION_JSON));
+
+        Map<String, Object> result = client.quantRuntimeManifest();
+
+        assertThat(result)
+                .containsEntry("runtimeVersion", "a".repeat(64))
+                .containsEntry("quantConfigVersion", "quant-research-v2");
+        server.verify();
+    }
+
+    @Test
     void benchmarkHistory_shouldUseVersionedBenchmarkContract() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

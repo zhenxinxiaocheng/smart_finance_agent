@@ -29,6 +29,7 @@ from .providers import (
 )
 from .quant.config import load_quant_config
 from .quant.jobs import QuantJobService, default_quant_storage_root
+from .quant.runtime_manifest import build_runtime_manifest
 
 app = FastAPI(title="Smart Finance Analysis Service", version="1.0.0")
 registry = ProviderRegistry()
@@ -165,6 +166,12 @@ class QuantJobRequest(BaseModel):
     dataset_version: str | None = Field(
         default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
+    request_fingerprint: str | None = Field(
+        default=None, alias="requestFingerprint", pattern=r"^[0-9a-f]{64}$"
+    )
+    runtime_version: str | None = Field(
+        default=None, alias="runtimeVersion", pattern=r"^[0-9a-f]{64}$"
+    )
     product_type: Literal["STOCK", "MUTUAL_FUND"] | None = Field(default=None, alias="productType")
     model_family: Literal[
         "A_SHARE_STOCK",
@@ -285,6 +292,11 @@ def quant_jobs() -> QuantJobService:
 @app.get("/health")
 def health():
     return {"status": "UP", "service": "analysis-service"}
+
+
+@app.get("/internal/v1/quant/runtime-manifest", dependencies=[Depends(internal_auth)])
+def quant_runtime_manifest():
+    return build_runtime_manifest(load_quant_config())
 
 
 @app.post("/internal/v1/products/resolve", dependencies=[Depends(internal_auth)])

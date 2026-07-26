@@ -168,18 +168,6 @@ public class QuantTrainingOrchestrator {
                     quality == null ? "INSUFFICIENT_DATA" : "DATA_STALE",
                     experimentFingerprint);
         }
-        if (experimentFingerprint == null) {
-            QuantJob reusable = reusableAutomaticJob(
-                    userId,
-                    assetId,
-                    quality.getDatasetVersion(),
-                    profile.version(),
-                    horizon
-            );
-            if (reusable != null) {
-                return jobView(reusable);
-            }
-        }
         List<ProductDailyQuote> quotes = loadQuotes(product);
         if (quotes.isEmpty()) {
             return blockedJob(
@@ -223,6 +211,34 @@ public class QuantTrainingOrchestrator {
             request.put("modelFamily", requestedModelFamily);
         }
         request.put("algorithm", algorithm);
+        String requestFingerprint = null;
+        if (experimentFingerprint == null) {
+            Map<String, Object> runtimeManifest = analysisClient.quantRuntimeManifest();
+            String runtimeVersion = requiredHash(runtimeManifest, "runtimeVersion");
+            Map<String, Object> fingerprintMaterial = new LinkedHashMap<>();
+            fingerprintMaterial.put("userId", userId);
+            fingerprintMaterial.put("assetId", assetId);
+            fingerprintMaterial.put("productId", product.getId());
+            fingerprintMaterial.put("productType", product.getProductType());
+            fingerprintMaterial.put("datasetVersion", quality.getDatasetVersion());
+            fingerprintMaterial.put("horizonProfileVersion", profile.version());
+            fingerprintMaterial.put("horizonCode", horizon.code());
+            fingerprintMaterial.put("horizonDays", horizon.targetHoldingDays());
+            fingerprintMaterial.put("modelFamily", request.get("modelFamily"));
+            fingerprintMaterial.put("algorithm", algorithm);
+            fingerprintMaterial.put("runtimeVersion", runtimeVersion);
+            fingerprintMaterial.put("benchmarkCode",
+                    benchmark.available() ? benchmark.benchmarkCode() : null);
+            fingerprintMaterial.put("benchmarkProfileVersion",
+                    benchmark.available() ? benchmark.sourceVersion() : null);
+            requestFingerprint = QuantResearchCatalog.canonicalHash(fingerprintMaterial);
+            QuantJob reusable = reusableAutomaticJob(userId, assetId, requestFingerprint);
+            if (reusable != null) {
+                return jobView(reusable);
+            }
+            request.put("runtimeVersion", runtimeVersion);
+            request.put("requestFingerprint", requestFingerprint);
+        }
         if (experimentFingerprint != null) {
             request.put("experimentFingerprint", experimentFingerprint);
             request.put("experimentParameters", experimentParameters);
@@ -258,6 +274,7 @@ public class QuantTrainingOrchestrator {
         job.setHorizonCode(horizon.code());
         job.setHorizonDays(horizon.targetHoldingDays());
         job.setExperimentFingerprint(experimentFingerprint);
+        job.setRequestFingerprint(requestFingerprint);
         jobMapper.insert(job);
         return jobView(job);
     }
@@ -298,17 +315,12 @@ public class QuantTrainingOrchestrator {
 
     private QuantJob reusableAutomaticJob(Long userId,
                                           Long assetId,
-                                          String datasetVersion,
-                                          String horizonProfileVersion,
-                                          HorizonSetting horizon) {
+                                          String requestFingerprint) {
         return jobMapper.selectOne(new LambdaQueryWrapper<QuantJob>()
                 .eq(QuantJob::getUserId, userId)
                 .eq(QuantJob::getAssetId, assetId)
                 .eq(QuantJob::getJobType, "AUTO_SEARCH")
-                .eq(QuantJob::getDatasetVersion, datasetVersion)
-                .eq(QuantJob::getHorizonProfileVersion, horizonProfileVersion)
-                .eq(QuantJob::getHorizonCode, horizon.code())
-                .eq(QuantJob::getHorizonDays, horizon.targetHoldingDays())
+                .eq(QuantJob::getRequestFingerprint, requestFingerprint)
                 .in(QuantJob::getStatus, "QUEUED", "RUNNING", "SUCCEEDED")
                 .orderByDesc(QuantJob::getCreatedAt)
                 .last("LIMIT 1"));
@@ -504,6 +516,7 @@ public class QuantTrainingOrchestrator {
         result.put("type", job.getJobType());
         result.put("status", job.getStatus());
         result.put("experimentFingerprint", job.getExperimentFingerprint());
+        result.put("requestFingerprint", job.getRequestFingerprint());
         result.put("errorCode", job.getErrorCode());
         result.put("errorSummary", job.getErrorSummary());
         result.put("assetId", job.getAssetId());
@@ -625,6 +638,14 @@ public class QuantTrainingOrchestrator {
     private static String requiredText(Map<String, Object> value, String key) {
         String result = text(value.get(key));
         if (result == null) throw new IllegalStateException("量化服务未返回任务编号");
+        return result;
+    }
+
+    private static String requiredHash(Map<String, Object> value, String key) {
+        String result = text(value.get(key));
+        if (result == null || !result.matches("^[0-9a-f]{64}$")) {
+            throw new IllegalStateException("量化运行时版本格式不正确");
+        }
         return result;
     }
 

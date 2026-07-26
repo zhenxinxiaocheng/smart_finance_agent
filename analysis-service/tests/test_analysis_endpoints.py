@@ -14,6 +14,7 @@ from app.main import (
     backtest_analysis,
     fund_analysis,
     fundamental_analysis,
+    quant_runtime_manifest,
     technical_analysis,
     app,
 )
@@ -25,6 +26,8 @@ class AnalysisEndpointsTest(unittest.TestCase):
         request = QuantJobRequest.model_validate({
             "type": "TRAIN_PREDICT",
             "datasetVersion": "d" * 64,
+            "requestFingerprint": "e" * 64,
+            "runtimeVersion": "a" * 64,
             "productType": "MUTUAL_FUND",
             "modelFamily": "INDEX_FUND",
             "benchmarkProfileVersion": "OFFICIAL-2024-ANNUAL",
@@ -43,6 +46,8 @@ class AnalysisEndpointsTest(unittest.TestCase):
         payload = request.model_dump(by_alias=True, exclude_none=True)
 
         self.assertEqual("CSI300_95_CASH_5", payload["benchmarkCode"])
+        self.assertEqual("e" * 64, payload["requestFingerprint"])
+        self.assertEqual("a" * 64, payload["runtimeVersion"])
         self.assertEqual("INDEX_FUND", payload["modelFamily"])
         self.assertEqual("OFFICIAL-2024-ANNUAL", payload["benchmarkProfileVersion"])
         self.assertEqual("f" * 64, payload["experimentFingerprint"])
@@ -88,6 +93,14 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual(37, payload["horizonDays"])
         self.assertIn(("/internal/v1/quant/jobs", "POST"), paths)
         self.assertIn(("/internal/v1/quant/jobs/{jobId}", "GET"), paths)
+
+    def test_quant_runtime_manifest_is_available_to_training_orchestrator(self):
+        manifest = quant_runtime_manifest()
+        paths = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
+
+        self.assertEqual(64, len(manifest["runtimeVersion"]))
+        self.assertEqual("quant-research-v2", manifest["quantConfigVersion"])
+        self.assertIn(("/internal/v1/quant/runtime-manifest", "GET"), paths)
 
     def test_benchmark_history_contract_is_available_to_backend(self):
         request = BenchmarkHistoryRequest(

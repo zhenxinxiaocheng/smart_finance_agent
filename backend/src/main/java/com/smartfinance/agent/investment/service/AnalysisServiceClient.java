@@ -148,6 +148,19 @@ public class AnalysisServiceClient {
     }
 
     @SuppressWarnings("unchecked")
+    public Map<String, Object> quantRuntimeManifest() {
+        Map<String, Object> response = restClient.get()
+                .uri("/internal/v1/quant/runtime-manifest")
+                .header("X-Internal-Token", internalToken)
+                .retrieve()
+                .body(Map.class);
+        if (response == null) {
+            throw new IllegalStateException("量化运行时版本信息为空");
+        }
+        return response;
+    }
+
+    @SuppressWarnings("unchecked")
     public Map<String, Object> quantJob(String jobId) {
         Map<String, Object> response = restClient.get()
                 .uri("/internal/v1/quant/jobs/{jobId}", jobId)

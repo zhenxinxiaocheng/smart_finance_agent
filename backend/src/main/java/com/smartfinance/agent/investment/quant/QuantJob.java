@@ -20,6 +20,7 @@ public class QuantJob {
     private String jobType;
     private String status;
     private String experimentFingerprint;
+    private String requestFingerprint;
     private String errorCode;
     private String errorSummary;
     private String datasetVersion;

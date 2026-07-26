@@ -521,8 +521,11 @@ class QuantServiceImplIntegrationTest {
     }
 
     @Test
-    void repeatedAutomaticTrainingRequestReusesTheActiveSession() {
+    void automaticTrainingReusesOnlyTheSameRuntimeVersion() {
         String autoJobId = "6".repeat(32);
+        String changedRuntimeJobId = "5".repeat(32);
+        String runtimeVersion = "1".repeat(64);
+        String changedRuntimeVersion = "2".repeat(64);
         when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
                 "profile-v1",
                 "template-v1",
@@ -556,20 +559,34 @@ class QuantServiceImplIntegrationTest {
         WealthOverviewResponse overview = new WealthOverviewResponse();
         overview.setTotalAssets(java.math.BigDecimal.valueOf(100_000));
         when(wealthService.overview(7L)).thenReturn(overview);
-        when(analysisServiceClient.createQuantJob(any())).thenReturn(Map.of(
-                "jobId", autoJobId,
-                "status", "QUEUED",
-                "configVersion", "quant-research-v2"
-        ));
+        when(analysisServiceClient.quantRuntimeManifest()).thenReturn(
+                Map.of("runtimeVersion", runtimeVersion),
+                Map.of("runtimeVersion", runtimeVersion),
+                Map.of("runtimeVersion", changedRuntimeVersion)
+        );
+        when(analysisServiceClient.createQuantJob(any())).thenReturn(
+                Map.of(
+                        "jobId", autoJobId,
+                        "status", "QUEUED",
+                        "configVersion", "quant-research-v2"
+                ),
+                Map.of(
+                        "jobId", changedRuntimeJobId,
+                        "status", "QUEUED",
+                        "configVersion", "quant-research-v2"
+                )
+        );
 
         Map<String, Object> first = trainingOrchestrator.refresh(7L, 12L, "WAVE");
         Map<String, Object> second = trainingOrchestrator.refresh(7L, 12L, "WAVE");
+        Map<String, Object> afterRuntimeChange = trainingOrchestrator.refresh(7L, 12L, "WAVE");
 
         assertThat(first).containsEntry("jobId", autoJobId);
         assertThat(second)
                 .containsEntry("jobId", autoJobId)
                 .containsEntry("status", "QUEUED");
-        verify(analysisServiceClient, times(1)).createQuantJob(any());
+        assertThat(afterRuntimeChange).containsEntry("jobId", changedRuntimeJobId);
+        verify(analysisServiceClient, times(2)).createQuantJob(any());
     }
 
     @Test
