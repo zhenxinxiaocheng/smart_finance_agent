@@ -57,8 +57,8 @@ export const startQuantTrainingSessionAPI = (assetId, horizonCode) =>
   request.post(`/quant/assets/${assetId}/training-sessions`, { horizonCode })
 export const getQuantTrainingSessionAPI = sessionId =>
   request.get(`/quant/training-sessions/${sessionId}`)
-export const getQuantModelManagementAPI = assetId =>
-  request.get(`/quant/assets/${assetId}/model-management`)
+export const getQuantModelManagementAPI = (assetId, horizonCode) =>
+  request.get(`/quant/assets/${assetId}/model-management`, { params: { horizonCode } })
 export const getQuantActionPlanAPI = (assetId, horizonCode) =>
   request.get(`/quant/assets/${assetId}/action-plan`, { params: { horizonCode } })
 export const listQuantAssetModelsAPI = assetId =>

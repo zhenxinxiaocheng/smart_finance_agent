@@ -121,8 +121,10 @@ public class QuantServiceImpl implements QuantService {
     }
 
     @Override
-    public Map<String, Object> modelManagement(Long userId, Long assetId) {
-        return modelManagementService.management(userId, assetId);
+    public Map<String, Object> modelManagement(Long userId,
+                                               Long assetId,
+                                               String horizonCode) {
+        return modelManagementService.management(userId, assetId, horizonCode);
     }
 
     @Override

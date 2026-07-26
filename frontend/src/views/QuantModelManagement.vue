@@ -285,7 +285,7 @@ async function loadManagement() {
   loading.value = true
   try {
     const [managementResponse, planResponse, modelsResponse] = await Promise.all([
-      getQuantModelManagementAPI(assetId.value),
+      getQuantModelManagementAPI(assetId.value, horizonCode.value),
       getQuantActionPlanAPI(assetId.value, horizonCode.value),
       listQuantAssetModelsAPI(assetId.value),
     ])

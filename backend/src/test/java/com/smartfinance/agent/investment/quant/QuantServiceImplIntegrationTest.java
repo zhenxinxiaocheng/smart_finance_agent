@@ -507,7 +507,7 @@ class QuantServiceImplIntegrationTest {
                 "strategy-challenger", challengerModel
         );
 
-        Map<String, Object> result = modelManagementService.management(7L, 12L);
+        Map<String, Object> result = modelManagementService.management(7L, 12L, "WAVE");
 
         assertThat(result)
                 .containsEntry("assetId", 12L)

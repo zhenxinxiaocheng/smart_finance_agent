@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Service
@@ -31,14 +32,18 @@ public class QuantModelManagementService {
         this.jobMapper = jobMapper;
     }
 
-    public Map<String, Object> management(Long userId, Long assetId) {
+    public Map<String, Object> management(Long userId,
+                                          Long assetId,
+                                          String horizonCode) {
         InvestmentAsset asset = requireAsset(userId, assetId);
         InvestmentProduct product = requireProduct(asset.getProductId());
-        QuantStrategyVersion champion = latestRole(userId, assetId, "CHAMPION");
-        QuantStrategyVersion challenger = latestRole(userId, assetId, "CHALLENGER");
+        String horizon = normalizeHorizon(horizonCode);
+        QuantStrategyVersion champion = latestRole(userId, assetId, horizon, "CHAMPION");
+        QuantStrategyVersion challenger = latestRole(userId, assetId, horizon, "CHALLENGER");
         QuantJob latestJob = jobMapper.selectOne(new LambdaQueryWrapper<QuantJob>()
                 .eq(QuantJob::getUserId, userId)
                 .eq(QuantJob::getAssetId, assetId)
+                .eq(QuantJob::getHorizonCode, horizon)
                 .orderByDesc(QuantJob::getCreatedAt)
                 .last("LIMIT 1"));
 
@@ -47,6 +52,7 @@ public class QuantModelManagementService {
         result.put("productId", product.getId());
         result.put("assetName", product.getName());
         result.put("productType", product.getProductType());
+        result.put("horizonCode", horizon);
         result.put("automaticTraining", true);
         result.put("training", trainingView(latestJob));
         result.put("champion", strategyView(champion));
@@ -73,14 +79,23 @@ public class QuantModelManagementService {
 
     private QuantStrategyVersion latestRole(Long userId,
                                             Long assetId,
+                                            String horizonCode,
                                             String deploymentRole) {
         return strategyMapper.selectOne(new LambdaQueryWrapper<QuantStrategyVersion>()
                 .eq(QuantStrategyVersion::getUserId, userId)
                 .eq(QuantStrategyVersion::getAssetId, assetId)
+                .eq(QuantStrategyVersion::getHorizonCode, horizonCode)
                 .eq(QuantStrategyVersion::getDeploymentRole, deploymentRole)
                 .orderByDesc(QuantStrategyVersion::getActivatedAt)
                 .orderByDesc(QuantStrategyVersion::getUpdatedAt)
                 .last("LIMIT 1"));
+    }
+
+    private static String normalizeHorizon(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("请选择预测周期");
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
     }
 
     private Map<String, Object> strategyView(QuantStrategyVersion strategy) {

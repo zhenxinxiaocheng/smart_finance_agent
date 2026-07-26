@@ -44,9 +44,10 @@ public class QuantModelManagementController {
     @GetMapping("/assets/{assetId}/model-management")
     public Result<Map<String, Object>> modelManagement(
             @RequestAttribute Long userId,
-            @PathVariable Long assetId
+            @PathVariable Long assetId,
+            @RequestParam String horizonCode
     ) {
-        return Result.success(quantService.modelManagement(userId, assetId));
+        return Result.success(quantService.modelManagement(userId, assetId, horizonCode));
     }
 
     @GetMapping("/assets/{assetId}/action-plan")
