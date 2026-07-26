@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.quant.QuantPrediction;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import com.smartfinance.agent.investment.quant.QuantActionPlanService;
 import com.smartfinance.agent.investment.quant.QuantModelManagementService;
+import com.smartfinance.agent.investment.quant.QuantInferenceOrchestrator;
 import com.smartfinance.agent.investment.quant.QuantModelRegistryService;
 import com.smartfinance.agent.investment.quant.QuantPredictionQueryService;
 import com.smartfinance.agent.investment.quant.QuantService;
@@ -26,6 +27,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.jdbc.Sql;
+import org.mockito.ArgumentCaptor;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +54,7 @@ import static org.mockito.Mockito.when;
         QuantPredictionQueryService.class,
         QuantActionPlanService.class,
         QuantModelManagementService.class,
+        QuantInferenceOrchestrator.class,
         QuantModelRegistryService.class,
         QuantTrainingOrchestrator.class,
         QuantTradingDecisionService.class
@@ -72,6 +75,8 @@ class QuantServiceImplIntegrationTest {
     private QuantActionPlanService actionPlanService;
     @Autowired
     private QuantModelManagementService modelManagementService;
+    @Autowired
+    private QuantInferenceOrchestrator inferenceOrchestrator;
     @Autowired
     private QuantModelRegistryService modelRegistryService;
     @Autowired
@@ -567,6 +572,136 @@ class QuantServiceImplIntegrationTest {
         verify(analysisServiceClient, times(1)).createQuantJob(any());
     }
 
+    @Test
+    void deployedModelUsesSavedArtifactForPredictionInsteadOfRetraining() {
+        String deployedModel = "7".repeat(64);
+        String artifactHash = "8".repeat(64);
+        String inferenceJobId = "9".repeat(32);
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        insertAllowedQuality();
+        jdbc.update("""
+                INSERT INTO product_daily_quote
+                    (product_id, trade_date, close_price, adjust_type, source)
+                VALUES
+                    (11, DATE '2026-07-23', 1500, 'QFQ', 'TEST'),
+                    (11, DATE '2026-07-24', 1510, 'QFQ', 'TEST')
+                """);
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'PAPER_VERIFIED',
+                        ?, '{}', CURRENT_TIMESTAMP)
+                """, deployedModel, FEATURE_VERSION, artifactHash);
+        jdbc.update("""
+                INSERT INTO quant_strategy_version
+                    (strategy_version, model_version, user_id, asset_id, product_type,
+                     model_family, horizon_code, deployment_role, status,
+                     validation_metrics_json, activated_at)
+                VALUES ('strategy-live', ?, 7, 12, 'STOCK', 'A_SHARE_STOCK', 'WAVE',
+                        'CHAMPION', 'CHAMPION', '{}', CURRENT_TIMESTAMP)
+                """, deployedModel);
+        when(benchmarkProfileService.resolve(
+                eq("STOCK"),
+                eq("600519"),
+                any(),
+                any(),
+                any()
+        )).thenReturn(new QuantBenchmarkProfileService.ResolvedBenchmark(
+                false,
+                null,
+                null,
+                null,
+                List.of(),
+                "BENCHMARK_UNAVAILABLE",
+                "未配置股票辅助基准"
+        ));
+        WealthOverviewResponse overview = new WealthOverviewResponse();
+        overview.setTotalAssets(java.math.BigDecimal.valueOf(100_000));
+        when(wealthService.overview(7L)).thenReturn(overview);
+        when(analysisServiceClient.createQuantJob(any())).thenReturn(Map.of(
+                "jobId", inferenceJobId,
+                "status", "QUEUED",
+                "configVersion", "quant-research-v2"
+        ));
+
+        Map<String, Object> result = inferenceOrchestrator.refresh(
+                7L,
+                12L,
+                "WAVE"
+        );
+
+        assertThat(result)
+                .containsEntry("jobId", inferenceJobId)
+                .containsEntry("type", "PREDICT");
+        ArgumentCaptor<Map> request = ArgumentCaptor.forClass(Map.class);
+        verify(analysisServiceClient).createQuantJob(request.capture());
+        assertThat(castView(request.getValue()))
+                .containsEntry("type", "PREDICT")
+                .containsEntry("modelVersion", deployedModel)
+                .containsEntry("modelFileHash", artifactHash)
+                .containsEntry("modelConfigVersion", "quant-research-v2")
+                .containsEntry("modelStatus", "PAPER_VERIFIED")
+                .containsEntry("strategyVersion", "strategy-live");
+    }
+
+    @Test
+    void completedSavedModelInferencePersistsAFormalPrediction() {
+        jdbc.update("""
+                UPDATE quant_job
+                SET job_type = 'PREDICT', model_version = ?, strategy_version = ?
+                WHERE external_job_id = ?
+                """, MODEL_VERSION, STRATEGY_VERSION, JOB_ID);
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'PAPER_VERIFIED',
+                        ?, '{}', CURRENT_TIMESTAMP)
+                """, MODEL_VERSION, FEATURE_VERSION, "1".repeat(64));
+        jdbc.update("""
+                INSERT INTO quant_strategy_version
+                    (strategy_version, model_version, user_id, asset_id, product_type,
+                     model_family, horizon_code, deployment_role, status,
+                     validation_metrics_json, activated_at)
+                VALUES (?, ?, 7, 12, 'STOCK', 'A_SHARE_STOCK', 'WAVE',
+                        'CHAMPION', 'CHAMPION', '{}', CURRENT_TIMESTAMP)
+                """, STRATEGY_VERSION, MODEL_VERSION);
+        when(analysisServiceClient.quantJob(JOB_ID)).thenReturn(
+                completedInferenceRemoteJob()
+        );
+
+        Map<String, Object> result = quantService.job(7L, JOB_ID);
+
+        assertThat(result).containsEntry("status", "SUCCEEDED");
+        assertThat(count("quant_prediction")).isEqualTo(1);
+        assertThat(jdbc.queryForMap("""
+                SELECT model_version, strategy_version
+                FROM quant_prediction
+                """))
+                .containsEntry("MODEL_VERSION", MODEL_VERSION)
+                .containsEntry("STRATEGY_VERSION", STRATEGY_VERSION);
+        assertThat(jdbc.queryForObject(
+                "SELECT profit_probability FROM quant_prediction",
+                java.math.BigDecimal.class
+        )).isEqualByComparingTo("0.68");
+        assertThat(jdbc.queryForObject(
+                "SELECT loss_probability FROM quant_prediction",
+                java.math.BigDecimal.class
+        )).isEqualByComparingTo("0.32");
+        assertThat(jdbc.queryForObject(
+                "SELECT expected_net_return FROM quant_prediction",
+                java.math.BigDecimal.class
+        )).isEqualByComparingTo("0.025");
+        assertThat(count("quant_backtest_run")).isZero();
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
     }
@@ -645,6 +780,42 @@ class QuantServiceImplIntegrationTest {
         return Map.of(
                 "jobId", JOB_ID,
                 "type", "TRAIN_PREDICT",
+                "status", "SUCCEEDED",
+                "result", result
+        );
+    }
+
+    private static Map<String, Object> completedInferenceRemoteJob() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("featureSetVersion", FEATURE_VERSION);
+        result.put("featureArtifactUri", "quant-features/inference.parquet");
+        result.put("featureArtifactHash", "f".repeat(64));
+        result.put("featureSchema", List.of("momentum_primary", "realized_volatility"));
+        result.put("quantConfigVersion", "quant-research-v2");
+        result.put("modelFamily", "A_SHARE_STOCK");
+        result.put("modelVersion", MODEL_VERSION);
+        result.put("modelFileHash", "1".repeat(64));
+        result.put("modelStatus", "PAPER_VERIFIED");
+        result.put("strategyVersion", STRATEGY_VERSION);
+        result.put("asOfDate", "2026-07-24");
+        result.put("profitProbability", 0.68);
+        result.put("lossProbability", 0.32);
+        result.put("expectedNetReturn", 0.025);
+        result.put("predictionInterval", List.of(-0.01, 0.06));
+        result.put("confidence", "MEDIUM");
+        result.put("action", "HOLD");
+        result.put("targetWeight", 0.10);
+        result.put("marketRegime", "UPTREND");
+        result.put("benchmarkCode", "CSI300");
+        result.put("roundTripCostBps", 18.0);
+        result.put("featureVector", Map.of(
+                "momentum_primary", 0.1,
+                "realized_volatility", 0.2
+        ));
+        result.put("topFactors", List.of());
+        result.put("riskFlags", List.of());
+        return Map.of(
+                "jobId", JOB_ID,
                 "status", "SUCCEEDED",
                 "result", result
         );

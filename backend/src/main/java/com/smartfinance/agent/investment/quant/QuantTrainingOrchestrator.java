@@ -236,7 +236,7 @@ public class QuantTrainingOrchestrator {
         ProductDailyQuote latestQuote = quotes.get(quotes.size() - 1);
         request.put("currentWeight", PortfolioWeightCalculator.calculate(
                 asset.getQuantity(), latestQuote.getClosePrice(), wealth.getTotalAssets()));
-        request.put("records", quoteRecords(quotes, product.getProductType()));
+        request.put("records", QuantMarketRecords.fromQuotes(quotes, product.getProductType()));
         if (universeId != null) {
             request.put("researchUniverseVersion",
                     researchContextVersion(userId, assetId, universeId));
@@ -309,7 +309,7 @@ public class QuantTrainingOrchestrator {
                 .eq(QuantJob::getHorizonProfileVersion, horizonProfileVersion)
                 .eq(QuantJob::getHorizonCode, horizon.code())
                 .eq(QuantJob::getHorizonDays, horizon.targetHoldingDays())
-                .in(QuantJob::getStatus, "QUEUED", "RUNNING")
+                .in(QuantJob::getStatus, "QUEUED", "RUNNING", "SUCCEEDED")
                 .orderByDesc(QuantJob::getCreatedAt)
                 .last("LIMIT 1"));
     }
@@ -463,7 +463,7 @@ public class QuantTrainingOrchestrator {
             item.put("code", membership.getCode());
             item.put("productType", product.getProductType());
             item.put("datasetVersion", quality.getDatasetVersion());
-            item.put("records", quoteRecords(quotes, product.getProductType()));
+            item.put("records", QuantMarketRecords.fromQuotes(quotes, product.getProductType()));
             if (benchmark.available()) {
                 item.put("benchmarkCode", benchmark.benchmarkCode());
                 item.put("benchmarkProfileVersion", benchmark.sourceVersion());
@@ -472,22 +472,6 @@ public class QuantTrainingOrchestrator {
             result.add(item);
         }
         return result;
-    }
-
-    private static List<Map<String, Object>> quoteRecords(List<ProductDailyQuote> quotes, String productType) {
-        return quotes.stream().map(quote -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("data_date", quote.getTradeDate().toString());
-            if ("MUTUAL_FUND".equals(productType)) item.put("nav", quote.getClosePrice());
-            else {
-                item.put("open", quote.getOpenPrice());
-                item.put("high", quote.getHighPrice());
-                item.put("low", quote.getLowPrice());
-                item.put("close", quote.getClosePrice());
-                item.put("volume", quote.getVolume());
-            }
-            return item;
-        }).toList();
     }
 
     private InvestmentAsset requireAsset(Long userId, Long assetId) {

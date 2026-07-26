@@ -13,6 +13,7 @@ import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentAnalysisSnapshotMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+import com.smartfinance.agent.investment.quant.QuantAutomationService;
 import com.smartfinance.agent.mapper.FinancialProfileMapper;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -44,16 +45,24 @@ class InvestmentDataJobWorkerTest {
     private InvestmentDataJobService jobService;
     private InvestmentAnalysisService analysisService;
     private InvestmentDataJobWorker worker;
+    private QuantAutomationService quantAutomationService;
     private MutableClock clock;
 
     @BeforeEach
     void setUp() {
         jobService = mock(InvestmentDataJobService.class);
         analysisService = mock(InvestmentAnalysisService.class);
+        quantAutomationService = mock(QuantAutomationService.class);
         InvestmentHorizonProperties horizonProperties = new InvestmentHorizonProperties();
         horizonProperties.setMinimumHistoryTradingDays(20);
         clock = new MutableClock(Instant.parse("2026-07-22T02:00:00Z"), SHANGHAI);
-        worker = new InvestmentDataJobWorker(jobService, analysisService, horizonProperties, clock);
+        worker = new InvestmentDataJobWorker(
+                jobService,
+                analysisService,
+                horizonProperties,
+                clock,
+                quantAutomationService
+        );
     }
 
     @Test
@@ -97,6 +106,7 @@ class InvestmentDataJobWorkerTest {
         verify(analysisService).refresh(7L, 11L);
         verify(analysisService, never()).retryData(any(), any());
         verify(jobService).markSucceeded(eq(91L), finishToken.capture(), eq(20), eq(NOW));
+        verify(quantAutomationService).onDataReady(7L, 11L);
         assertThat(finishToken.getValue()).isEqualTo(claimToken.getValue());
         assertThat(UUID.fromString(claimToken.getValue()).toString()).isEqualTo(claimToken.getValue());
     }
@@ -116,6 +126,7 @@ class InvestmentDataJobWorkerTest {
         verify(analysisService).retryData(7L, 11L);
         verify(analysisService, never()).refresh(any(), any());
         verify(jobService).markSucceeded(eq(91L), anyString(), eq(20), eq(NOW));
+        verify(quantAutomationService).onDataReady(7L, 11L);
     }
 
     @Test

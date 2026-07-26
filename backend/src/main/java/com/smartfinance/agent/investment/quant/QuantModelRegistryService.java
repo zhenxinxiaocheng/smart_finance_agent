@@ -61,16 +61,22 @@ public class QuantModelRegistryService {
         String modelVersion = text(result.get("modelVersion"));
         String strategyVersion = text(result.get("strategyVersion"));
         boolean strictlyValidated = isStrictlyValidated(result);
+        boolean deployedInference = isDeployedInference(
+                job,
+                result,
+                modelVersion,
+                strategyVersion
+        );
         if (featureSetVersion == null) {
             return;
         }
         persistFeatureSet(job, result, featureSetVersion);
-        if (modelVersion != null) {
+        if (modelVersion != null && !deployedInference) {
             persistModelAndStrategy(job, result, modelVersion, strategyVersion, strictlyValidated);
             persistValidationReport(job, result, modelVersion);
             persistBacktestRun(job, result, modelVersion, strategyVersion);
         }
-        if (!strictlyValidated) {
+        if (!strictlyValidated && !deployedInference) {
             return;
         }
         QuantPrediction existing = predictionMapper.selectOne(new LambdaQueryWrapper<QuantPrediction>()
@@ -376,6 +382,39 @@ public class QuantModelRegistryService {
             return false;
         }
         return Boolean.TRUE.equals(report.get("passed"));
+    }
+
+    private boolean isDeployedInference(QuantJob job,
+                                        Map<String, Object> result,
+                                        String modelVersion,
+                                        String strategyVersion) {
+        if (!"PREDICT".equals(job.getJobType())
+                || modelVersion == null
+                || strategyVersion == null
+                || !Objects.equals(modelVersion, job.getModelVersion())
+                || !Objects.equals(strategyVersion, job.getStrategyVersion())) {
+            return false;
+        }
+        QuantModelVersion model = modelMapper.selectOne(
+                new LambdaQueryWrapper<QuantModelVersion>()
+                        .eq(QuantModelVersion::getModelVersion, modelVersion)
+                        .last("LIMIT 1")
+        );
+        if (model == null
+                || !List.of("VALIDATED", "PAPER_VERIFIED").contains(model.getStatus())
+                || !Objects.equals(model.getStatus(), text(result.get("modelStatus")))
+                || !Objects.equals(model.getArtifactHash(), text(result.get("modelFileHash")))) {
+            return false;
+        }
+        return strategyMapper.selectCount(
+                new LambdaQueryWrapper<QuantStrategyVersion>()
+                        .eq(QuantStrategyVersion::getStrategyVersion, strategyVersion)
+                        .eq(QuantStrategyVersion::getModelVersion, modelVersion)
+                        .eq(QuantStrategyVersion::getUserId, job.getUserId())
+                        .eq(QuantStrategyVersion::getAssetId, job.getAssetId())
+                        .in(QuantStrategyVersion::getDeploymentRole, "CHAMPION", "CHALLENGER")
+                        .in(QuantStrategyVersion::getStatus, "CHAMPION", "PAPER")
+        ) == 1;
     }
 
     private static String text(Object value) {

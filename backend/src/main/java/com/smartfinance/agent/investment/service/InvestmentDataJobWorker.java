@@ -3,6 +3,8 @@ package com.smartfinance.agent.investment.service;
 import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
 import com.smartfinance.agent.investment.dto.InvestmentAssetDetailResponse;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
+import com.smartfinance.agent.investment.quant.QuantAutomationService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -13,6 +15,7 @@ import java.time.ZoneId;
 import java.util.UUID;
 
 @Component
+@Slf4j
 public class InvestmentDataJobWorker {
 
     private static final ZoneId RUNTIME_ZONE = ZoneId.of("Asia/Shanghai");
@@ -25,22 +28,32 @@ public class InvestmentDataJobWorker {
     private final InvestmentAnalysisService analysisService;
     private final InvestmentHorizonProperties horizonProperties;
     private final Clock clock;
+    private final QuantAutomationService quantAutomationService;
 
     @Autowired
     public InvestmentDataJobWorker(InvestmentDataJobService jobService,
                                    InvestmentAnalysisService analysisService,
-                                   InvestmentHorizonProperties horizonProperties) {
-        this(jobService, analysisService, horizonProperties, Clock.system(RUNTIME_ZONE));
+                                   InvestmentHorizonProperties horizonProperties,
+                                   QuantAutomationService quantAutomationService) {
+        this(
+                jobService,
+                analysisService,
+                horizonProperties,
+                Clock.system(RUNTIME_ZONE),
+                quantAutomationService
+        );
     }
 
     InvestmentDataJobWorker(InvestmentDataJobService jobService,
                             InvestmentAnalysisService analysisService,
                             InvestmentHorizonProperties horizonProperties,
-                            Clock clock) {
+                            Clock clock,
+                            QuantAutomationService quantAutomationService) {
         this.jobService = jobService;
         this.analysisService = analysisService;
         this.horizonProperties = horizonProperties;
         this.clock = clock;
+        this.quantAutomationService = quantAutomationService;
     }
 
     @Scheduled(fixedDelayString = "${investment.history-job.scan-delay-ms:1000}")
@@ -70,6 +83,7 @@ public class InvestmentDataJobWorker {
             LocalDateTime completionTime = LocalDateTime.now(clock);
             if (recordCount >= minimum) {
                 jobService.markSucceeded(claimedJob.getId(), leaseToken, recordCount, completionTime);
+                triggerQuantAutomation(claimedJob);
             } else if (recordCount > 0) {
                 jobService.markPartial(claimedJob.getId(), leaseToken, recordCount,
                         truncate("历史记录仅 " + recordCount + " 条，低于最低要求 " + minimum + " 条"),
@@ -81,6 +95,18 @@ public class InvestmentDataJobWorker {
             String message = exception.getMessage();
             retryOrFail(claimedJob, leaseToken, LocalDateTime.now(clock),
                     message == null || message.isBlank() ? exception.getClass().getSimpleName() : message);
+        }
+    }
+
+    private void triggerQuantAutomation(InvestmentDataJob job) {
+        try {
+            quantAutomationService.onDataReady(job.getUserId(), job.getAssetId());
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Quant automation deferred after data refresh: assetId={}",
+                    job.getAssetId(),
+                    exception
+            );
         }
     }
 
