@@ -22,6 +22,7 @@ from .providers import (
     ProviderUnavailable,
     akshare_fx_rates,
     fetch_a_share_trade_calendar,
+    fetch_benchmark_history,
     fetch_realtime_stock_quote,
     fetch_stock_fundamentals,
     resolve_product_metadata,
@@ -46,6 +47,18 @@ class QuoteRequest(BaseModel):
     product_type: str = Field(min_length=2, max_length=30)
     start_date: date
     end_date: date
+
+
+class BenchmarkHistoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    benchmark_code: str = Field(
+        alias="benchmarkCode",
+        min_length=1,
+        max_length=80,
+    )
+    start_date: date = Field(alias="startDate")
+    end_date: date = Field(alias="endDate")
 
 
 class DataQualityValidateRequest(BaseModel):
@@ -147,11 +160,42 @@ class QuantJobRequest(BaseModel):
         default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
     product_type: Literal["STOCK", "MUTUAL_FUND"] | None = Field(default=None, alias="productType")
+    model_family: Literal[
+        "A_SHARE_STOCK",
+        "INDEX_FUND",
+        "ACTIVE_FUND",
+        "QDII_INDEX_FUND",
+        "COMMODITY_FUND",
+    ] | None = Field(default=None, alias="modelFamily")
     horizon_profile_version: str | None = Field(default=None, alias="horizonProfileVersion")
     horizon_code: str | None = Field(default=None, alias="horizonCode", min_length=1, max_length=32)
     horizon_days: int | None = Field(default=None, alias="horizonDays", ge=1)
+    benchmark_code: str | None = Field(
+        default=None, alias="benchmarkCode", min_length=1, max_length=32
+    )
+    benchmark_profile_version: str | None = Field(
+        default=None, alias="benchmarkProfileVersion", min_length=1, max_length=120
+    )
+    experiment_fingerprint: str | None = Field(
+        default=None, alias="experimentFingerprint", pattern=r"^[0-9a-f]{64}$"
+    )
+    research_universe_version: str | None = Field(
+        default=None, alias="researchUniverseVersion", pattern=r"^[0-9a-f]{64}$"
+    )
+    experiment_parameters: dict[str, float | int] = Field(
+        default_factory=dict, alias="experimentParameters"
+    )
+    algorithm: Literal[
+        "ELASTIC_NET",
+        "GRADIENT_BOOSTING",
+        "VALIDATED_ENSEMBLE",
+    ] = "VALIDATED_ENSEMBLE"
+    current_weight: float | None = Field(default=None, alias="currentWeight", ge=0, le=1)
     records: list[dict[str, Any]] = Field(default_factory=list)
     benchmark_records: list[dict[str, Any]] = Field(default_factory=list, alias="benchmarkRecords")
+    universe_records: list[dict[str, Any]] = Field(
+        default_factory=list, alias="universeRecords"
+    )
     fundamentals: list[dict[str, Any]] = Field(default_factory=list)
     prices: list[float] = Field(default_factory=list)
     signals: list[float] = Field(default_factory=list)
@@ -164,8 +208,8 @@ class QuantJobRequest(BaseModel):
             if len(self.records) < 2:
                 raise ValueError("analysis jobs require market records")
         if self.type == "BACKTEST":
-            if len(self.prices) < 2 or len(self.prices) != len(self.signals):
-                raise ValueError("backtest jobs require equal prices and signals")
+            if len(self.records) < 2 or len(self.records) != len(self.signals):
+                raise ValueError("backtest jobs require equal market records and signals")
         return self
 
 
@@ -243,6 +287,28 @@ def daily_quotes(request: QuoteRequest):
         "adapterVersion": records[0].adapter_version,
         "records": [item.json_dict() for item in records],
         "warnings": warnings,
+    }
+
+
+@app.post("/internal/v1/market-data/benchmarks/daily", dependencies=[Depends(internal_auth)])
+def daily_benchmark(request: BenchmarkHistoryRequest):
+    try:
+        records = fetch_benchmark_history(
+            request.benchmark_code,
+            request.start_date,
+            request.end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "benchmarkCode": request.benchmark_code,
+        "provider": records[0]["provider"],
+        "adapterVersion": records[0]["adapter_version"],
+        "dataDate": records[-1]["data_date"],
+        "records": records,
+        "warnings": [],
     }
 
 
@@ -371,6 +437,19 @@ def create_quant_job(request: QuantJobRequest):
 def get_quant_job(jobId: str):
     try:
         return quant_jobs().get(jobId)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="quant job was not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid quant job id") from exc
+
+
+@app.post(
+    "/internal/v1/quant/jobs/{jobId}/cancel",
+    dependencies=[Depends(internal_auth)],
+)
+def cancel_quant_job(jobId: str):
+    try:
+        return quant_jobs().cancel(jobId)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="quant job was not found") from exc
     except ValueError as exc:

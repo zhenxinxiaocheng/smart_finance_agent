@@ -40,7 +40,7 @@
           <label>备注<textarea v-model="form.note" class="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring" /></label>
           <Button class="w-full" :disabled="saving" @click="save">{{ saving ? '保存中' : '保存持仓' }}</Button>
         </div>
-        <InvestmentPlanCard v-if="asset.productType === 'MUTUAL_FUND'" :asset="asset" />
+        <InvestmentPlanCard v-if="open && asset.productType === 'MUTUAL_FUND'" :asset="asset" @holding-updated="$emit('saved')" />
         <div class="rounded-xl border p-4 text-sm">
           <h3 class="font-medium">数据说明</h3>
           <dl class="mt-3 grid grid-cols-[88px_1fr] gap-y-2 text-muted-foreground"><dt>币种</dt><dd>{{ asset.currency }}</dd><dt>状态</dt><dd>{{ asset.syncStatus }}</dd><dt>最后更新</dt><dd>{{ formatTime(asset.updatedAt) }}</dd><template v-if="asset.syncError"><dt>获取提示</dt><dd class="text-amber-500">{{ asset.syncError }}</dd></template></dl>

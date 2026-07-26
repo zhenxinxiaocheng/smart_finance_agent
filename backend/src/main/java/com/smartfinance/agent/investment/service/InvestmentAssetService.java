@@ -4,6 +4,8 @@ import com.smartfinance.agent.investment.dto.InvestmentAssetCreateRequest;
 import com.smartfinance.agent.investment.dto.InvestmentAssetUpdateRequest;
 import com.smartfinance.agent.investment.dto.InvestmentAssetView;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 public interface InvestmentAssetService {
@@ -14,4 +16,9 @@ public interface InvestmentAssetService {
     InvestmentAssetView update(Long userId, Long assetId, InvestmentAssetUpdateRequest request);
     void delete(Long userId, Long assetId);
     InvestmentAssetView sync(Long userId, Long assetId);
+    InvestmentAssetView refresh(Long userId, Long assetId, boolean force);
+    List<InvestmentAssetView> refreshAll(Long userId, boolean force);
+    InvestmentAssetView applyRecurringInvestment(Long userId, Long accountId, Long productId,
+                                                 BigDecimal amount, BigDecimal price,
+                                                 Long planId, LocalDate tradeDate);
 }

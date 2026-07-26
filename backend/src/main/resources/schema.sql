@@ -606,11 +606,18 @@ CREATE TABLE IF NOT EXISTS `investment_plan` (
     `frequency` VARCHAR(20) NOT NULL,
     `execution_day` INT NOT NULL,
     `next_execution_date` DATE NOT NULL,
+    `last_execution_date` DATE NULL,
+    `last_execution_amount` DECIMAL(28,8) NULL,
+    `last_execution_price` DECIMAL(28,10) NULL,
+    `execution_count` INT NOT NULL DEFAULT 0,
+    `last_execution_status` VARCHAR(30) NOT NULL DEFAULT 'WAITING',
+    `last_execution_message` VARCHAR(500) NULL,
     `enabled` TINYINT NOT NULL DEFAULT 1,
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
-    KEY `idx_investment_plan_user` (`user_id`, `enabled`, `next_execution_date`)
+    KEY `idx_investment_plan_user` (`user_id`, `enabled`, `next_execution_date`),
+    KEY `idx_investment_plan_due` (`enabled`, `next_execution_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Recurring investment plan';
 
 CREATE TABLE IF NOT EXISTS `daily_exchange_rate` (

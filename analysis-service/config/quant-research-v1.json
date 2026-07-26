@@ -32,6 +32,8 @@
     "walkForwardFolds": 5,
     "embargoHorizonMultiplier": 1.0,
     "calibrationFraction": 0.2,
+    "minimumCalibrationSamples": 20,
+    "minimumEvaluationSamples": 20,
     "elasticNet": {
       "classificationC": 0.5,
       "l1Ratio": 0.35,
@@ -54,14 +56,25 @@
     "maximumDrawdown": 0.2,
     "minimumBrierSkill": 0.0,
     "minimumFoldPassRatio": 0.6,
+    "costStressAnnualizedPenalty": 0.005,
     "minimumPaperTradingDays": 60
   },
   "monitoring": {
     "maximumBrierScore": 0.25,
     "minimumRealizedExcessReturn": 0.0,
+    "maximumFeatureZScore": 3.0,
+    "maximumLabelZScore": 3.0,
     "consecutiveFailuresBeforeRetirement": 3
   },
   "prediction": {
+    "ensemble": {
+      "linearWeight": 0.5
+    },
+    "confidence": {
+      "highWidthToExpectedRatio": 1.0,
+      "mediumWidthToExpectedRatio": 2.0,
+      "minimumExpectedMagnitude": 0.000000000001
+    },
     "buyWatchProbability": 0.58,
     "addProbability": 0.66,
     "reduceProbability": 0.44,
@@ -102,6 +115,9 @@
     "negativeTrend": -0.001
   },
   "backtest": {
+    "initialCash": 100000.0,
+    "boardLotSize": 100,
+    "priceLimitRatio": 0.1,
     "oneWayCostBps": 9.0,
     "slippageBps": 5.0,
     "minimumPrice": 0.000001

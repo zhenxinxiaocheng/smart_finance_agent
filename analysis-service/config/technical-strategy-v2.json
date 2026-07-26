@@ -3,6 +3,7 @@
   "providers": {
     "realtime_http_timeout_seconds": 5,
     "history_http_timeout_seconds": 8,
+    "fund_snapshot_cache_ttl_ms": 30000,
     "market_timezone": "Asia/Shanghai",
     "tencent_history_max_records": 1000,
     "tencent_history_chunk_calendar_days": 720,

@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS investment_data_job (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    asset_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    job_type VARCHAR(30) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    force_refresh TINYINT NOT NULL DEFAULT 0,
+    record_count INT NOT NULL DEFAULT 0,
+    attempt_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME,
+    lease_until DATETIME,
+    lease_token VARCHAR(36),
+    error_message VARCHAR(1000),
+    started_at DATETIME,
+    finished_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_investment_data_job_asset_type (asset_id, job_type),
+    KEY idx_investment_data_job_pending (status, next_retry_at, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

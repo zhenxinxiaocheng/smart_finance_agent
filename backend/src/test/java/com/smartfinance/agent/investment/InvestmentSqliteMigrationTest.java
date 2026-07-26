@@ -32,11 +32,14 @@ class InvestmentSqliteMigrationTest {
                                  "'wealth_baseline','investment_analysis_preference','investment_analysis_snapshot'," +
                                  "'investment_horizon_profile','investment_horizon_setting'," +
                                  "'quant_feature_set','quant_model_version','quant_strategy_version'," +
-                                 "'quant_prediction','quant_paper_order')")) {
+                                 "'quant_prediction','quant_paper_order','investment_data_job'," +
+                                 "'benchmark_profile','quant_research_universe'," +
+                                 "'quant_universe_membership','quant_experiment'," +
+                                 "'quant_validation_report')")) {
                 try (var result = statement.executeQuery()) {
                     int count = 0;
                     while (result.next()) count++;
-                    assertThat(count).isEqualTo(14);
+                    assertThat(count).isEqualTo(20);
                 }
             }
             try (var connection = DriverManager.getConnection(url);
@@ -56,8 +59,34 @@ class InvestmentSqliteMigrationTest {
                         .isTrue();
                 assertThat(columnExists(connection, "quant_prediction", "benchmark_code"))
                         .isTrue();
+                assertThat(columnExists(connection, "investment_data_job", "lease_token"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_job", "experiment_fingerprint"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_job", "error_code"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_job", "error_summary"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_prediction", "target_weight"))
+                        .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
+            try (var connection = DriverManager.getConnection(url);
+                 var statement = connection.prepareStatement(
+                         "SELECT COUNT(*) FROM pragma_index_list('investment_data_job') " +
+                                 "WHERE name = 'idx_investment_data_job_pending'" );
+                 var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getInt(1)).isEqualTo(1);
+            }
+            try (var connection = DriverManager.getConnection(url)) {
+                assertThat(indexExists(connection, "investment_account", "uk_investment_active_paper_user"))
+                        .isTrue();
+                assertThat(indexExists(connection, "quant_paper_order", "uk_quant_paper_order_prediction"))
+                        .isTrue();
+                assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
+                        .isTrue();
+            }
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -107,7 +136,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("10");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -149,6 +178,17 @@ class InvestmentSqliteMigrationTest {
                 "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")) {
             statement.setString(1, table);
             statement.setString(2, column);
+            try (var result = statement.executeQuery()) {
+                return result.next() && result.getInt(1) == 1;
+            }
+        }
+    }
+
+    private static boolean indexExists(Connection connection, String table, String index) throws Exception {
+        try (var statement = connection.prepareStatement(
+                "SELECT COUNT(*) FROM pragma_index_list(?) WHERE name = ?")) {
+            statement.setString(1, table);
+            statement.setString(2, index);
             try (var result = statement.executeQuery()) {
                 return result.next() && result.getInt(1) == 1;
             }

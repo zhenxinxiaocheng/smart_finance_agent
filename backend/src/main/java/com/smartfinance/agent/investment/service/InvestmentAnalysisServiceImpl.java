@@ -44,6 +44,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final InvestmentAiExplanationService aiExplanationService;
     private final ObjectMapper objectMapper;
     private final PersonalizedActionCalculator actionCalculator;
+    private final InvestmentDataJobService dataJobService;
 
     public InvestmentAnalysisServiceImpl(InvestmentAssetService assetService,
                                          InvestmentProductMapper productMapper,
@@ -59,7 +60,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          FinancialProfileMapper financialProfileMapper,
                                          InvestmentAiExplanationService aiExplanationService,
                                          PersonalizedActionCalculator actionCalculator,
-                                         ObjectMapper objectMapper) {
+                                         ObjectMapper objectMapper,
+                                         InvestmentDataJobService dataJobService) {
         this.assetService = assetService;
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
@@ -75,6 +77,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.aiExplanationService = aiExplanationService;
         this.actionCalculator = actionCalculator;
         this.objectMapper = objectMapper;
+        this.dataJobService = dataJobService;
     }
 
     @Override
@@ -121,6 +124,11 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         if (product == null) throw new IllegalArgumentException("投资产品不存在");
         ResolvedHorizonProfile horizonProfile = horizonService.resolve(userId, assetId);
         List<ProductDailyQuote> quotes = loadQuotes(product);
+        Map<String, Object> historyJob = dataJobService.statusForAsset(userId, assetId);
+        if (historyJob.isEmpty() && quotes.size() < horizonProperties.getMinimumHistoryTradingDays()) {
+            dataJobService.ensureQueued(userId, assetId, product.getId(), product.getProductType(), false);
+            historyJob = dataJobService.statusForAsset(userId, assetId);
+        }
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
         Map<String, Object> quality = dataQualityService.latestStatus(product);
         boolean blocked = quality.get("datasetVersion") == null
@@ -160,6 +168,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         sourceStatus.put("historicalCache", historicalCache);
         sourceStatus.put("quoteDate", quotes.isEmpty() ? null : quotes.get(quotes.size() - 1).getTradeDate());
         sourceStatus.put("analyzedAt", snapshot == null ? null : snapshot.getAnalyzedAt());
+        sourceStatus.put("historyJob", historyJob);
         InvestmentAssetDetailResponse response = new InvestmentAssetDetailResponse();
         response.setAsset(asset);
         response.setTechnicalAnalysis(technical);

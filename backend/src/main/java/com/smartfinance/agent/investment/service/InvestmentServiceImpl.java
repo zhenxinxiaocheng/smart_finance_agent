@@ -176,12 +176,6 @@ public class InvestmentServiceImpl implements InvestmentService {
                 .orderByDesc(InvestmentPlan::getEnabled)
                 .orderByAsc(InvestmentPlan::getNextExecutionDate));
         plans.forEach(plan -> {
-            LocalDate normalizedDate = tradingCalendar.nextOrSameTradingDay(plan.getNextExecutionDate());
-            if (!normalizedDate.equals(plan.getNextExecutionDate())) {
-                plan.setNextExecutionDate(normalizedDate);
-                plan.setUpdatedAt(LocalDateTime.now());
-                planMapper.updateById(plan);
-            }
             InvestmentProduct product = productMapper.selectById(plan.getProductId());
             if (product != null) {
                 plan.setProductName(product.getName());
@@ -196,6 +190,88 @@ public class InvestmentServiceImpl implements InvestmentService {
     @Transactional
     public InvestmentPlan createPlan(Long userId, InvestmentPlanRequest request) {
         requireAccount(userId, request.getAccountId());
+        validatePlanRequest(request);
+        InvestmentProduct product = requireProduct(request.getProduct());
+        Long duplicate = planMapper.selectCount(new LambdaQueryWrapper<InvestmentPlan>()
+                .eq(InvestmentPlan::getUserId, userId)
+                .eq(InvestmentPlan::getAccountId, request.getAccountId())
+                .eq(InvestmentPlan::getProductId, product.getId()));
+        if (duplicate != null && duplicate > 0) {
+            throw new IllegalArgumentException("该基金已经存在定投计划，请直接修改原计划");
+        }
+        String frequency = clean(request.getFrequency()).toUpperCase(Locale.ROOT);
+        InvestmentPlan plan = new InvestmentPlan();
+        plan.setUserId(userId);
+        plan.setAccountId(request.getAccountId());
+        plan.setProductId(product.getId());
+        plan.setAmount(request.getAmount());
+        plan.setCurrency(currency(request.getCurrency()));
+        plan.setFrequency(frequency);
+        plan.setExecutionDay(request.getExecutionDay());
+        plan.setNextExecutionDate(tradingCalendar.nextOrSameTradingDay(
+                Objects.requireNonNull(request.getNextExecutionDate(), "下次计划日期不能为空")));
+        plan.setExecutionCount(0);
+        plan.setLastExecutionStatus("WAITING");
+        plan.setEnabled(1);
+        plan.setCreatedAt(LocalDateTime.now());
+        plan.setUpdatedAt(plan.getCreatedAt());
+        planMapper.insert(plan);
+        return plan;
+    }
+
+    @Override
+    @Transactional
+    public InvestmentPlan updatePlan(Long userId, Long planId, InvestmentPlanRequest request) {
+        InvestmentPlan plan = requirePlan(userId, planId);
+        requireAccount(userId, request.getAccountId());
+        if (!Objects.equals(plan.getAccountId(), request.getAccountId())) {
+            throw new IllegalArgumentException("定投计划不能切换投资账户");
+        }
+        validatePlanRequest(request);
+        plan.setAmount(request.getAmount());
+        plan.setCurrency(currency(request.getCurrency()));
+        plan.setFrequency(clean(request.getFrequency()).toUpperCase(Locale.ROOT));
+        plan.setExecutionDay(request.getExecutionDay());
+        plan.setNextExecutionDate(tradingCalendar.nextOrSameTradingDay(request.getNextExecutionDate()));
+        plan.setLastExecutionStatus(Integer.valueOf(1).equals(plan.getEnabled()) ? "WAITING" : "PAUSED");
+        plan.setLastExecutionMessage(null);
+        plan.setUpdatedAt(LocalDateTime.now());
+        planMapper.updateById(plan);
+        return plan;
+    }
+
+    @Override
+    @Transactional
+    public InvestmentPlan setPlanEnabled(Long userId, Long planId, boolean enabled) {
+        InvestmentPlan plan = requirePlan(userId, planId);
+        plan.setEnabled(enabled ? 1 : 0);
+        if (enabled) {
+            LocalDate today = LocalDate.now(runtimeProperties.getMarket().getZone());
+            LocalDate restart = plan.getNextExecutionDate().isBefore(today) ? today : plan.getNextExecutionDate();
+            plan.setNextExecutionDate(tradingCalendar.nextOrSameTradingDay(restart));
+        }
+        plan.setLastExecutionStatus(enabled ? "WAITING" : "PAUSED");
+        plan.setLastExecutionMessage(enabled ? null : "计划已暂停");
+        plan.setUpdatedAt(LocalDateTime.now());
+        planMapper.updateById(plan);
+        return plan;
+    }
+
+    @Override
+    @Transactional
+    public void deletePlan(Long userId, Long planId) {
+        planMapper.deleteById(requirePlan(userId, planId).getId());
+    }
+
+    private InvestmentPlan requirePlan(Long userId, Long planId) {
+        InvestmentPlan plan = planMapper.selectById(planId);
+        if (plan == null || !Objects.equals(plan.getUserId(), userId)) {
+            throw new IllegalArgumentException("定投计划不存在");
+        }
+        return plan;
+    }
+
+    private void validatePlanRequest(InvestmentPlanRequest request) {
         String frequency = clean(request.getFrequency()).toUpperCase(Locale.ROOT);
         if (!Set.of("DAILY", "WEEKLY", "MONTHLY").contains(frequency)) {
             throw new IllegalArgumentException("定投频率仅支持 DAILY、WEEKLY 或 MONTHLY");
@@ -207,37 +283,7 @@ public class InvestmentServiceImpl implements InvestmentService {
         if (request.getExecutionDay() < 1 || request.getExecutionDay() > maxDay) {
             throw new IllegalArgumentException("定投执行日超出允许范围");
         }
-        InvestmentPlan plan = new InvestmentPlan();
-        plan.setUserId(userId);
-        plan.setAccountId(request.getAccountId());
-        plan.setProductId(requireProduct(request.getProduct()).getId());
-        plan.setAmount(request.getAmount());
-        plan.setCurrency(currency(request.getCurrency()));
-        plan.setFrequency(frequency);
-        plan.setExecutionDay(request.getExecutionDay());
-        plan.setNextExecutionDate(tradingCalendar.nextOrSameTradingDay(
-                Objects.requireNonNull(request.getNextExecutionDate(), "下次计划日期不能为空")));
-        plan.setEnabled(1);
-        plan.setCreatedAt(LocalDateTime.now());
-        plan.setUpdatedAt(plan.getCreatedAt());
-        planMapper.insert(plan);
-        return plan;
-    }
-
-    @Override
-    @Transactional
-    public InvestmentPlan setPlanEnabled(Long userId, Long planId, boolean enabled) {
-        InvestmentPlan plan = planMapper.selectById(planId);
-        if (plan == null || !Objects.equals(plan.getUserId(), userId)) {
-            throw new IllegalArgumentException("定投计划不存在");
-        }
-        plan.setEnabled(enabled ? 1 : 0);
-        if (enabled) {
-            plan.setNextExecutionDate(tradingCalendar.nextOrSameTradingDay(plan.getNextExecutionDate()));
-        }
-        plan.setUpdatedAt(LocalDateTime.now());
-        planMapper.updateById(plan);
-        return plan;
+        Objects.requireNonNull(request.getNextExecutionDate(), "下次计划日期不能为空");
     }
 
     @Override

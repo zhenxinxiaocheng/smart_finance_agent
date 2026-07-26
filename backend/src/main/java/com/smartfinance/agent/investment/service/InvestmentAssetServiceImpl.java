@@ -5,16 +5,21 @@ import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
+import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class InvestmentAssetServiceImpl implements InvestmentAssetService {
@@ -28,7 +33,12 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final ProductDailyQuoteMapper quoteMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentService investmentService;
+    private final InvestmentDataJobService dataJobService;
     private final InvestmentRuntimeProperties runtimeProperties;
+    private final ChinaTradingCalendarService tradingCalendar;
+    private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
+    private final ExecutorService refreshExecutor;
 
     public InvestmentAssetServiceImpl(InvestmentAssetMapper assetMapper,
                                       InvestmentProductMapper productMapper,
@@ -37,7 +47,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       ProductDailyQuoteMapper quoteMapper,
                                       AnalysisServiceClient analysisClient,
                                       InvestmentService investmentService,
-                                      InvestmentRuntimeProperties runtimeProperties) {
+                                      InvestmentDataJobService dataJobService,
+                                      InvestmentRuntimeProperties runtimeProperties,
+                                      ChinaTradingCalendarService tradingCalendar) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -45,7 +57,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.quoteMapper = quoteMapper;
         this.analysisClient = analysisClient;
         this.investmentService = investmentService;
+        this.dataJobService = dataJobService;
         this.runtimeProperties = runtimeProperties;
+        this.tradingCalendar = tradingCalendar;
+        this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
     @Override
@@ -75,9 +90,11 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         asset.setDeleted(0);
         assetMapper.insert(asset);
         saveResolvedQuote(product, resolved);
+        refreshAsset(asset, true);
         if (request.getQuantity() != null || request.getAverageCost() != null) {
             replaceHolding(userId, asset, request.getQuantity(), request.getAverageCost(), asset.getNote());
         }
+        dataJobService.ensureQueued(userId, asset.getId(), product.getId(), product.getProductType(), false);
         return toView(asset);
     }
 
@@ -113,33 +130,178 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     @Override
     @Transactional
     public InvestmentAssetView sync(Long userId, Long assetId) {
+        return refresh(userId, assetId, true);
+    }
+
+    @Override
+    public InvestmentAssetView refresh(Long userId, Long assetId, boolean force) {
         InvestmentAsset asset = requireAsset(userId, assetId);
-        InvestmentProduct currentProduct = productMapper.selectById(asset.getProductId());
-        try {
-            if ("STOCK".equals(currentProduct.getProductType())) {
-                AnalysisServiceClient.RealtimeQuote quote = analysisClient.realtimeQuote(
-                        currentProduct.getCode(), currentProduct.getMarket());
-                saveRealtimeQuote(currentProduct, quote);
-                asset.setSyncStatus("SUCCESS");
-                asset.setSyncError(quote.warnings().isEmpty() ? null : String.join("；", quote.warnings()));
-            } else {
-                AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
-                        currentProduct.getProductType(), currentProduct.getCode());
-                InvestmentProduct product = upsertProduct(resolved);
-                saveResolvedQuote(product, resolved);
-                asset.setSyncStatus(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS");
-                asset.setSyncError(resolved.warnings().isEmpty() ? null : String.join("；", resolved.warnings()));
-            }
-        } catch (RuntimeException exception) {
-            asset.setSyncStatus("FAILED");
-            asset.setSyncError(exception.getMessage());
-        }
-        assetMapper.updateById(asset);
+        refreshAsset(asset, force);
         return toView(asset);
+    }
+
+    @Override
+    public List<InvestmentAssetView> refreshAll(Long userId, boolean force) {
+        List<InvestmentAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                .eq(InvestmentAsset::getUserId, userId)
+                .orderByDesc(InvestmentAsset::getUpdatedAt));
+        List<CompletableFuture<Void>> refreshTasks = assets.stream()
+                .map(asset -> CompletableFuture.runAsync(() -> refreshAsset(asset, force), refreshExecutor))
+                .toList();
+        CompletableFuture.allOf(refreshTasks.toArray(CompletableFuture[]::new)).join();
+        return assets.stream().map(this::toView).toList();
+    }
+
+    @Override
+    @Transactional
+    public InvestmentAssetView applyRecurringInvestment(Long userId, Long accountId, Long productId,
+                                                        BigDecimal amount, BigDecimal price,
+                                                        Long planId, LocalDate tradeDate) {
+        if (amount == null || amount.signum() <= 0 || price == null || price.signum() <= 0) {
+            throw new IllegalArgumentException("定投金额和成交净值必须大于 0");
+        }
+        InvestmentAsset asset = assetMapper.selectOne(new LambdaQueryWrapper<InvestmentAsset>()
+                .eq(InvestmentAsset::getUserId, userId)
+                .eq(InvestmentAsset::getAccountId, accountId)
+                .eq(InvestmentAsset::getProductId, productId)
+                .last("LIMIT 1"));
+        if (asset == null) throw new IllegalArgumentException("定投对应的持仓不存在");
+
+        BigDecimal oldQuantity = asset.getQuantity() == null ? BigDecimal.ZERO : asset.getQuantity();
+        BigDecimal oldAverageCost = asset.getAverageCost() == null ? BigDecimal.ZERO : asset.getAverageCost();
+        BigDecimal purchasedQuantity = amount.divide(price, 10, RoundingMode.HALF_UP);
+        BigDecimal newQuantity = oldQuantity.add(purchasedQuantity);
+        BigDecimal newCostAmount = oldQuantity.multiply(oldAverageCost).add(amount);
+        BigDecimal newAverageCost = newCostAmount.divide(newQuantity, 10, RoundingMode.HALF_UP);
+
+        replaceHolding(userId, asset, newQuantity, newAverageCost, asset.getNote(),
+                "RECURRING_PLAN", "plan-" + planId + "-" + tradeDate, tradeDate);
+        return toView(asset);
+    }
+
+    private void refreshAsset(InvestmentAsset asset, boolean force) {
+        InvestmentProduct currentProduct = productMapper.selectById(asset.getProductId());
+        if (currentProduct == null) {
+            applyOutcome(asset, new RefreshOutcome("FAILED", "投资产品不存在"));
+            return;
+        }
+        ProductKey productKey = ProductKey.from(currentProduct);
+        LocalDateTime now = LocalDateTime.now(runtimeProperties.getMarket().getZone());
+        CachedRefreshOutcome cached = refreshOutcomes.get(productKey);
+        if (!force && canReuse(currentProduct, cached, now)) {
+            applyOutcome(asset, cached.outcome());
+            return;
+        }
+
+        CompletableFuture<RefreshOutcome> ownRefresh = new CompletableFuture<>();
+        CompletableFuture<RefreshOutcome> existingRefresh = productRefreshes.putIfAbsent(
+                productKey, ownRefresh);
+        if (existingRefresh != null) {
+            applyOutcome(asset, existingRefresh.join());
+            return;
+        }
+
+        try {
+            RefreshOutcome outcome = fetchLatest(currentProduct);
+            LocalDateTime completedAt = LocalDateTime.now(runtimeProperties.getMarket().getZone());
+            refreshOutcomes.put(productKey, new CachedRefreshOutcome(outcome, completedAt));
+            applyOutcome(asset, outcome);
+            ownRefresh.complete(outcome);
+        } finally {
+            if (!ownRefresh.isDone()) {
+                RefreshOutcome failed = new RefreshOutcome("FAILED", "行情刷新过程异常");
+                refreshOutcomes.put(productKey, new CachedRefreshOutcome(failed,
+                        LocalDateTime.now(runtimeProperties.getMarket().getZone())));
+                ownRefresh.complete(failed);
+            }
+            productRefreshes.remove(productKey, ownRefresh);
+        }
+    }
+
+    private RefreshOutcome fetchLatest(InvestmentProduct product) {
+        try {
+            if ("STOCK".equals(product.getProductType())) {
+                AnalysisServiceClient.RealtimeQuote quote = analysisClient.realtimeQuote(
+                        product.getCode(), product.getMarket());
+                saveRealtimeQuote(product, quote);
+                return new RefreshOutcome("SUCCESS", joinWarnings(quote.warnings()));
+            }
+            AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
+                    product.getProductType(), product.getCode());
+            InvestmentProduct resolvedProduct = upsertProduct(resolved);
+            saveResolvedQuote(resolvedProduct, resolved);
+            return new RefreshOutcome(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS",
+                    joinWarnings(resolved.warnings()));
+        } catch (RuntimeException exception) {
+            return new RefreshOutcome("FAILED", exception.getMessage());
+        }
+    }
+
+    private void applyOutcome(InvestmentAsset asset, RefreshOutcome outcome) {
+        asset.setSyncStatus(outcome.status());
+        asset.setSyncError(outcome.error());
+        assetMapper.updateById(asset);
+    }
+
+    private boolean canReuse(InvestmentProduct product, CachedRefreshOutcome cached, LocalDateTime now) {
+        if (cached == null || "FAILED".equals(cached.outcome().status())) return false;
+        if ("STOCK".equals(product.getProductType()) && !isStockMarketOpen(now)) return true;
+        long freshnessMs = "STOCK".equals(product.getProductType())
+                ? runtimeProperties.getMarket().getStockActiveFreshnessMs()
+                : runtimeProperties.getMarket().getFundActiveFreshnessMs();
+        return Duration.between(cached.refreshedAt(), now).toMillis() < freshnessMs;
+    }
+
+    private boolean isStockMarketOpen(LocalDateTime now) {
+        LocalTime time = now.toLocalTime();
+        return tradingCalendar.isTradingDay(now.toLocalDate())
+                && !time.isBefore(runtimeProperties.getMarket().getStockRefreshStart())
+                && !time.isAfter(runtimeProperties.getMarket().getStockRefreshEnd());
+    }
+
+    private static String joinWarnings(List<String> warnings) {
+        return warnings == null || warnings.isEmpty() ? null : String.join("；", warnings);
+    }
+
+    @PreDestroy
+    void shutdownRefreshExecutor() {
+        refreshExecutor.shutdownNow();
+    }
+
+    private static ExecutorService createRefreshExecutor(int configuredConcurrency) {
+        int concurrency = Math.max(1, configuredConcurrency);
+        AtomicInteger sequence = new AtomicInteger();
+        ThreadFactory threadFactory = task -> {
+            Thread thread = new Thread(task, "investment-active-refresh-" + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return new ThreadPoolExecutor(concurrency, concurrency, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(concurrency * 4), threadFactory,
+                new ThreadPoolExecutor.CallerRunsPolicy());
+    }
+
+    private record ProductKey(Long id, LocalDateTime createdAt) {
+        private static ProductKey from(InvestmentProduct product) {
+            return new ProductKey(product.getId(), product.getCreatedAt());
+        }
+    }
+
+    private record CachedRefreshOutcome(RefreshOutcome outcome, LocalDateTime refreshedAt) {
+    }
+
+    private record RefreshOutcome(String status, String error) {
     }
 
     private void replaceHolding(Long userId, InvestmentAsset asset, BigDecimal quantity,
                                 BigDecimal averageCost, String note) {
+        replaceHolding(userId, asset, quantity, averageCost, note, "ASSET_CRUD",
+                "asset-" + asset.getId() + "-" + System.nanoTime(), LocalDate.now());
+    }
+
+    private void replaceHolding(Long userId, InvestmentAsset asset, BigDecimal quantity,
+                                BigDecimal averageCost, String note, String source,
+                                String externalRef, LocalDate tradeDate) {
         if ((quantity == null) != (averageCost == null)) {
             throw new IllegalArgumentException("份额和持仓成本价必须同时填写或同时清空");
         }
@@ -153,13 +315,13 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             InvestmentTransactionRequest request = new InvestmentTransactionRequest();
             request.setAccountId(asset.getAccountId());
             request.setEventType("TRANSFER_IN");
-            request.setTradeDate(LocalDate.now());
+            request.setTradeDate(tradeDate);
             request.setCurrency(product.getCurrency());
             request.setQuantity(quantity);
             request.setPrice(averageCost);
             request.setFee(BigDecimal.ZERO);
-            request.setSource("ASSET_CRUD");
-            request.setExternalRef("asset-" + asset.getId() + "-" + System.nanoTime());
+            request.setSource(source);
+            request.setExternalRef(externalRef);
             request.setNote(note);
             request.setProduct(productRequest(product));
             InvestmentTransaction transaction = investmentService.addTransaction(userId, request);

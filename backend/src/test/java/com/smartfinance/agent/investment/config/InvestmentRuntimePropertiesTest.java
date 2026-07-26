@@ -35,10 +35,13 @@ class InvestmentRuntimePropertiesTest {
         properties.getSync().setFxLookbackCalendarDays(21);
         properties.getMarket().setZone(ZoneId.of("Asia/Shanghai"));
         properties.getMarket().setStockRefreshIntervalMs(3000);
+        properties.getMarket().setStockActiveFreshnessMs(2500);
         properties.getMarket().setStockRefreshStart(LocalTime.of(9, 30));
         properties.getMarket().setStockRefreshEnd(LocalTime.of(14, 55));
         properties.getMarket().setFundInitialDelayMs(1000);
         properties.getMarket().setFundRefreshIntervalMs(60000);
+        properties.getMarket().setFundActiveFreshnessMs(20000);
+        properties.getMarket().setActiveRefreshConcurrency(4);
         properties.getMarket().setFundRefreshStart(LocalTime.of(7, 30));
         properties.getMarket().setFundRefreshEnd(LocalTime.of(22, 30));
         properties.getMarket().setCalendarCacheHours(6);
@@ -54,6 +57,12 @@ class InvestmentRuntimePropertiesTest {
         properties.getApi().setMaxTransactionLimit(150);
         properties.getApi().setImportMaxBytes(1024);
         properties.getPlan().setExecutionDayMaximums(Map.of("DAILY", 1, "WEEKLY", 7, "MONTHLY", 28));
+        properties.getDataQuality().setConfigVersion("data-quality-test");
+        properties.getDataQuality().setFrequency("DAY");
+        properties.getDataQuality().setStockAdjustType("QFQ");
+        properties.getDataQuality().setFundAdjustType("NONE");
+        properties.getDataQuality().setRealtimeAdjustType("NONE");
+        properties.getAnalysis().setStrategyVersion("technical-strategy-test");
 
         properties.validate();
 
@@ -64,5 +73,8 @@ class InvestmentRuntimePropertiesTest {
         assertThat(properties.getSync().getFxLookbackCalendarDays()).isEqualTo(21);
         assertThat(properties.getMarket().getFallbackClosedDates())
                 .containsExactly(LocalDate.of(2026, 3, 2));
+        assertThat(properties.getMarket().getStockActiveFreshnessMs()).isEqualTo(2500);
+        assertThat(properties.getMarket().getFundActiveFreshnessMs()).isEqualTo(20000);
+        assertThat(properties.getMarket().getActiveRefreshConcurrency()).isEqualTo(4);
     }
 }

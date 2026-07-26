@@ -2,33 +2,47 @@
   <section class="space-y-4 rounded-xl border p-4">
     <div class="flex items-start justify-between gap-3">
       <div>
-        <h3 class="font-medium">定投计划</h3>
-        <p class="mt-1 text-xs text-muted-foreground">休市日自动顺延，不会自动下单</p>
+        <div class="flex items-center gap-2">
+          <h3 class="font-medium">模拟定投</h3>
+          <span v-if="plan" class="rounded-full border px-2 py-0.5 text-[11px]" :class="plan.enabled === 1 ? 'text-emerald-500' : 'text-muted-foreground'">
+            {{ plan.enabled === 1 ? '执行中' : '已暂停' }}
+          </span>
+        </div>
+        <p class="mt-1 text-xs text-muted-foreground">按计划日净值自动更新模拟持仓，不会向真实券商下单</p>
       </div>
       <Switch
         v-if="plan"
         :model-value="plan.enabled === 1"
         :disabled="updating"
-        aria-label="启用定投计划"
+        :aria-label="plan.enabled === 1 ? '暂停模拟定投' : '启用模拟定投'"
         @update:model-value="toggleEnabled"
       />
     </div>
 
     <div class="rounded-lg bg-muted/40 p-3">
-      <div class="text-xs text-muted-foreground">当前实际投入</div>
+      <div class="text-xs text-muted-foreground">当前持仓成本</div>
       <div class="mt-1 text-xl font-semibold">{{ money(investedAmount) }}</div>
     </div>
 
     <div v-if="loading" class="py-6 text-center text-sm text-muted-foreground">正在加载定投计划</div>
 
-    <dl v-else-if="plan" class="grid grid-cols-2 gap-3 text-sm">
+    <template v-else-if="plan && !editing">
+    <dl class="grid grid-cols-2 gap-3 text-sm">
       <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">每期定投金额</dt><dd class="mt-1 font-medium">{{ money(plan.amount) }}</dd></div>
       <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">定投频率</dt><dd class="mt-1 font-medium">{{ frequencyLabel(plan.frequency) }}</dd></div>
-      <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">执行日</dt><dd class="mt-1 font-medium">{{ executionLabel(plan) }}</dd></div>
+      <div v-if="plan.frequency !== 'DAILY'" class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">执行日</dt><dd class="mt-1 font-medium">{{ executionLabel(plan) }}</dd></div>
       <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">下次计划日</dt><dd class="mt-1 font-medium">{{ plan.nextExecutionDate || '-' }}</dd></div>
+      <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">已模拟次数</dt><dd class="mt-1 font-medium">{{ plan.executionCount || 0 }} 次</dd></div>
+      <div class="rounded-lg border p-3"><dt class="text-xs text-muted-foreground">最近执行</dt><dd class="mt-1 font-medium">{{ plan.lastExecutionDate || statusLabel(plan.lastExecutionStatus) }}</dd></div>
     </dl>
+    <p v-if="plan.lastExecutionMessage" class="text-xs text-muted-foreground">{{ plan.lastExecutionMessage }}</p>
+    <div class="grid grid-cols-2 gap-3">
+      <Button variant="outline" :disabled="updating || deleting" @click="beginEdit">修改计划</Button>
+      <Button variant="outline" class="text-destructive" :disabled="updating || deleting" @click="removePlan">{{ deleting ? '删除中' : '删除计划' }}</Button>
+    </div>
+    </template>
 
-    <div v-else class="space-y-4">
+    <div v-else-if="!loading" class="space-y-4">
       <label>每期定投金额<Input v-model="form.amount" type="number" min="0.01" step="0.01" /></label>
       <div class="grid gap-3" :class="form.frequency === 'DAILY' ? 'grid-cols-1' : 'grid-cols-2'">
         <label>
@@ -56,13 +70,17 @@
           </Select>
         </label>
       </div>
-      <Button class="w-full" :disabled="saving" @click="createPlan">{{ saving ? '保存中' : '创建定投计划' }}</Button>
+      <label v-if="editing">下次计划日<Input v-model="form.nextExecutionDate" type="date" /></label>
+      <div class="grid" :class="editing ? 'grid-cols-2 gap-3' : 'grid-cols-1'">
+        <Button v-if="editing" variant="outline" :disabled="saving" @click="cancelEdit">取消</Button>
+        <Button :disabled="saving" @click="savePlan">{{ saving ? '保存中' : editing ? '保存修改' : '创建定投计划' }}</Button>
+      </div>
     </div>
   </section>
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -76,14 +94,24 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { feedback } from '@/lib/feedback'
 import { actualInvestedAmount, buildInvestmentPlanPayload } from '@/lib/investmentPlanCard'
-import { createInvestmentPlanAPI, listInvestmentPlansAPI, setInvestmentPlanEnabledAPI } from '@/api/investment'
+import {
+  createInvestmentPlanAPI,
+  deleteInvestmentPlanAPI,
+  listInvestmentPlansAPI,
+  setInvestmentPlanEnabledAPI,
+  updateInvestmentPlanAPI
+} from '@/api/investment'
 
 const props = defineProps({ asset: { type: Object, required: true } })
+const emit = defineEmits(['holding-updated'])
 const plan = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const updating = ref(false)
-const form = reactive({ amount: '', frequency: 'MONTHLY', executionDay: '1' })
+const deleting = ref(false)
+const editing = ref(false)
+const form = reactive({ amount: '', frequency: 'MONTHLY', executionDay: '1', nextExecutionDate: '' })
+let refreshTimer = null
 
 const investedAmount = computed(() => actualInvestedAmount(props.asset))
 const dayOptions = computed(() => form.frequency === 'WEEKLY'
@@ -91,30 +119,83 @@ const dayOptions = computed(() => form.frequency === 'WEEKLY'
   : Array.from({ length: 28 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 日` })))
 
 watch(() => props.asset.id, loadPlan, { immediate: true })
-watch(() => form.frequency, () => { form.executionDay = '1' })
+watch(() => form.frequency, frequency => {
+  if (frequency === 'DAILY' || (frequency === 'WEEKLY' && Number(form.executionDay) > 7)) form.executionDay = '1'
+})
 
-async function loadPlan(assetId) {
+onMounted(() => {
+  refreshTimer = window.setInterval(() => {
+    loadPlan(props.asset.id, true).catch(() => {})
+  }, 10000)
+})
+onUnmounted(() => {
+  if (refreshTimer) window.clearInterval(refreshTimer)
+})
+
+async function loadPlan(assetId, silent = false) {
   if (!assetId) return
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const response = await listInvestmentPlansAPI()
     if (props.asset.id !== assetId) return
-    plan.value = (response.data || []).find(item =>
+    const nextPlan = (response.data || []).find(item =>
       String(item.accountId) === String(props.asset.accountId)
       && String(item.productId) === String(props.asset.productId)) || null
+    const executionAdvanced = plan.value && nextPlan
+      && Number(nextPlan.executionCount || 0) > Number(plan.value.executionCount || 0)
+    plan.value = nextPlan
+    if (executionAdvanced) emit('holding-updated')
   } finally {
-    if (props.asset.id === assetId) loading.value = false
+    if (!silent && props.asset.id === assetId) loading.value = false
   }
 }
 
-async function createPlan() {
+async function savePlan() {
   if (!form.amount || Number(form.amount) <= 0) return feedback.error('请输入正确的定投金额')
   saving.value = true
   try {
-    const response = await createInvestmentPlanAPI(buildInvestmentPlanPayload(props.asset, form))
+    const wasEditing = editing.value
+    const payload = buildInvestmentPlanPayload(props.asset, form)
+    const response = wasEditing
+      ? await updateInvestmentPlanAPI(plan.value.id, payload)
+      : await createInvestmentPlanAPI(payload)
     plan.value = response.data
-    feedback.success('定投计划已创建')
+    editing.value = false
+    resetForm()
+    feedback.success(wasEditing ? '定投计划已更新' : '定投计划已创建')
   } finally { saving.value = false }
+}
+
+function beginEdit() {
+  form.amount = String(plan.value.amount)
+  form.frequency = plan.value.frequency
+  form.executionDay = String(plan.value.executionDay || 1)
+  form.nextExecutionDate = plan.value.nextExecutionDate || ''
+  editing.value = true
+}
+
+function cancelEdit() {
+  editing.value = false
+  resetForm()
+}
+
+async function removePlan() {
+  if (!plan.value || !window.confirm('确定删除这条模拟定投计划吗？')) return
+  deleting.value = true
+  try {
+    await deleteInvestmentPlanAPI(plan.value.id)
+    plan.value = null
+    editing.value = false
+    resetForm()
+    feedback.success('定投计划已删除')
+  } finally { deleting.value = false }
+}
+
+function resetForm() {
+  form.amount = ''
+  form.frequency = 'MONTHLY'
+  form.executionDay = '1'
+  form.nextExecutionDate = ''
 }
 
 async function toggleEnabled(enabled) {
@@ -144,6 +225,9 @@ function executionLabel(value) {
   if (value.frequency === 'DAILY') return '每日'
   if (value.frequency === 'WEEKLY') return ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][value.executionDay - 1] || '-'
   return `每月 ${value.executionDay} 日`
+}
+function statusLabel(value) {
+  return ({ WAITING_DATA: '等待净值', FAILED: '执行失败', PAUSED: '已暂停', WAITING: '等待执行' }[value] || '尚未执行')
 }
 </script>
 

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -23,6 +24,13 @@ public class InvestmentPlan {
     private String frequency;
     private Integer executionDay;
     private LocalDate nextExecutionDate;
+    private LocalDate lastExecutionDate;
+    private BigDecimal lastExecutionAmount;
+    private BigDecimal lastExecutionPrice;
+    private Integer executionCount;
+    private String lastExecutionStatus;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String lastExecutionMessage;
     private Integer enabled;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

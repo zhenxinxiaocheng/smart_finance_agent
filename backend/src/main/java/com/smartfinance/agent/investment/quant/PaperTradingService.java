@@ -13,6 +13,8 @@ import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -51,10 +53,11 @@ public class PaperTradingService {
         this.properties = properties;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void queueValidatedPrediction(Long userId, InvestmentProduct product,
                                          QuantPrediction prediction, String modelStatus) {
-        if (!"VALIDATED".equals(modelStatus) || prediction.getStrategyVersion() == null) return;
+        if (!List.of("VALIDATED", "PAPER_VERIFIED").contains(modelStatus)
+                || prediction.getStrategyVersion() == null) return;
         InvestmentAccount account = ensureAccount(userId);
         if (orderMapper.selectCount(new LambdaQueryWrapper<QuantPaperOrder>()
                 .eq(QuantPaperOrder::getPredictionId, prediction.getId())) > 0) return;
@@ -75,14 +78,18 @@ public class PaperTradingService {
         order.setStrategyVersion(prediction.getStrategyVersion());
         order.setPredictionId(prediction.getId());
         order.setSide(draft.side());
-        order.setOrderType("NEXT_AVAILABLE_CLOSE");
+        order.setOrderType(orderType(product, prediction));
         order.setQuantity(draft.quantity());
         order.setStatus("SUBMITTED");
         order.setSubmittedAt(LocalDateTime.now());
-        orderMapper.insert(order);
+        try {
+            orderMapper.insert(order);
+        } catch (DuplicateKeyException ignored) {
+            // A concurrent worker already persisted the order for this prediction.
+        }
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void execute(QuantPaperOrder order) {
         if (order == null || !"SUBMITTED".equals(order.getStatus())) return;
         InvestmentProduct product = productMapper.selectById(order.getProductId());
@@ -90,8 +97,7 @@ public class PaperTradingService {
             reject(order);
             return;
         }
-        int delay = "MUTUAL_FUND".equals(product.getProductType())
-                ? properties.getFundExecutionDelayDays() : properties.getStockExecutionDelayDays();
+        int delay = executionDelayDays(order, product);
         LocalDate earliest = order.getSubmittedAt().toLocalDate().plusDays(delay);
         ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, product.getId())
@@ -102,6 +108,12 @@ public class PaperTradingService {
         if ("STOCK".equals(product.getProductType()) && quote.getVolume() != null) {
             BigDecimal maximum = quote.getVolume().multiply(properties.getMaximumVolumeParticipation());
             if (order.getQuantity().compareTo(maximum) > 0) return;
+        }
+        if (!claimSubmittedOrder(order.getId())) return;
+        order.setStatus("PROCESSING");
+        if (accountMapper.lockActivePaperAccount(order.getAccountId()) != 1) {
+            reject(order);
+            return;
         }
         InvestmentCashBalance cash = cash(order.getAccountId());
         InvestmentPosition position = position(order.getAccountId(), product.getId());
@@ -132,11 +144,30 @@ public class PaperTradingService {
         orderMapper.updateById(order);
     }
 
+    private boolean claimSubmittedOrder(Long orderId) {
+        if (orderId == null) return false;
+        return orderMapper.claimSubmitted(orderId) == 1;
+    }
+
+    private String orderType(InvestmentProduct product, QuantPrediction prediction) {
+        if ("STOCK".equals(product.getProductType())) return "A_SHARE_T_PLUS_ONE";
+        if ("QDII_INDEX_FUND".equals(prediction.getModelFamily())) return "QDII_UNKNOWN_NAV";
+        return "FUND_UNKNOWN_NAV";
+    }
+
+    private int executionDelayDays(QuantPaperOrder order, InvestmentProduct product) {
+        return switch (order.getOrderType() == null ? "" : order.getOrderType()) {
+            case "QDII_UNKNOWN_NAV" -> properties.getQdiiExecutionDelayDays();
+            case "FUND_UNKNOWN_NAV" -> properties.getFundExecutionDelayDays();
+            case "A_SHARE_T_PLUS_ONE" -> properties.getStockExecutionDelayDays();
+            default -> "MUTUAL_FUND".equals(product.getProductType())
+                    ? properties.getFundExecutionDelayDays()
+                    : properties.getStockExecutionDelayDays();
+        };
+    }
+
     private InvestmentAccount ensureAccount(Long userId) {
-        InvestmentAccount account = accountMapper.selectOne(new LambdaQueryWrapper<InvestmentAccount>()
-                .eq(InvestmentAccount::getUserId, userId)
-                .eq(InvestmentAccount::getAccountType, "PAPER")
-                .last("LIMIT 1"));
+        InvestmentAccount account = findPaperAccount(userId);
         if (account != null) return account;
         account = new InvestmentAccount();
         account.setUserId(userId);
@@ -144,7 +175,13 @@ public class PaperTradingService {
         account.setAccountType("PAPER");
         account.setBaseCurrency("CNY");
         account.setDeleted(0);
-        accountMapper.insert(account);
+        try {
+            accountMapper.insert(account);
+        } catch (DuplicateKeyException conflict) {
+            InvestmentAccount winner = findPaperAccount(userId);
+            if (winner == null) throw conflict;
+            return winner;
+        }
         InvestmentCashBalance cash = new InvestmentCashBalance();
         cash.setUserId(userId);
         cash.setAccountId(account.getId());
@@ -152,6 +189,14 @@ public class PaperTradingService {
         cash.setBalance(properties.getInitialCashCny());
         cashMapper.insert(cash);
         return account;
+    }
+
+    private InvestmentAccount findPaperAccount(Long userId) {
+        return accountMapper.selectOne(new LambdaQueryWrapper<InvestmentAccount>()
+                .eq(InvestmentAccount::getUserId, userId)
+                .eq(InvestmentAccount::getAccountType, "PAPER")
+                .eq(InvestmentAccount::getDeleted, 0)
+                .last("LIMIT 1"));
     }
 
     private BigDecimal paperEquity(InvestmentAccount account) {

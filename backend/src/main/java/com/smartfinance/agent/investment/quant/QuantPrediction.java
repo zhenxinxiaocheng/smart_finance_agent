@@ -22,6 +22,7 @@ public class QuantPrediction {
     private String featureSetVersion;
     private String modelVersion;
     private String strategyVersion;
+    private String modelFamily;
     private String horizonProfileVersion;
     private String horizonCode;
     private Integer horizonDays;
@@ -36,6 +37,7 @@ public class QuantPrediction {
     private String marketRegime;
     private String benchmarkCode;
     private BigDecimal roundTripCostBps;
+    private String featureVectorJson;
     private String topFactorsJson;
     private String riskFlagsJson;
     private String backtestSummaryJson;

@@ -1,15 +1,21 @@
+import gc
 import json
+import threading
 import unittest
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+from unittest.mock import patch
 
 import app.providers as providers
 
 from app.providers import (
     TencentHistoryProvider,
     akshare_us_symbol,
+    fetch_benchmark_history,
     fetch_realtime_stock_quote,
     infer_a_share_market,
     normalize_quote,
@@ -69,8 +75,68 @@ class FakeAkshare:
             {"净值日期": "2026-07-10", "单位净值": "1.527", "日增长率": "1.80"},
         ])
 
+    def stock_zh_index_daily_em(self, **kwargs):
+        return FakeFrame([
+            {"date": "2026-07-09", "close": "100.0"},
+            {"date": "2026-07-10", "close": "110.0"},
+        ])
+
+    def spot_hist_sge(self, **kwargs):
+        return FakeFrame([
+            {"日期": "2026-07-09", "收盘价": "500.0"},
+            {"日期": "2026-07-10", "收盘价": "510.0"},
+        ])
+
+    def index_global_hist_em(self, **kwargs):
+        return FakeFrame([
+            {"日期": "2026-07-09", "收盘": "20000.0"},
+            {"日期": "2026-07-10", "收盘": "20200.0"},
+        ])
+
+
+class FakeFundSnapshotAkshare:
+    def __init__(self, records):
+        self.records = records
+        self.snapshot_calls = 0
+        self.name_calls = 0
+        self.history_calls = 0
+
+    def fund_open_fund_daily_em(self):
+        self.snapshot_calls += 1
+        return FakeFrame(self.records)
+
+    def fund_name_em(self):
+        self.name_calls += 1
+        return FakeFrame([
+            {"基金代码": "000001", "基金简称": "历史名称 A"},
+            {"基金代码": "000002", "基金简称": "历史名称 B"},
+        ])
+
+    def fund_open_fund_info_em(self, **kwargs):
+        self.history_calls += 1
+        return FakeFrame([
+            {"净值日期": "2026-07-17", "单位净值": "1.570", "日增长率": "1.00"},
+            {"净值日期": "2026-07-18", "单位净值": "1.600", "日增长率": "1.91"},
+        ])
+
+
+class FakeMonotonicClock:
+    def __init__(self, value=100.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
 
 class ProviderNormalizationTest(unittest.TestCase):
+    def tearDown(self):
+        clear_cache = getattr(providers, "_clear_fund_snapshot_cache", None)
+        if clear_cache is not None:
+            clear_cache()
+
     def test_a_share_trade_calendar_uses_provider_trading_dates(self):
         class FakeCalendarAkshare:
             @staticmethod
@@ -87,6 +153,77 @@ class ProviderNormalizationTest(unittest.TestCase):
         result = fetcher(2026, ak_module=FakeCalendarAkshare())
 
         self.assertEqual(["2026-09-30", "2026-10-08"], result)
+
+    def test_official_composite_benchmark_builds_versioned_synthetic_level(self):
+        result = fetch_benchmark_history(
+            "CSI300_95_CASH_5",
+            date(2026, 7, 9),
+            date(2026, 7, 10),
+            ak_module=FakeAkshare(),
+        )
+
+        self.assertEqual("2026-07-09", result[0]["data_date"])
+        self.assertEqual("100", result[0]["close"])
+        self.assertEqual("109.5000", result[1]["close"])
+        self.assertEqual("AKSHARE", result[0]["provider"])
+        self.assertEqual("benchmark-adapter-v1", result[0]["adapter_version"])
+
+    def test_csi300_benchmark_falls_back_to_baostock_when_akshare_is_unavailable(self):
+        class FailingAkshare:
+            def stock_zh_index_daily_em(self, **_kwargs):
+                raise ConnectionError("eastmoney unavailable")
+
+        class BaoResult:
+            error_code = "0"
+            error_msg = ""
+            fields = ["date", "close"]
+
+            def __init__(self):
+                self.rows = iter([
+                    ["2026-07-09", "100"],
+                    ["2026-07-10", "110"],
+                ])
+                self.current = None
+
+            def next(self):
+                self.current = next(self.rows, None)
+                return self.current is not None
+
+            def get_row_data(self):
+                return self.current
+
+        class FakeBaoStock:
+            def login(self):
+                return type("Login", (), {"error_code": "0", "error_msg": ""})()
+
+            def logout(self):
+                pass
+
+            def query_history_k_data_plus(self, code, fields, **kwargs):
+                self.call = (code, fields, kwargs)
+                return BaoResult()
+
+        baostock = FakeBaoStock()
+        result = fetch_benchmark_history(
+            "CSI300_95_CASH_5",
+            date(2026, 7, 9),
+            date(2026, 7, 10),
+            ak_module=FailingAkshare(),
+            baostock_module=baostock,
+        )
+
+        self.assertEqual("sh.000300", baostock.call[0])
+        self.assertEqual("109.5000", result[1]["close"])
+        self.assertEqual("BAOSTOCK", result[0]["provider"])
+
+    def test_benchmark_provider_rejects_unknown_profile_code(self):
+        with self.assertRaisesRegex(ValueError, "unsupported benchmark code"):
+            fetch_benchmark_history(
+                "CASH_CNY",
+                date(2026, 7, 9),
+                date(2026, 7, 10),
+                ak_module=FakeAkshare(),
+            )
 
     def test_tencent_history_provider_parses_qfq_daily_rows(self):
         payload = json.dumps({
@@ -176,6 +313,171 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("1.527", result["latestPrice"])
         self.assertEqual("0.027", result["changeAmount"])
         self.assertEqual("1.80", result["changePercent"])
+
+    def test_resolve_domestic_fund_prefers_latest_valued_dynamic_snapshot_column(self):
+        provider = FakeFundSnapshotAkshare([{
+            "基金代码": "000001",
+            "基金简称": "快照名称 A",
+            "2026-07-21-单位净值": "",
+            "2026-07-18-单位净值": "1.600",
+            "2026-07-17-单位净值": "1.570",
+            "日增长值": "0.030",
+            "日增长率": "1.91",
+        }])
+
+        result = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
+
+        self.assertEqual(1, provider.snapshot_calls)
+        self.assertEqual(0, provider.name_calls)
+        self.assertEqual(0, provider.history_calls)
+        self.assertEqual("快照名称 A", result["name"])
+        self.assertEqual("2026-07-18", result["dataDate"])
+        self.assertEqual("1.600", result["latestPrice"])
+        self.assertEqual("1.570", result["previousClose"])
+        self.assertEqual("0.030", result["changeAmount"])
+        self.assertEqual("1.91", result["changePercent"])
+        self.assertEqual([], result["warnings"])
+
+    def test_fund_snapshot_is_reused_for_multiple_codes_within_configured_ttl(self):
+        provider = FakeFundSnapshotAkshare([
+            {"基金代码": "000001", "基金简称": "快照 A",
+             "2026/07/18-单位净值": "1.600", "2026/07/17-单位净值": "1.570",
+             "日增长值": "0.030", "日增长率": "1.91"},
+            {"基金代码": "000002", "基金简称": "快照 B",
+             "2026.07.18-单位净值": "2.100", "2026.07.17-单位净值": "2.000",
+             "日增长值": "0.100", "日增长率": "5.00"},
+        ])
+
+        first = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
+        second = resolve_product_metadata("MUTUAL_FUND", "000002", ak_module=provider)
+
+        self.assertEqual(30000, providers._provider_integer("fund_snapshot_cache_ttl_ms"))
+        self.assertEqual(1, provider.snapshot_calls)
+        self.assertEqual("1.600", first["latestPrice"])
+        self.assertEqual("2.100", second["latestPrice"])
+
+    def test_concurrent_fund_resolves_coalesce_the_same_provider_snapshot_request(self):
+        provider = FakeFundSnapshotAkshare([
+            {"基金代码": "000001", "基金简称": "快照 A",
+             "2026-07-18-单位净值": "1.600", "2026-07-17-单位净值": "1.570"},
+            {"基金代码": "000002", "基金简称": "快照 B",
+             "2026-07-18-单位净值": "2.100", "2026-07-17-单位净值": "2.000"},
+        ])
+        original_snapshot = provider.fund_open_fund_daily_em
+        first_started = threading.Event()
+        release_snapshot = threading.Event()
+        waiter_entered = threading.Event()
+        original_wait = providers._FUND_SNAPSHOT_CACHE_CONDITION.wait
+
+        def blocked_snapshot():
+            frame = original_snapshot()
+            first_started.set()
+            release_snapshot.wait(timeout=2)
+            return frame
+
+        def observed_wait(*args, **kwargs):
+            waiter_entered.set()
+            return original_wait(*args, **kwargs)
+
+        provider.fund_open_fund_daily_em = blocked_snapshot
+        with patch.object(providers._FUND_SNAPSHOT_CACHE_CONDITION, "wait", side_effect=observed_wait):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(resolve_product_metadata, "MUTUAL_FUND", "000001", provider)
+                self.assertTrue(first_started.wait(timeout=1))
+                second = executor.submit(resolve_product_metadata, "MUTUAL_FUND", "000002", provider)
+                try:
+                    self.assertTrue(waiter_entered.wait(timeout=1))
+                finally:
+                    release_snapshot.set()
+                results = [first.result(timeout=2), second.result(timeout=2)]
+
+        self.assertEqual(1, provider.snapshot_calls)
+        self.assertEqual(["1.600", "2.100"], [item["latestPrice"] for item in results])
+
+    def test_fund_snapshot_failure_falls_back_to_history_and_keeps_warning(self):
+        provider = FakeFundSnapshotAkshare([])
+
+        def fail_snapshot():
+            provider.snapshot_calls += 1
+            raise RuntimeError("snapshot offline")
+
+        provider.fund_open_fund_daily_em = fail_snapshot
+
+        result = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
+
+        self.assertEqual("1.600", result["latestPrice"])
+        self.assertEqual(1, provider.name_calls)
+        self.assertEqual(1, provider.history_calls)
+        self.assertTrue(any("快照获取失败" in item and "snapshot offline" in item
+                            for item in result["warnings"]))
+
+    def test_fund_code_missing_from_snapshot_falls_back_to_history_and_keeps_warning(self):
+        provider = FakeFundSnapshotAkshare([{
+            "基金代码": "000002", "基金简称": "快照 B",
+            "2026-07-18-单位净值": "2.100", "2026-07-17-单位净值": "2.000",
+        }])
+
+        result = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
+
+        self.assertEqual("历史名称 A", result["name"])
+        self.assertEqual("1.600", result["latestPrice"])
+        self.assertEqual(1, provider.name_calls)
+        self.assertEqual(1, provider.history_calls)
+        self.assertTrue(any("快照未找到基金代码 000001" in item for item in result["warnings"]))
+
+    def test_fund_snapshot_cache_releases_failed_provider_for_garbage_collection(self):
+        provider = FakeFundSnapshotAkshare([])
+
+        def fail_snapshot():
+            provider.snapshot_calls += 1
+            raise RuntimeError("snapshot offline")
+
+        provider.fund_open_fund_daily_em = fail_snapshot
+        resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
+        provider_reference = weakref.ref(provider)
+
+        del fail_snapshot
+        del provider
+        gc.collect()
+
+        self.assertIsNone(provider_reference())
+
+    def test_fund_snapshot_cache_refetches_after_ttl_with_controlled_clock(self):
+        clock = FakeMonotonicClock()
+        provider = FakeFundSnapshotAkshare([
+            {"基金代码": "000001", "基金简称": "快照 A",
+             "2026-07-18-单位净值": "1.600", "2026-07-17-单位净值": "1.570"},
+        ])
+
+        resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+        resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+        self.assertEqual(1, provider.snapshot_calls)
+
+        clock.advance(30.001)
+        resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+
+        self.assertEqual(2, provider.snapshot_calls)
+
+    def test_failed_fund_snapshot_is_negatively_cached_until_ttl_expires(self):
+        clock = FakeMonotonicClock()
+        provider = FakeFundSnapshotAkshare([])
+
+        def fail_snapshot():
+            provider.snapshot_calls += 1
+            raise RuntimeError("snapshot offline")
+
+        provider.fund_open_fund_daily_em = fail_snapshot
+
+        first = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+        second = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+        self.assertEqual(1, provider.snapshot_calls)
+        self.assertEqual(first["warnings"], second["warnings"])
+        self.assertTrue(any("RuntimeError: snapshot offline" in item for item in second["warnings"]))
+
+        clock.advance(30.001)
+        resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider, cache_clock=clock)
+
+        self.assertEqual(2, provider.snapshot_calls)
 
     def test_fetch_tencent_quote_uses_actual_fetch_time(self):
         fields = [""] * 50

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import math
 import tempfile
 import time
 import unittest
@@ -22,7 +24,96 @@ def market_records(count: int) -> list[dict[str, object]]:
     } for index in range(count)]
 
 
+def training_market_records(count: int) -> list[dict[str, object]]:
+    start = date(2024, 1, 1)
+    records: list[dict[str, object]] = []
+    for index in range(count):
+        close = 20 + index * 0.005 + math.sin(index / 8) * 2
+        records.append({
+            "data_date": (start + timedelta(days=index)).isoformat(),
+            "open": close - 0.1,
+            "high": close + 0.3,
+            "low": close - 0.3,
+            "close": close,
+            "volume": 200_000 + int(50_000 * (1 + math.sin(index / 5))),
+        })
+    return records
+
+
 class QuantJobServiceTest(unittest.TestCase):
+    def test_train_predict_job_persists_versioned_model_artifact(self):
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(Path(root), load_quant_config(), max_workers=1)
+            created = service.submit({
+                "type": "TRAIN_PREDICT",
+                "datasetVersion": "d" * 64,
+                "productType": "STOCK",
+                "horizonCode": "WAVE",
+                "horizonDays": 20,
+                "records": training_market_records(700),
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("SUCCEEDED", completed["status"])
+            result = completed["result"]
+            model_path = Path(root) / "quant-models" / f'{result["modelVersion"]}.pkl'
+            self.assertTrue(model_path.is_file())
+            self.assertEqual(
+                result["modelFileHash"],
+                hashlib.sha256(model_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual("quant-research-v2", result["quantConfigVersion"])
+            self.assertIn(result["modelStatus"], {"DRAFT", "VALIDATED"})
+            self.assertEqual(
+                result["modelStatus"],
+                result["validationReport"]["lifecycle"],
+            )
+            self.assertIsInstance(result["validationReport"]["passed"], bool)
+            self.assertEqual(
+                "A_SHARE_EVENT_V1",
+                result["backtestSummary"]["executionModel"],
+            )
+            self.assertIn("eventTotalReturn", result["backtestSummary"])
+            self.assertIn("eventSharpe", result["backtestSummary"])
+
+    def test_backtest_job_uses_a_share_event_execution_and_persists_fill_ledger(self):
+        records = [
+            {
+                "data_date": (date(2026, 7, 1) + timedelta(days=index)).isoformat(),
+                "open": 10.0,
+                "high": 10.2,
+                "low": 9.8,
+                "close": 10.0,
+                "previous_close": 10.0,
+                "volume": 1_000_000,
+            }
+            for index in range(4)
+        ]
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(Path(root), load_quant_config(), max_workers=1)
+            created = service.submit({
+                "type": "BACKTEST",
+                "records": records,
+                "signals": [0.10, 0.0, 0.0, 0.0],
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("SUCCEEDED", completed["status"])
+            self.assertEqual(
+                ["2026-07-02", "2026-07-03"],
+                completed["result"]["fill_dates"],
+            )
+            self.assertEqual(["BUY", "SELL"], completed["result"]["fill_sides"])
+            self.assertEqual(0.0, completed["result"]["final_quantity"])
+
     def test_factor_job_is_persisted_and_returns_safe_no_trade_without_model(self):
         test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
         test_root.mkdir(exist_ok=True)
@@ -42,6 +133,9 @@ class QuantJobServiceTest(unittest.TestCase):
             self.assertEqual("SUCCEEDED", result["status"])
             self.assertEqual("NO_TRADE", result["result"]["action"])
             self.assertEqual("MODEL_UNAVAILABLE", result["result"]["riskFlags"][0])
+            self.assertIn("BENCHMARK_UNAVAILABLE", result["result"]["riskFlags"])
+            self.assertIsNone(result["result"]["benchmarkCode"])
+            self.assertIsNone(result["result"]["targetWeight"])
             self.assertEqual(64, len(result["result"]["featureSetVersion"]))
             self.assertEqual(64, len(result["result"]["featureArtifactHash"]))
             self.assertTrue((Path(root) / result["result"]["featureArtifactUri"]).is_file())
@@ -68,9 +162,34 @@ class QuantJobServiceTest(unittest.TestCase):
             self.assertEqual(completed, restarted.get(created["jobId"]))
             restarted.executor.shutdown(wait=True)
 
+    def test_failed_job_reports_structured_error_instead_of_cached_result_claim(self):
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(Path(root), load_quant_config(), max_workers=1)
+            created = service.submit({
+                "type": "FACTOR_ANALYSIS",
+                "datasetVersion": "c" * 64,
+                "productType": "STOCK",
+                "horizonDays": 20,
+                "records": [],
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("FAILED", completed["status"])
+            self.assertEqual("JOB_FAILED", completed["errorCode"])
+            self.assertTrue(completed["errorSummary"])
+            self.assertEqual(
+                ["JOB_FAILED"],
+                completed["result"]["riskFlags"],
+            )
+            self.assertNotIn("上一份有效结果", completed["result"]["userMessage"])
+
     @staticmethod
     def _wait(service: QuantJobService, job_id: str) -> dict:
-        deadline = time.time() + 5
+        deadline = time.time() + 30
         while time.time() < deadline:
             job = service.get(job_id)
             if job["status"] in {"SUCCEEDED", "FAILED"}:

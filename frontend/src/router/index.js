@@ -36,6 +36,12 @@ const routes = [
         meta: { title: '投资详情' }
       },
       {
+        path: 'quant-lab',
+        name: 'QuantResearchLab',
+        component: () => import('../views/QuantResearchLab.vue'),
+        meta: { title: '量化研究实验室' }
+      },
+      {
         path: 'statistics',
         name: 'Statistics',
         component: () => import('../views/Statistics.vue'),

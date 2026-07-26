@@ -33,8 +33,9 @@ class InvestmentRealtimeQuoteWorkerTest {
 
         worker.refreshStockAssets(LocalDateTime.of(2026, 7, 13, 10, 0));
 
-        verify(assetService).sync(2L, 11L);
-        verify(assetService, never()).sync(2L, 12L);
+        verify(assetService).refresh(2L, 11L, false);
+        verify(assetService, never()).refresh(2L, 12L, false);
+        verify(assetService, never()).sync(anyLong(), anyLong());
     }
 
     @Test
@@ -52,7 +53,7 @@ class InvestmentRealtimeQuoteWorkerTest {
 
         worker.refreshStockAssets(LocalDateTime.of(2026, 7, 13, 12, 0));
 
-        verify(assetService).sync(2L, 11L);
+        verify(assetService).refresh(2L, 11L, false);
     }
 
     @Test

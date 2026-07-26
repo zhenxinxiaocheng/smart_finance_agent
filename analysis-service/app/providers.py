@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from functools import lru_cache
+from time import monotonic
 from typing import Any, Iterable, Sequence
 from urllib.request import Request, urlopen
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from .data_quality.models import AdjustType, DataSnapshotContext, ProductType
@@ -17,12 +21,73 @@ from .strategy_config import load_strategy_config
 STRATEGY = load_strategy_config()
 
 
+@dataclass
+class _FundSnapshotCacheEntry:
+    expires_at: float = 0
+    records: tuple[dict[str, Any], ...] | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    loading: bool = False
+
+
+_FUND_SNAPSHOT_CACHE: WeakKeyDictionary[Any, _FundSnapshotCacheEntry] = WeakKeyDictionary()
+_FUND_SNAPSHOT_CACHE_CONDITION = threading.Condition(threading.RLock())
+
+
 def _provider_integer(name: str) -> int:
     return STRATEGY.integer(f"providers.{name}")
 
 
 def _market_zone() -> ZoneInfo:
     return ZoneInfo(str(STRATEGY.value("providers.market_timezone")))
+
+
+def _clear_fund_snapshot_cache() -> None:
+    """Clear the process cache so provider tests do not share global state."""
+    with _FUND_SNAPSHOT_CACHE_CONDITION:
+        _FUND_SNAPSHOT_CACHE.clear()
+        _FUND_SNAPSHOT_CACHE_CONDITION.notify_all()
+
+
+def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], ...]:
+    cache_clock = monotonic if clock is None else clock
+    with _FUND_SNAPSHOT_CACHE_CONDITION:
+        entry = _FUND_SNAPSHOT_CACHE.get(ak_module)
+        if entry is None:
+            entry = _FundSnapshotCacheEntry()
+            _FUND_SNAPSHOT_CACHE[ak_module] = entry
+        while True:
+            if entry.expires_at > cache_clock():
+                if entry.error_type is not None:
+                    raise ProviderUnavailable(
+                        f"{entry.error_type}: {entry.error_message or ''}"
+                    ) from None
+                return entry.records or ()
+            if not entry.loading:
+                entry.loading = True
+                break
+            _FUND_SNAPSHOT_CACHE_CONDITION.wait()
+
+    records: tuple[dict[str, Any], ...] | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    try:
+        records = tuple(ak_module.fund_open_fund_daily_em().to_dict("records"))
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_message = str(exc)
+
+    with _FUND_SNAPSHOT_CACHE_CONDITION:
+        entry.records = records
+        entry.error_type = error_type
+        entry.error_message = error_message
+        entry.expires_at = cache_clock() + _provider_integer("fund_snapshot_cache_ttl_ms") / 1000
+        entry.loading = False
+        _FUND_SNAPSHOT_CACHE_CONDITION.notify_all()
+
+    if error_type is not None:
+        raise ProviderUnavailable(f"{error_type}: {error_message or ''}") from None
+    return records or ()
 
 
 @dataclass(frozen=True)
@@ -343,7 +408,12 @@ def normalize_resolved_product(
     }
 
 
-def resolve_product_metadata(product_type: str, code: str, ak_module: Any = None) -> dict[str, Any]:
+def resolve_product_metadata(
+    product_type: str,
+    code: str,
+    ak_module: Any = None,
+    cache_clock=None,
+) -> dict[str, Any]:
     normalized_type = product_type.strip().upper()
     normalized_code = code.strip().upper()
     if normalized_type not in {"STOCK", "MUTUAL_FUND"}:
@@ -378,12 +448,30 @@ def resolve_product_metadata(product_type: str, code: str, ak_module: Any = None
             quotes = []
             warnings.append(f"AKSHARE 行情获取失败: {exc}")
     else:
+        market = "FUND_CN"
+        try:
+            snapshot_records = _fund_snapshot_records(ak_module, clock=cache_clock)
+        except Exception as exc:
+            warnings.append(f"AKSHARE 基金快照获取失败: {exc}")
+        else:
+            snapshot_match = next(
+                (item for item in snapshot_records
+                 if str(item.get("基金代码", "")).strip().zfill(6) == normalized_code),
+                None,
+            )
+            if snapshot_match is None:
+                warnings.append(f"AKSHARE 基金快照未找到基金代码 {normalized_code}")
+            else:
+                snapshot_result = _resolved_fund_snapshot(snapshot_match, normalized_code)
+                if snapshot_result is not None:
+                    return snapshot_result
+                warnings.append(f"AKSHARE 基金快照未返回有效净值 {normalized_code}")
+
         records = ak_module.fund_name_em().to_dict("records")
         match = next((item for item in records if str(item.get("基金代码", "")).zfill(6) == normalized_code), None)
         if match is None:
             raise ProviderUnavailable(f"AKSHARE: 未找到基金代码 {normalized_code}")
         name = str(match.get("基金简称", "")).strip()
-        market = "FUND_CN"
         try:
             frame = ak_module.fund_open_fund_info_em(symbol=normalized_code, indicator="单位净值走势")
             fund_records = frame.to_dict("records")
@@ -428,6 +516,60 @@ def resolve_product_metadata(product_type: str, code: str, ak_module: Any = None
         volume=None if latest is None else latest.volume,
         warnings=warnings,
     )
+
+
+def _resolved_fund_snapshot(row: dict[str, Any], code: str) -> dict[str, Any] | None:
+    dated_navs: list[tuple[date, Decimal]] = []
+    for column, value in row.items():
+        column_text = str(column)
+        match = re.search(r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}).*单位净值", column_text)
+        nav = _snapshot_decimal(value)
+        if match is None or nav is None or nav <= 0:
+            continue
+        year, month, day = (int(part) for part in re.split(r"[-/.]", match.group(1)))
+        try:
+            data_date = date(year, month, day)
+        except ValueError:
+            continue
+        dated_navs.append((data_date, nav))
+    if not dated_navs:
+        return None
+
+    dated_navs.sort(key=lambda item: item[0], reverse=True)
+    latest_date, latest_nav = dated_navs[0]
+    previous_nav = dated_navs[1][1] if len(dated_navs) > 1 else None
+    change_amount = _snapshot_decimal(row.get("日增长值"))
+    if change_amount is None and previous_nav is not None:
+        change_amount = latest_nav - previous_nav
+    change_percent = _snapshot_decimal(row.get("日增长率"))
+    if change_percent is None and change_amount is not None:
+        change_percent = _percentage(change_amount, previous_nav)
+    return normalize_resolved_product(
+        product_type="MUTUAL_FUND",
+        code=code,
+        name=str(row.get("基金简称", "")).strip(),
+        market="FUND_CN",
+        currency="CNY",
+        provider="AKSHARE",
+        latest_price=latest_nav,
+        data_date=latest_date,
+        previous_close=previous_nav,
+        change_amount=change_amount,
+        change_percent=change_percent,
+    )
+
+
+def _snapshot_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    text = str(value).strip().removesuffix("%").strip()
+    if not text or text.lower() in {"nan", "none", "nat"}:
+        return None
+    try:
+        result = Decimal(text)
+    except Exception:
+        return None
+    return result if result.is_finite() else None
 
 
 class ProviderUnavailable(RuntimeError):
@@ -897,6 +1039,164 @@ def akshare_fx_rates(base_currency: str, quote_currency: str, start_date: date, 
                             "data_date": data_date.isoformat(), "rate": str(rate), "provider": "AKSHARE",
                             "adapter_version": "1", "fetched_at": fetched_at})
     return records
+
+
+def fetch_benchmark_history(
+    benchmark_code: str,
+    start_date: date,
+    end_date: date,
+    *,
+    ak_module: Any = None,
+    baostock_module: Any = None,
+) -> list[dict[str, Any]]:
+    normalized = benchmark_code.strip().upper()
+    if end_date < start_date:
+        raise ValueError("benchmark end_date must not be before start_date")
+    if ak_module is None:
+        try:
+            import akshare as ak_module
+        except ImportError as exc:
+            raise ProviderUnavailable("AKShare is not installed") from exc
+
+    if normalized == "CSI300_95_CASH_5":
+        try:
+            frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
+            rows = _benchmark_rows(frame, start_date, end_date)
+            return _weighted_benchmark(rows, Decimal("0.95"))
+        except Exception:
+            rows = _baostock_benchmark_rows(
+                start_date,
+                end_date,
+                baostock_module=baostock_module,
+            )
+            return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
+    if normalized == "AU9999_95_CASH_5":
+        frame = ak_module.spot_hist_sge(symbol="Au99.99")
+        rows = _benchmark_rows(frame, start_date, end_date)
+        return _weighted_benchmark(rows, Decimal("0.95"))
+    if normalized in {"NASDAQ100_TR_CNY", "NASDAQ100_FX_ADJUSTED"}:
+        frame = ak_module.index_global_hist_em(symbol="纳斯达克100")
+        rows = _benchmark_rows(frame, start_date, end_date)
+        fx_rows = _benchmark_fx_rows(ak_module, start_date, end_date)
+        fx_by_date = {item[0]: item[1] for item in fx_rows}
+        adjusted = [
+            (data_date, value * fx_by_date[data_date])
+            for data_date, value in rows
+            if data_date in fx_by_date
+        ]
+        if len(adjusted) < 2:
+            raise ProviderUnavailable("AKSHARE 未返回足够的纳斯达克100汇率调整数据")
+        return _weighted_benchmark(adjusted, Decimal("1"))
+    if normalized == "CSI300":
+        try:
+            frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
+            rows = _benchmark_rows(frame, start_date, end_date)
+            return _weighted_benchmark(rows, Decimal("1"))
+        except Exception:
+            rows = _baostock_benchmark_rows(
+                start_date,
+                end_date,
+                baostock_module=baostock_module,
+            )
+            return _weighted_benchmark(rows, Decimal("1"), provider="BAOSTOCK")
+    raise ValueError(f"unsupported benchmark code: {benchmark_code}")
+
+
+def _benchmark_rows(
+    frame: Any,
+    start_date: date,
+    end_date: date,
+) -> list[tuple[date, Decimal]]:
+    date_aliases = ("date", "日期", "净值日期")
+    close_aliases = ("close", "收盘", "收盘价", "单位净值")
+    rows: list[tuple[date, Decimal]] = []
+    for raw in frame.to_dict("records"):
+        raw_date = next((raw.get(key) for key in date_aliases if raw.get(key) is not None), None)
+        raw_close = next((raw.get(key) for key in close_aliases if raw.get(key) is not None), None)
+        if raw_date is None or raw_close is None:
+            continue
+        data_date = date.fromisoformat(str(raw_date)[:10])
+        close = _decimal(raw_close)
+        if start_date <= data_date <= end_date and close is not None and close > 0:
+            rows.append((data_date, close))
+    result = sorted(dict(rows).items())
+    if len(result) < 2:
+        raise ProviderUnavailable("AKSHARE 未返回足够的基准历史数据")
+    return result
+
+
+def _benchmark_fx_rows(
+    ak_module: Any,
+    start_date: date,
+    end_date: date,
+) -> list[tuple[date, Decimal]]:
+    frame = ak_module.forex_hist_em(symbol="USDCNY")
+    return _benchmark_rows(frame, start_date, end_date)
+
+
+def _baostock_benchmark_rows(
+    start_date: date,
+    end_date: date,
+    *,
+    baostock_module: Any = None,
+) -> list[tuple[date, Decimal]]:
+    if baostock_module is None:
+        try:
+            import baostock as baostock_module
+        except ImportError as exc:
+            raise ProviderUnavailable("BaoStock is not installed") from exc
+    login = baostock_module.login()
+    if login.error_code != "0":
+        raise ProviderUnavailable(login.error_msg)
+    try:
+        result = baostock_module.query_history_k_data_plus(
+            "sh.000300",
+            "date,close",
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            frequency="d",
+            adjustflag="3",
+        )
+        if result.error_code != "0":
+            raise ProviderUnavailable(result.error_msg)
+        rows: list[tuple[date, Decimal]] = []
+        while result.next():
+            row = dict(zip(result.fields, result.get_row_data()))
+            close = _decimal(row.get("close"))
+            if row.get("date") and close is not None and close > 0:
+                rows.append((date.fromisoformat(str(row["date"])[:10]), close))
+        normalized = sorted(dict(rows).items())
+        if len(normalized) < 2:
+            raise ProviderUnavailable("BaoStock 未返回足够的沪深300基准历史数据")
+        return normalized
+    finally:
+        baostock_module.logout()
+
+
+def _weighted_benchmark(
+    rows: list[tuple[date, Decimal]],
+    risky_weight: Decimal,
+    *,
+    provider: str = "AKSHARE",
+) -> list[dict[str, Any]]:
+    level = Decimal("100")
+    previous = rows[0][1]
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    result: list[dict[str, Any]] = []
+    for index, (data_date, value) in enumerate(rows):
+        if index:
+            risky_return = value / previous - Decimal("1")
+            level *= Decimal("1") + risky_weight * risky_return
+            level = level.quantize(Decimal("0.0001"))
+        result.append({
+            "data_date": data_date.isoformat(),
+            "close": format(level, "f"),
+            "provider": provider,
+            "adapter_version": "benchmark-adapter-v1",
+            "fetched_at": fetched_at,
+        })
+        previous = value
+    return result
 
 
 @lru_cache(maxsize=1)

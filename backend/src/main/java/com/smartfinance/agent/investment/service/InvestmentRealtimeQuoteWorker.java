@@ -50,7 +50,7 @@ public class InvestmentRealtimeQuoteWorker {
             InvestmentProduct product = productMapper.selectById(asset.getProductId());
             if (product == null || !"STOCK".equals(product.getProductType())) continue;
             try {
-                assetService.sync(asset.getUserId(), asset.getId());
+                assetService.refresh(asset.getUserId(), asset.getId(), false);
             } catch (RuntimeException exception) {
                 log.warn("Realtime quote refresh failed: assetId={}, code={}, error={}",
                         asset.getId(), product.getCode(), exception.getMessage());

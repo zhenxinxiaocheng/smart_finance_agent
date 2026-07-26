@@ -39,6 +39,7 @@
         <div class="flex flex-wrap items-center gap-2 pl-11 xl:pl-0">
           <Button variant="outline" @click="preferenceOpen = true"><SlidersHorizontal />分析周期</Button>
           <Button variant="outline" @click="editOpen = true"><Pencil />编辑持仓</Button>
+          <Button variant="outline" @click="openQuantLab"><FlaskConical />量化研究实验室</Button>
           <Button variant="outline" :disabled="refreshingData" @click="refreshData"><RefreshCw :class="refreshingData && 'animate-spin'" />重新拉取数据</Button>
           <Button variant="outline" :disabled="quantRefreshing || qualityBlocked" @click="refreshQuantAnalysis"><BrainCircuit :class="quantRefreshing && 'animate-pulse'" />更新量化模型</Button>
           <Button :disabled="refreshing || qualityBlocked" :title="qualityBlocked ? '最新可靠数据正在准备中' : '使用当前可靠数据刷新分析'" @click="refreshAnalysis"><RefreshCw :class="refreshing && 'animate-spin'" />刷新分析</Button>
@@ -52,6 +53,21 @@
           {{ sourceStatus.dataState === 'STABLE_CACHE'
             ? '最新数据正在后台更新，当前分析继续使用最近一次可靠结果。'
             : '系统正在自动获取并校验可靠数据，准备完成后即可查看分析。' }}
+        </AlertDescription>
+      </Alert>
+
+      <Alert v-if="historyJobNotice" :variant="historyJobStatus === 'FAILED' ? 'destructive' : 'default'">
+        <Clock3 class="size-4" />
+        <AlertTitle>
+          <template v-if="historyJobStatus === 'QUEUED'">正在排队补齐历史数据</template>
+          <template v-else-if="historyJobStatus === 'RUNNING'">正在补齐历史数据</template>
+          <template v-else-if="historyJobStatus === 'RETRY_WAIT'">历史数据准备将自动重试</template>
+          <template v-else-if="historyJobStatus === 'PARTIAL'">历史数据已部分补齐</template>
+          <template v-else>历史数据准备未完成</template>
+        </AlertTitle>
+        <AlertDescription class="mt-2">
+          {{ historyJobNotice }}
+          <Button v-if="historyJobStatus === 'FAILED'" variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">重新拉取数据</Button>
         </AlertDescription>
       </Alert>
 
@@ -105,7 +121,8 @@
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预期超额收益</div><strong class="mt-1 block text-lg tabular-nums" :class="tone(quant.expectedExcessReturn)">{{ decimalPercent(quant.expectedExcessReturn) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">模型置信度</div><strong class="mt-1 block">{{ confidenceLabel(quant.confidence) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">市场状态</div><strong class="mt-1 block">{{ regimeLabel(quant.marketRegime) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">目标仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.targetWeight) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">当前仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.currentWeight) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">建议目标仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.recommendedTargetWeight ?? quant.targetWeight) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预测区间</div><strong class="mt-1 block text-xs tabular-nums">{{ predictionIntervalText(quant.predictionInterval) }}</strong></div>
             </div>
 
@@ -293,11 +310,11 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, ref, watch } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, BrainCircuit, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
-  SlidersHorizontal, Sparkles, TriangleAlert
+  FlaskConical, SlidersHorizontal, Sparkles, TriangleAlert
 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -310,10 +327,12 @@ import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.v
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
 import { buildQuantityReferenceState, missingPriceZoneText } from '@/lib/investmentActionState'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
+import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
 import { feedback } from '@/lib/feedback'
 import {
   clearInvestmentAssetHorizonOverrideAPI,
   getInvestmentAssetDetailAPI,
+  getInvestmentHistoryJobAPI,
   getInvestmentQuantAnalysisAPI,
   getInvestmentQuantJobAPI,
   refreshInvestmentAssetAnalysisAPI,
@@ -343,6 +362,15 @@ const personalized = computed(() => detail.value?.personalizedAction || {})
 const backtest = computed(() => detail.value?.backtestSummary || {})
 const ai = computed(() => detail.value?.aiExplanation || {})
 const sourceStatus = computed(() => detail.value?.sourceStatus || {})
+const historyJob = computed(() => sourceStatus.value.historyJob || {})
+const historyJobStatus = computed(() => historyJob.value.status)
+const historyJobNotice = computed(() => ({
+  QUEUED: '最新价格已可使用，历史行情和分析会在后台继续准备。',
+  RUNNING: '历史行情和分析正在后台准备，完成后页面会自动更新。',
+  RETRY_WAIT: '服务正在稍后重试，当前已保存的数据仍可继续查看。',
+  PARTIAL: '部分历史数据暂不可用，页面已更新可用结果。',
+  FAILED: '本次准备未完成，可点击“重新拉取数据”再次尝试。',
+}[historyJobStatus.value] || ''))
 const qualityBlocked = computed(() => sourceStatus.value.dataState !== 'READY')
 const fundReturnMetrics = computed(() => technical.value.returnMetrics || [])
 const horizonProfile = computed(() => detail.value?.analysisPreference || { settings: [] })
@@ -416,24 +444,58 @@ const ActionPriceRow = defineComponent({ props: { label: String, value: String, 
 const MetricMini = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'rounded-lg border bg-muted/20 p-3' }, [h('div', { class: 'text-xs text-muted-foreground' }, props.label), h('div', { class: ['mt-1.5 font-semibold tabular-nums', props.tone] }, props.value)]) })
 const MetricLine = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between border-b border-border/60 pb-2 text-sm last:border-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums', props.tone] }, props.value)]) })
 
-watch(() => route.params.assetId, loadAll, { immediate: true })
+let componentDisposed = false
+let detailRequestToken = 0
+const isCurrentAsset = assetId => !componentDisposed && String(route.params.assetId) === String(assetId)
+const historyJobPolling = createHistoryJobPollingController({
+  poll: async ({ assetId }) => {
+    const response = await getInvestmentHistoryJobAPI(assetId)
+    return response.data || {}
+  },
+  onJob: (nextHistoryJob, { assetId }) => {
+    if (!isCurrentAsset(assetId)) return
+    detail.value = {
+      ...detail.value,
+      sourceStatus: { ...sourceStatus.value, historyJob: nextHistoryJob }
+    }
+  },
+  onTerminal: (_job, { assetId }) => {
+    if (isCurrentAsset(assetId)) void loadAll(assetId)
+  }
+})
+
+watch(() => route.params.assetId, async () => {
+  const assetId = route.params.assetId
+  historyJobPolling.update(assetId, undefined)
+  await loadAll(assetId)
+}, { immediate: true })
 watch(horizonOptions, options => {
   if (options.some(item => item.value === activeHorizon.value)) return
   activeHorizon.value = options.find(item => item.primary)?.value || options[0]?.value || ''
 }, { immediate: true })
 watch(activeHorizon, value => { if (value) loadQuantAnalysis() })
 
-async function loadAll() {
+onBeforeUnmount(() => {
+  componentDisposed = true
+  detailRequestToken += 1
+  historyJobPolling.dispose()
+})
+
+async function loadAll(assetId = route.params.assetId) {
+  const requestToken = ++detailRequestToken
   loading.value = true
   error.value = ''
-  const id = route.params.assetId
   try {
-    const response = await getInvestmentAssetDetailAPI(id)
+    const response = await getInvestmentAssetDetailAPI(assetId)
+    if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     detail.value = response.data
-  } catch (requestError) {
+  } catch {
+    if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     error.value = '系统正在恢复数据服务，请稍后重新加载'
   } finally {
+    if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     loading.value = false
+    syncHistoryJobPolling()
   }
 }
 
@@ -449,12 +511,25 @@ async function refreshAnalysis() {
 
 async function refreshData() {
   if (refreshingData.value) return
+  const assetId = route.params.assetId
+  const previousHistoryJobStatus = historyJobStatus.value
   refreshingData.value = true
+  historyJobPolling.restart(assetId, undefined)
   try {
-    const response = await refreshInvestmentAssetDataQualityAPI(route.params.assetId)
+    const response = await refreshInvestmentAssetDataQualityAPI(assetId)
+    if (!isCurrentAsset(assetId)) return
     detail.value = response.data
-    feedback.success(qualityBlocked.value ? '系统正在继续准备可靠数据' : '可靠数据已更新')
-  } finally { refreshingData.value = false }
+    historyJobPolling.update(assetId, response.data?.sourceStatus?.historyJob?.status)
+    feedback.success('已开始后台准备历史数据')
+  } catch {
+    if (isCurrentAsset(assetId)) historyJobPolling.update(assetId, previousHistoryJobStatus)
+  } finally {
+    if (!componentDisposed) refreshingData.value = false
+  }
+}
+
+function syncHistoryJobPolling() {
+  if (!componentDisposed) historyJobPolling.update(route.params.assetId, historyJobStatus.value)
 }
 
 async function loadQuantAnalysis() {
@@ -491,16 +566,20 @@ async function refreshQuantAnalysis() {
       }
       if (job.status === 'FAILED' || job.status === 'BLOCKED') {
         quant.value = job.result || { status: 'UNAVAILABLE', action: 'NO_TRADE' }
-        feedback.info(job.userMessage || '本次模型未通过验证，继续使用上一份有效结果')
+        feedback.info(job.userMessage || `${job.errorCode || 'MODEL_REJECTED'}：本次模型不生成交易建议`)
         return
       }
     }
     feedback.info('量化模型仍在后台训练，完成后会自动保存')
   } catch {
-    feedback.info('量化服务正在恢复，当前继续使用上一份有效结果')
+    feedback.info('量化服务暂不可用；当前不生成新的交易建议')
   } finally {
     quantRefreshing.value = false
   }
+}
+
+function openQuantLab() {
+  router.push({ path: '/quant-lab', query: { assetId: route.params.assetId } })
 }
 
 async function savePreference(payload) {

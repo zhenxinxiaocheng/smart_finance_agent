@@ -12,7 +12,7 @@
       </div>
     </header>
 
-    <InvestmentAddBar @added="loadAssets" />
+    <InvestmentAddBar @added="refreshAfterAssetChange" />
 
     <section class="space-y-3">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -31,7 +31,7 @@
       />
     </section>
 
-    <InvestmentAssetDrawer v-model:open="drawerOpen" :asset="selectedAsset" @saved="loadAssets" />
+    <InvestmentAssetDrawer v-model:open="drawerOpen" :asset="selectedAsset" @saved="refreshAfterAssetChange" />
 
     <HorizonProfileDialog
       v-model:open="horizonDialogOpen"
@@ -81,11 +81,12 @@ import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer
 import InvestmentAssetTable from '@/components/investment/InvestmentAssetTable.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import { feedback } from '@/lib/feedback'
-import { startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
+import { createPrioritizedRefreshRunner, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
 import {
   deleteInvestmentAssetAPI,
   getInvestmentHorizonProfileAPI,
   listInvestmentAssetsAPI,
+  refreshInvestmentAssetsAPI,
   updateInvestmentHorizonProfileAPI,
 } from '@/api/investment'
 
@@ -100,8 +101,8 @@ const deletingAsset = ref(null)
 const horizonDialogOpen = ref(false)
 const horizonSaving = ref(false)
 const horizonProfile = ref({ settings: [] })
-let refreshing = false
 let stopRealtimePolling = null
+let disposed = false
 const router = useRouter()
 
 const filteredAssets = computed(() => {
@@ -112,30 +113,45 @@ const filteredAssets = computed(() => {
 const totalMarketValue = computed(() => assets.value.reduce((sum, item) => sum + Number(item.marketValueCny || 0), 0))
 const totalPnl = computed(() => assets.value.reduce((sum, item) => sum + Number(item.unrealizedPnlCny || 0), 0))
 
+const refreshAssets = createPrioritizedRefreshRunner(async (force = false, silent = false) => {
+  if (!silent) loading.value = true
+  try {
+    const response = await refreshInvestmentAssetsAPI(force)
+    if (!disposed) applyAssets(response.data)
+    return response.data
+  } finally {
+    if (!silent && !disposed) loading.value = false
+  }
+})
+
 onMounted(() => {
-  loadAssets()
+  refreshAssets(true).catch(() => loadAssets().catch(() => {}))
   loadHorizonProfile()
-  stopRealtimePolling = startInvestmentRealtimePolling(() => loadAssets(true))
+  stopRealtimePolling = startInvestmentRealtimePolling(force => refreshAssets(force, true))
   window.addEventListener('focus', refreshOnFocus)
 })
 
 onUnmounted(() => {
+  disposed = true
+  refreshAssets.dispose()
   stopRealtimePolling?.()
   window.removeEventListener('focus', refreshOnFocus)
 })
 
 async function loadAssets(silent = false) {
-  if (refreshing) return
-  refreshing = true
+  if (disposed) return
   if (!silent) loading.value = true
   try {
     const response = await listInvestmentAssetsAPI()
-    assets.value = response.data || []
-    if (selectedAsset.value) selectedAsset.value = assets.value.find(item => item.id === selectedAsset.value.id) || null
+    if (!disposed) applyAssets(response.data)
   } finally {
-    refreshing = false
-    if (!silent) loading.value = false
+    if (!silent && !disposed) loading.value = false
   }
+}
+
+function applyAssets(items) {
+  assets.value = items || []
+  if (selectedAsset.value) selectedAsset.value = assets.value.find(item => item.id === selectedAsset.value.id) || null
 }
 
 async function loadHorizonProfile() {
@@ -156,7 +172,9 @@ async function saveHorizonProfile(payload) {
   }
 }
 
-function refreshOnFocus() { loadAssets(true) }
+function refreshOnFocus() { refreshAssets(true, true).catch(() => {}) }
+
+function refreshAfterAssetChange() { refreshAssets(true, true, true).catch(() => {}) }
 
 function openAsset(asset) { router.push(`/stocks/${asset.id}`) }
 
@@ -175,7 +193,7 @@ async function confirmRemoveAsset() {
     deleteDialogOpen.value = false
     deletingAsset.value = null
     feedback.success('资产已移出列表')
-    await loadAssets()
+    await refreshAssets(false, false, true)
   } finally {
     deleteSaving.value = false
   }

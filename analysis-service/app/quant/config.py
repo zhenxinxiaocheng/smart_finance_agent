@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,10 +44,48 @@ class QuantConfig:
         return value.strip()
 
 
+_EXPERIMENT_PARAMETER_PATHS = {
+    "linearWeight": "prediction.ensemble.linearWeight",
+    "classificationC": "training.elasticNet.classificationC",
+    "regressionAlpha": "training.elasticNet.regressionAlpha",
+    "estimators": "training.xgboost.estimators",
+    "maximumDepth": "training.xgboost.maximumDepth",
+    "learningRate": "training.xgboost.learningRate",
+}
+
+
+def with_experiment_parameters(
+    base: QuantConfig,
+    parameters: dict[str, Any] | None,
+) -> QuantConfig:
+    if not parameters:
+        return base
+    unsupported = sorted(set(parameters) - set(_EXPERIMENT_PARAMETER_PATHS))
+    if unsupported:
+        raise ValueError(f"unsupported experiment parameter: {unsupported[0]}")
+    data = deepcopy(base.data)
+    for key, value in parameters.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"experiment parameter must be numeric: {key}")
+        parts = _EXPERIMENT_PARAMETER_PATHS[key].split(".")
+        current = data
+        for part in parts[:-1]:
+            current = current[part]
+        current[parts[-1]] = value
+    material = json.dumps(
+        {"baseVersion": base.version, "parameters": parameters},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    data["version"] = f"{base.version}-exp-{hashlib.sha256(material).hexdigest()[:12]}"
+    return QuantConfig(data)
+
+
 def load_quant_config(path: str | Path | None = None) -> QuantConfig:
     configured = path or os.getenv("QUANT_RESEARCH_CONFIG_PATH")
     config_path = Path(configured) if configured else (
-        Path(__file__).resolve().parents[2] / "config" / "quant-research-v1.json"
+        Path(__file__).resolve().parents[2] / "config" / "quant-research-v2.json"
     )
     data = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -57,4 +97,6 @@ def load_quant_config(path: str | Path | None = None) -> QuantConfig:
     config.integer("annualizationDays")
     config.integer("training.minimumSamples")
     config.integer("training.walkForwardFolds")
+    config.integer("training.minimumCalibrationSamples")
+    config.integer("training.minimumEvaluationSamples")
     return config

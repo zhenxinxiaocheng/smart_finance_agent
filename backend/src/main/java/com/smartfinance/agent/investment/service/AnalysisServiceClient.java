@@ -160,6 +160,24 @@ public class AnalysisServiceClient {
         return response;
     }
 
+    public Map<String, Object> benchmarkHistory(String benchmarkCode,
+                                                LocalDate startDate,
+                                                LocalDate endDate) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("benchmarkCode", benchmarkCode);
+        body.put("startDate", startDate.toString());
+        body.put("endDate", endDate.toString());
+        return postInternal("/internal/v1/market-data/benchmarks/daily", body, "量化基准行情");
+    }
+
+    public Map<String, Object> cancelQuantJob(String jobId) {
+        return postInternal(
+                "/internal/v1/quant/jobs/" + jobId + "/cancel",
+                Map.of(),
+                "取消量化任务"
+        );
+    }
+
     public Map<String, Object> validateDataQuality(InvestmentProduct product,
                                                     LocalDate startDate,
                                                     LocalDate endDate,

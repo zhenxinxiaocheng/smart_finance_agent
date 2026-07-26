@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.main import (
     BacktestRequest,
+    BenchmarkHistoryRequest,
     FundAnalysisRequest,
     FundamentalAnalysisRequest,
     QuantJobRequest,
@@ -20,6 +21,57 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_quant_training_contract_accepts_backend_portfolio_context(self):
+        request = QuantJobRequest.model_validate({
+            "type": "TRAIN_PREDICT",
+            "datasetVersion": "d" * 64,
+            "productType": "MUTUAL_FUND",
+            "modelFamily": "INDEX_FUND",
+            "benchmarkProfileVersion": "OFFICIAL-2024-ANNUAL",
+            "experimentFingerprint": "f" * 64,
+            "experimentParameters": {"linearWeight": 0.35},
+            "algorithm": "ELASTIC_NET",
+            "horizonProfileVersion": "profile-v1",
+            "horizonCode": "MEDIUM",
+            "horizonDays": 20,
+            "benchmarkCode": "CSI300_95_CASH_5",
+            "benchmarkRecords": price_records(2),
+            "currentWeight": 0.15683477,
+            "records": price_records(2),
+        })
+
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+
+        self.assertEqual("CSI300_95_CASH_5", payload["benchmarkCode"])
+        self.assertEqual("INDEX_FUND", payload["modelFamily"])
+        self.assertEqual("OFFICIAL-2024-ANNUAL", payload["benchmarkProfileVersion"])
+        self.assertEqual("f" * 64, payload["experimentFingerprint"])
+        self.assertEqual({"linearWeight": 0.35}, payload["experimentParameters"])
+        self.assertEqual("ELASTIC_NET", payload["algorithm"])
+        self.assertEqual(2, len(payload["benchmarkRecords"]))
+        self.assertEqual(0.15683477, payload["currentWeight"])
+
+    def test_quant_backtest_job_requires_market_records_for_event_execution(self):
+        records = price_records(4)
+        for index, record in enumerate(records):
+            record["previous_close"] = records[max(0, index - 1)]["close"]
+
+        request = QuantJobRequest(
+            type="BACKTEST",
+            records=records,
+            signals=[0.1, 0.0, 0.0, 0.0],
+        )
+
+        payload = request.model_dump(by_alias=True)
+
+        self.assertEqual(records, payload["records"])
+        with self.assertRaises(ValidationError):
+            QuantJobRequest(
+                type="BACKTEST",
+                prices=[10.0, 10.1],
+                signals=[0.1, 0.0],
+            )
+
     def test_quant_job_contract_uses_versioned_dataset_and_dynamic_horizon(self):
         request = QuantJobRequest(
             type="FACTOR_ANALYSIS",
@@ -36,6 +88,17 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual(37, payload["horizonDays"])
         self.assertIn(("/internal/v1/quant/jobs", "POST"), paths)
         self.assertIn(("/internal/v1/quant/jobs/{jobId}", "GET"), paths)
+
+    def test_benchmark_history_contract_is_available_to_backend(self):
+        request = BenchmarkHistoryRequest(
+            benchmarkCode="CSI300_95_CASH_5",
+            startDate="2026-01-01",
+            endDate="2026-07-01",
+        )
+        paths = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
+
+        self.assertEqual("CSI300_95_CASH_5", request.benchmark_code)
+        self.assertIn(("/internal/v1/market-data/benchmarks/daily", "POST"), paths)
 
     def test_technical_endpoint_keeps_financial_context_out_of_request(self):
         request = TechnicalAnalysisRequest(

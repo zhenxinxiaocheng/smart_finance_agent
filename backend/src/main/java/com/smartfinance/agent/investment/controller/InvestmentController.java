@@ -114,10 +114,23 @@ public class InvestmentController {
         return Result.success(investmentService.createPlan(userId, request));
     }
 
+    @PutMapping("/plans/{id}")
+    public Result<InvestmentPlan> updatePlan(@RequestAttribute Long userId,
+                                             @PathVariable Long id,
+                                             @Valid @RequestBody InvestmentPlanRequest request) {
+        return Result.success(investmentService.updatePlan(userId, id, request));
+    }
+
     @PostMapping("/plans/{id}/enabled")
     public Result<InvestmentPlan> setPlanEnabled(@RequestAttribute Long userId,
                                                   @PathVariable Long id,
                                                   @RequestBody Map<String, Boolean> body) {
         return Result.success(investmentService.setPlanEnabled(userId, id, Boolean.TRUE.equals(body.get("enabled"))));
+    }
+
+    @DeleteMapping("/plans/{id}")
+    public Result<Void> deletePlan(@RequestAttribute Long userId, @PathVariable Long id) {
+        investmentService.deletePlan(userId, id);
+        return Result.success();
     }
 }

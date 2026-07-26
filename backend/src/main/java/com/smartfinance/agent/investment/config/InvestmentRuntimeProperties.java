@@ -56,8 +56,11 @@ public class InvestmentRuntimeProperties {
             throw invalid("market 时区或刷新时段未配置");
         }
         requirePositive(market.stockRefreshIntervalMs, "market.stock-refresh-interval-ms");
+        requirePositive(market.stockActiveFreshnessMs, "market.stock-active-freshness-ms");
         requirePositive(market.fundInitialDelayMs, "market.fund-initial-delay-ms");
         requirePositive(market.fundRefreshIntervalMs, "market.fund-refresh-interval-ms");
+        requirePositive(market.fundActiveFreshnessMs, "market.fund-active-freshness-ms");
+        requirePositive(market.activeRefreshConcurrency, "market.active-refresh-concurrency");
         requirePositive(market.calendarCacheHours, "market.calendar-cache-hours");
         requirePositive(market.calendarSearchLimitDays, "market.calendar-search-limit-days");
         requirePositive(ai.cooldownMinutes, "ai.cooldown-minutes");
@@ -151,10 +154,13 @@ public class InvestmentRuntimeProperties {
     public static class Market {
         private ZoneId zone;
         private long stockRefreshIntervalMs;
+        private long stockActiveFreshnessMs;
         private LocalTime stockRefreshStart;
         private LocalTime stockRefreshEnd;
         private long fundInitialDelayMs;
         private long fundRefreshIntervalMs;
+        private long fundActiveFreshnessMs;
+        private int activeRefreshConcurrency;
         private LocalTime fundRefreshStart;
         private LocalTime fundRefreshEnd;
         private long calendarCacheHours;

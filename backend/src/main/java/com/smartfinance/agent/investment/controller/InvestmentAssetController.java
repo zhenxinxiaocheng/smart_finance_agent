@@ -9,12 +9,14 @@ import com.smartfinance.agent.investment.dto.InvestmentAssetView;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentAssetService;
 import com.smartfinance.agent.investment.service.InvestmentAnalysisService;
+import com.smartfinance.agent.investment.service.InvestmentDataJobService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/investment/assets")
@@ -22,16 +24,24 @@ public class InvestmentAssetController {
 
     private final InvestmentAssetService assetService;
     private final InvestmentAnalysisService analysisService;
+    private final InvestmentDataJobService dataJobService;
 
     public InvestmentAssetController(InvestmentAssetService assetService) {
-        this(assetService, null);
+        this(assetService, null, null);
+    }
+
+    public InvestmentAssetController(InvestmentAssetService assetService,
+                                     InvestmentAnalysisService analysisService) {
+        this(assetService, analysisService, null);
     }
 
     @Autowired
     public InvestmentAssetController(InvestmentAssetService assetService,
-                                     InvestmentAnalysisService analysisService) {
+                                     InvestmentAnalysisService analysisService,
+                                     InvestmentDataJobService dataJobService) {
         this.assetService = assetService;
         this.analysisService = analysisService;
+        this.dataJobService = dataJobService;
     }
 
     @PostMapping("/resolve")
@@ -49,6 +59,13 @@ public class InvestmentAssetController {
     @GetMapping
     public Result<List<InvestmentAssetView>> list(@RequestAttribute Long userId) {
         return Result.success(assetService.list(userId));
+    }
+
+    @PostMapping("/refresh")
+    public Result<List<InvestmentAssetView>> refresh(
+            @RequestAttribute Long userId,
+            @RequestParam(defaultValue = "false") boolean force) {
+        return Result.success(assetService.refreshAll(userId, force));
     }
 
     @GetMapping("/{id}")
@@ -79,6 +96,12 @@ public class InvestmentAssetController {
         return Result.success(analysisService.detail(userId, id));
     }
 
+    @GetMapping("/{id}/history-job")
+    public Result<Map<String, Object>> historyJob(@RequestAttribute Long userId, @PathVariable Long id) {
+        assetService.get(userId, id);
+        return Result.success(dataJobService.statusForAsset(userId, id));
+    }
+
     @GetMapping("/{id}/analysis")
     public Result<InvestmentAssetDetailResponse> analysis(@RequestAttribute Long userId, @PathVariable Long id) {
         return Result.success(analysisService.analysis(userId, id));
@@ -106,7 +129,9 @@ public class InvestmentAssetController {
     @PostMapping("/{id}/data-quality/refresh")
     public Result<InvestmentAssetDetailResponse> refreshDataQuality(@RequestAttribute Long userId,
                                                                      @PathVariable Long id) {
-        return Result.success(analysisService.retryData(userId, id));
+        InvestmentAssetView asset = assetService.get(userId, id);
+        dataJobService.ensureQueued(userId, id, asset.getProductId(), asset.getProductType(), true);
+        return Result.success(analysisService.detail(userId, id));
     }
 
     public record ResolveRequest(@NotBlank String productType, @NotBlank String code) {

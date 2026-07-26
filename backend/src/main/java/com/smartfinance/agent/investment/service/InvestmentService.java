@@ -27,5 +27,7 @@ public interface InvestmentService {
     Map<String, Object> requestSync(Long userId);
     List<InvestmentPlan> listPlans(Long userId);
     InvestmentPlan createPlan(Long userId, InvestmentPlanRequest request);
+    InvestmentPlan updatePlan(Long userId, Long planId, InvestmentPlanRequest request);
     InvestmentPlan setPlanEnabled(Long userId, Long planId, boolean enabled);
+    void deletePlan(Long userId, Long planId);
 }

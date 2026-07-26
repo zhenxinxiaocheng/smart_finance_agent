@@ -41,6 +41,6 @@ export function buildInvestmentPlanPayload(asset, form, today = new Date()) {
     currency: asset.currency,
     frequency,
     executionDay,
-    nextExecutionDate: nextExecutionDate(frequency, executionDay, today)
+    nextExecutionDate: form.nextExecutionDate || nextExecutionDate(frequency, executionDay, today)
   }
 }

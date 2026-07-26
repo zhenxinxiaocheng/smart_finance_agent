@@ -29,6 +29,7 @@ class TrainingSample:
     features: dict[str, float]
     net_excess_return: float
     positive_excess: bool
+    series_id: str = "TARGET"
 
 
 class QuantEngine:

@@ -20,5 +20,6 @@ public class QuantPaperProperties {
     private BigDecimal limitLockMinimumMoveRatio;
     private int stockExecutionDelayDays;
     private int fundExecutionDelayDays;
+    private int qdiiExecutionDelayDays;
     private int accountOrderHistoryLimit;
 }

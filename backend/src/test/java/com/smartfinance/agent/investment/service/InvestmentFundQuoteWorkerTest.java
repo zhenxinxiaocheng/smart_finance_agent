@@ -33,8 +33,9 @@ class InvestmentFundQuoteWorkerTest {
 
         worker.refreshFundAssets(LocalDateTime.of(2026, 7, 16, 10, 0));
 
-        verify(assetService, never()).sync(2L, 11L);
-        verify(assetService).sync(2L, 12L);
+        verify(assetService, never()).refresh(2L, 11L, false);
+        verify(assetService).refresh(2L, 12L, false);
+        verify(assetService, never()).sync(anyLong(), anyLong());
     }
 
     @Test
@@ -49,12 +50,13 @@ class InvestmentFundQuoteWorkerTest {
         when(assetMapper.selectList(any(Wrapper.class))).thenReturn(List.of(first, second));
         when(productMapper.selectById(101L)).thenReturn(product(101L, "MUTUAL_FUND"));
         when(productMapper.selectById(102L)).thenReturn(product(102L, "MUTUAL_FUND"));
-        doThrow(new IllegalStateException("provider unavailable")).when(assetService).sync(2L, 11L);
+        doThrow(new IllegalStateException("provider unavailable"))
+                .when(assetService).refresh(2L, 11L, false);
 
         worker.refreshFundAssets(LocalDateTime.of(2026, 7, 16, 20, 0));
 
-        verify(assetService).sync(2L, 11L);
-        verify(assetService).sync(3L, 12L);
+        verify(assetService).refresh(2L, 11L, false);
+        verify(assetService).refresh(3L, 12L, false);
     }
 
     @Test

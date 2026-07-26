@@ -1,5 +1,5 @@
 param(
-    [int]$BackendPort = 8080,
+    [int]$BackendPort = 8088,
     [int]$FrontendPort = 3000,
     [int]$AnalysisPort = 8090,
     [int]$StartupTimeoutSeconds = 240,
