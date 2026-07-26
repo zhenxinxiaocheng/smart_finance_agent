@@ -40,8 +40,6 @@ export const clearInvestmentAssetHorizonOverrideAPI = id => request.delete(`/inv
 export const refreshInvestmentAssetAnalysisAPI = id => request.post(`/investment/assets/${id}/analysis/refresh`, null, { timeout: 60000 })
 export const refreshInvestmentAssetDataQualityAPI = id => request.post(`/investment/assets/${id}/data-quality/refresh`, null, { timeout: 60000 })
 export const getInvestmentQuantAnalysisAPI = (id, horizonCode) => request.get(`/investment/assets/${id}/quant-analysis`, { params: { horizonCode } })
-export const refreshInvestmentQuantAnalysisAPI = (id, horizonCode) => request.post(`/investment/assets/${id}/quant-analysis/refresh`, { horizonCode })
-export const getInvestmentQuantJobAPI = jobId => request.get(`/investment/quant/jobs/${jobId}`)
 export const getInvestmentQuantStrategyStatusAPI = () => request.get('/investment/quant/strategy-status')
 export const getInvestmentPaperAccountAPI = () => request.get('/investment/paper/account')
 export const getQuantModelFamiliesAPI = () => request.get('/quant/model-families')
@@ -55,3 +53,15 @@ export const cancelQuantExperimentAPI = id => request.post(`/quant/experiments/$
 export const promoteQuantExperimentAPI = id => request.post(`/quant/experiments/${id}/promote`)
 export const getQuantDataQualityAPI = () => request.get('/quant/data-quality')
 export const getQuantPaperStrategyAPI = id => request.get(`/quant/paper-strategies/${id}`)
+export const startQuantTrainingSessionAPI = (assetId, horizonCode) =>
+  request.post(`/quant/assets/${assetId}/training-sessions`, { horizonCode })
+export const getQuantTrainingSessionAPI = sessionId =>
+  request.get(`/quant/training-sessions/${sessionId}`)
+export const getQuantModelManagementAPI = assetId =>
+  request.get(`/quant/assets/${assetId}/model-management`)
+export const getQuantActionPlanAPI = (assetId, horizonCode) =>
+  request.get(`/quant/assets/${assetId}/action-plan`, { params: { horizonCode } })
+export const listQuantAssetModelsAPI = assetId =>
+  request.get(`/quant/assets/${assetId}/models`)
+export const activateQuantAssetModelAPI = (assetId, modelVersion) =>
+  request.post(`/quant/assets/${assetId}/models/${encodeURIComponent(modelVersion)}/activate`)

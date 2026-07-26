@@ -39,9 +39,8 @@
         <div class="flex flex-wrap items-center gap-2 pl-11 xl:pl-0">
           <Button variant="outline" @click="preferenceOpen = true"><SlidersHorizontal />分析周期</Button>
           <Button variant="outline" @click="editOpen = true"><Pencil />编辑持仓</Button>
-          <Button variant="outline" @click="openQuantLab"><FlaskConical />量化研究实验室</Button>
+          <Button variant="outline" @click="openQuantLab"><FlaskConical />量化模型管理</Button>
           <Button variant="outline" :disabled="refreshingData" @click="refreshData"><RefreshCw :class="refreshingData && 'animate-spin'" />重新拉取数据</Button>
-          <Button variant="outline" :disabled="quantRefreshing || qualityBlocked" @click="refreshQuantAnalysis"><BrainCircuit :class="quantRefreshing && 'animate-pulse'" />更新量化模型</Button>
           <Button :disabled="refreshing || qualityBlocked" :title="qualityBlocked ? '最新可靠数据正在准备中' : '使用当前可靠数据刷新分析'" @click="refreshAnalysis"><RefreshCw :class="refreshing && 'animate-spin'" />刷新分析</Button>
         </div>
       </header>
@@ -117,20 +116,14 @@
             </div>
 
             <div v-if="hasUsableQuantModel" class="grid grid-cols-2 gap-2">
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">跑赢概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.probabilityPositiveExcess) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预期超额收益</div><strong class="mt-1 block text-lg tabular-nums" :class="tone(quant.expectedExcessReturn)">{{ decimalPercent(quant.expectedExcessReturn) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">模型置信度</div><strong class="mt-1 block">{{ confidenceLabel(quant.confidence) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">市场状态</div><strong class="mt-1 block">{{ regimeLabel(quant.marketRegime) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">未来盈利概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.profitProbability) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预计扣费后收益</div><strong class="mt-1 block text-lg tabular-nums" :class="tone(quant.expectedNetReturn)">{{ decimalPercent(quant.expectedNetReturn) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">未来亏损概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.lossProbability) }}</strong></div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">计划金额</div><strong class="mt-1 block">{{ money(quant.orderAmountCny) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">当前仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.currentWeight) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">建议目标仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.recommendedTargetWeight ?? quant.targetWeight) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预测区间</div><strong class="mt-1 block text-xs tabular-nums">{{ predictionIntervalText(quant.predictionInterval) }}</strong></div>
-            </div>
-
-            <div v-if="hasUsableQuantModel && quant.topFactors?.length" class="space-y-2">
-              <div class="text-xs text-muted-foreground">主要影响因子</div>
-              <div v-for="factor in quant.topFactors" :key="factor.name" class="flex items-center justify-between gap-3 text-sm">
-                <span>{{ factorLabel(factor.name) }}</span><strong class="tabular-nums" :class="tone(factor.contribution)">{{ signedDecimal(factor.contribution) }}</strong>
-              </div>
+              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">执行时间</div><strong class="mt-1 block text-xs">{{ quant.executeFrom ? new Date(quant.executeFrom).toLocaleString('zh-CN', { hour12: false }) : '-' }}</strong></div>
             </div>
 
             <div v-if="quant.riskFlags?.length" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
@@ -313,7 +306,7 @@
 import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowLeft, BrainCircuit, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
+  ArrowLeft, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
   FlaskConical, SlidersHorizontal, Sparkles, TriangleAlert
 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -332,18 +325,16 @@ import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
 import {
   isUsableQuantAnalysis,
   quantSummaryMetric,
-  trainingCompletionMessage,
 } from '@/lib/quantDisplay'
 import { feedback } from '@/lib/feedback'
 import {
   clearInvestmentAssetHorizonOverrideAPI,
   getInvestmentAssetDetailAPI,
   getInvestmentHistoryJobAPI,
+  getQuantActionPlanAPI,
   getInvestmentQuantAnalysisAPI,
-  getInvestmentQuantJobAPI,
   refreshInvestmentAssetAnalysisAPI,
   refreshInvestmentAssetDataQualityAPI,
-  refreshInvestmentQuantAnalysisAPI,
   updateInvestmentAssetHorizonOverrideAPI,
 } from '@/api/investment'
 
@@ -352,7 +343,6 @@ const router = useRouter()
 const loading = ref(true)
 const refreshing = ref(false)
 const refreshingData = ref(false)
-const quantRefreshing = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
 const detail = ref(null)
@@ -392,8 +382,8 @@ const activeLevels = computed(() => activeAnalysis.value.levels || technical.val
 const hasUsableQuantModel = computed(() => isUsableQuantAnalysis(quant.value))
 const quantConclusion = computed(() => {
   if (!hasUsableQuantModel.value) return quant.value.userMessage || '暂无有效量化模型'
-  const probability = probabilityPercent(quant.value.probabilityPositiveExcess)
-  return `模型基于当前数据估计跑赢概率为 ${probability}；结论已计入交易成本和风险门槛。`
+  const probability = probabilityPercent(quant.value.profitProbability)
+  return `模型估计所选周期内扣除成本后的盈利概率为 ${probability}；请按计划金额、执行时间和停止条件操作。`
 })
 const priceZones = computed(() => isFund.value
   ? personalized.value.priceZones || technical.value.actionZones || {}
@@ -550,53 +540,24 @@ function syncHistoryJobPolling() {
 async function loadQuantAnalysis() {
   if (!route.params.assetId || !activeHorizon.value) return
   try {
-    const response = await getInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value)
-    quant.value = response.data || { status: 'UNAVAILABLE', action: 'PAUSE' }
+    const [analysisResponse, actionPlanResponse] = await Promise.all([
+      getInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value),
+      getQuantActionPlanAPI(route.params.assetId, activeHorizon.value),
+    ])
+    quant.value = {
+      ...(analysisResponse.data || {}),
+      ...(actionPlanResponse.data || {}),
+    }
   } catch {
     quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['RESULT_UNAVAILABLE'], userMessage: '暂无有效量化模型' }
   }
 }
 
-async function refreshQuantAnalysis() {
-  if (quantRefreshing.value || qualityBlocked.value || !activeHorizon.value) return
-  quantRefreshing.value = true
-  try {
-    const response = await refreshInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value)
-    let job = response.data || {}
-    if (job.status === 'BLOCKED') {
-      quant.value = job.result || { status: 'UNAVAILABLE', action: 'PAUSE' }
-      feedback.info(job.userMessage || '可靠数据准备完成后再训练量化模型')
-      return
-    }
-    const pollInterval = Number(import.meta.env.VITE_QUANT_POLL_INTERVAL_MS || 1500)
-    const pollAttempts = Number(import.meta.env.VITE_QUANT_POLL_ATTEMPTS || 80)
-    for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, pollInterval))
-      const statusResponse = await getInvestmentQuantJobAPI(job.jobId)
-      job = statusResponse.data || job
-      if (job.status === 'SUCCEEDED') {
-        await loadQuantAnalysis()
-        const message = trainingCompletionMessage(job)
-        if (isUsableQuantAnalysis(quant.value)) feedback.success(message)
-        else feedback.info(message)
-        return
-      }
-      if (job.status === 'FAILED' || job.status === 'BLOCKED') {
-        quant.value = job.result || { status: 'UNAVAILABLE', action: 'PAUSE' }
-        feedback.info(job.userMessage || `${job.errorCode || 'MODEL_REJECTED'}：本次模型不生成交易建议`)
-        return
-      }
-    }
-    feedback.info('量化模型仍在后台训练，完成后会自动保存')
-  } catch {
-    feedback.info('量化服务暂不可用；当前不生成新的交易建议')
-  } finally {
-    quantRefreshing.value = false
-  }
-}
-
 function openQuantLab() {
-  router.push({ path: '/quant-lab', query: { assetId: route.params.assetId } })
+  router.push({
+    path: '/quant-lab',
+    query: { assetId: route.params.assetId, horizonCode: activeHorizon.value }
+  })
 }
 
 function returnToAssetList() {
@@ -654,10 +615,6 @@ function quantActionVariant(value) { return value === 'EXIT' || value === 'REDUC
 function quantActionTone(value) { return value === 'EXIT' || value === 'REDUCE' ? 'text-destructive' : value === 'ADD' || value === 'BUY_WATCH' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }
 function probabilityPercent(value) { return value == null ? '-' : `${(Number(value) * 100).toFixed(1)}%` }
 function decimalPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${(Number(value) * 100).toFixed(2)}%` }
-function signedDecimal(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(3)}` }
-function confidenceLabel(value) { return ({ HIGH: '高', MEDIUM: '中', LOW: '低' }[value] || '等待模型') }
-function regimeLabel(value) { return ({ UPTREND: '上升趋势', DOWNTREND: '下降趋势', RANGE: '震荡', HIGH_VOLATILITY: '高波动' }[value] || '等待识别') }
-function factorLabel(value) { return ({ momentum_short: '短周期动量', momentum_primary: '目标周期动量', momentum_long: '长周期动量', reversal_short: '短期反转', trend_slope: '趋势斜率', price_to_average: '价格偏离均值', realized_volatility: '实现波动率', downside_volatility: '下行波动率', maximum_drawdown: '最大回撤', rsi: '相对强弱', atr_ratio: '真实波幅', market_beta: '市场 Beta', benchmark_alpha: '基准 Alpha', relative_strength: '相对强度', tracking_error: '跟踪误差', volume_surprise: '成交量异常', liquidity_log: '流动性', return_consistency: '收益一致性', sharpe: '夏普比率', sortino: '索提诺比率', information_ratio: '信息比率', recovery_strength: '回撤修复' }[value] || value) }
 function predictionIntervalText(value) { return Array.isArray(value) && value.length === 2 ? `${decimalPercent(value[0])} ～ ${decimalPercent(value[1])}` : '-' }
 function riskFlagLabel(value) { return ({ MODEL_NOT_VALIDATED: '模型尚未通过样本外验证，当前不交易', MODEL_UNAVAILABLE: '模型尚未完成训练，当前不交易', DATA_NOT_READY: '可靠数据正在准备中，当前不交易', RESULT_UNAVAILABLE: '有效模型结果正在准备中', MODEL_REFRESH_REQUIRED: '周期已变化，需要更新模型', CASH_BENCHMARK: '当前使用现金收益作为比较基准', FUNDAMENTALS_UNAVAILABLE: '历史基本面公告数据不足，本次模型主要使用行情因子' }[value] || '当前风险条件不支持交易') }
 function shortVersion(value) { return value ? String(value).slice(0, 16) : '-' }

@@ -268,7 +268,7 @@ const navGroups = [
       { path: '/chat', label: '新对话', icon: MessageSquareText },
       { path: '/profile', label: '财务画像', icon: UserRound },
       { path: '/stocks', label: '投资分析', icon: ChartCandlestick },
-      { path: '/quant-lab', label: '量化研究', icon: FlaskConical },
+      { path: '/quant-lab', label: '量化模型', icon: FlaskConical },
       { path: '/agent-audit', label: 'Agent 审计', icon: ShieldCheck },
       { path: '/schedules', label: '周期任务', icon: CalendarClock },
       { path: '/skills', label: 'Agent 技能', icon: Blocks }

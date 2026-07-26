@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
@@ -216,12 +217,20 @@ public class QuantModelMonitorService {
         if (tradingDays < requiredDays || observationCount < 3 || rejectedOrders > 0) return;
         List<QuantStrategyVersion> champions = strategyMapper.selectList(
                 new LambdaQueryWrapper<QuantStrategyVersion>()
+                        .eq(QuantStrategyVersion::getUserId, strategy.getUserId())
+                        .eq(QuantStrategyVersion::getAssetId, strategy.getAssetId())
                         .eq(QuantStrategyVersion::getProductType, strategy.getProductType())
+                        .eq(QuantStrategyVersion::getModelFamily, strategy.getModelFamily())
+                        .eq(QuantStrategyVersion::getHorizonCode, strategy.getHorizonCode())
+                        .eq(QuantStrategyVersion::getDeploymentRole, "CHAMPION")
                         .eq(QuantStrategyVersion::getStatus, "CHAMPION"));
         for (QuantStrategyVersion champion : champions) {
-            champion.setStatus("CHALLENGER");
+            if (!sameDeploymentSlot(strategy, champion)) continue;
+            champion.setDeploymentRole("ARCHIVED");
+            champion.setStatus("ARCHIVED");
             strategyMapper.updateById(champion);
         }
+        strategy.setDeploymentRole("CHAMPION");
         strategy.setStatus("CHAMPION");
         strategyMapper.updateById(strategy);
         model.setStatus("PAPER_VERIFIED");
@@ -269,15 +278,38 @@ public class QuantModelMonitorService {
     }
 
     private void promoteFallback(QuantStrategyVersion retired) {
+        if (!"CHAMPION".equals(retired.getDeploymentRole())) return;
         QuantStrategyVersion fallback = strategyMapper.selectOne(
                 new LambdaQueryWrapper<QuantStrategyVersion>()
+                        .eq(QuantStrategyVersion::getUserId, retired.getUserId())
+                        .eq(QuantStrategyVersion::getAssetId, retired.getAssetId())
                         .eq(QuantStrategyVersion::getProductType, retired.getProductType())
-                        .eq(QuantStrategyVersion::getStatus, "CHALLENGER")
+                        .eq(QuantStrategyVersion::getModelFamily, retired.getModelFamily())
+                        .eq(QuantStrategyVersion::getHorizonCode, retired.getHorizonCode())
+                        .eq(QuantStrategyVersion::getDeploymentRole, "ARCHIVED")
+                        .eq(QuantStrategyVersion::getStatus, "ARCHIVED")
                         .orderByDesc(QuantStrategyVersion::getUpdatedAt)
                         .last("LIMIT 1"));
         if (fallback == null) return;
+        QuantModelVersion fallbackModel = modelMapper.selectOne(
+                new LambdaQueryWrapper<QuantModelVersion>()
+                        .eq(QuantModelVersion::getModelVersion, fallback.getModelVersion())
+                        .eq(QuantModelVersion::getStatus, "PAPER_VERIFIED")
+                        .last("LIMIT 1")
+        );
+        if (fallbackModel == null || !sameDeploymentSlot(retired, fallback)) return;
+        fallback.setDeploymentRole("CHAMPION");
         fallback.setStatus("CHAMPION");
         strategyMapper.updateById(fallback);
+    }
+
+    private static boolean sameDeploymentSlot(QuantStrategyVersion left,
+                                              QuantStrategyVersion right) {
+        return Objects.equals(left.getUserId(), right.getUserId())
+                && Objects.equals(left.getAssetId(), right.getAssetId())
+                && Objects.equals(left.getProductType(), right.getProductType())
+                && Objects.equals(left.getModelFamily(), right.getModelFamily())
+                && Objects.equals(left.getHorizonCode(), right.getHorizonCode());
     }
 
     private Map<String, Object> readJson(String value) {

@@ -16,8 +16,8 @@ export function quantSummaryMetric(analysis, formatProbability = value => String
     }
   }
   return {
-    label: '量化跑赢概率',
-    value: formatProbability(analysis.probabilityPositiveExcess),
+    label: '未来盈利概率',
+    value: formatProbability(analysis.profitProbability),
     hint: analysis.action || 'HOLD',
   }
 }

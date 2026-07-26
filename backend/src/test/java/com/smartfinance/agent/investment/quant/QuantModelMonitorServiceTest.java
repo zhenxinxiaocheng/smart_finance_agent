@@ -65,8 +65,35 @@ class QuantModelMonitorServiceTest {
         strategy.setId(1L);
         strategy.setStrategyVersion("strategy-v1");
         strategy.setModelVersion("model-v1");
+        strategy.setUserId(7L);
+        strategy.setAssetId(2L);
         strategy.setProductType("STOCK");
+        strategy.setModelFamily("A_SHARE_STOCK");
+        strategy.setHorizonCode("SHORT");
+        strategy.setDeploymentRole("CHALLENGER");
         strategy.setStatus("PAPER");
+        QuantStrategyVersion currentChampion = new QuantStrategyVersion();
+        currentChampion.setId(2L);
+        currentChampion.setStrategyVersion("strategy-old");
+        currentChampion.setModelVersion("model-old");
+        currentChampion.setUserId(7L);
+        currentChampion.setAssetId(2L);
+        currentChampion.setProductType("STOCK");
+        currentChampion.setModelFamily("A_SHARE_STOCK");
+        currentChampion.setHorizonCode("SHORT");
+        currentChampion.setDeploymentRole("CHAMPION");
+        currentChampion.setStatus("CHAMPION");
+        QuantStrategyVersion unrelatedChampion = new QuantStrategyVersion();
+        unrelatedChampion.setId(3L);
+        unrelatedChampion.setStrategyVersion("strategy-other");
+        unrelatedChampion.setModelVersion("model-other");
+        unrelatedChampion.setUserId(8L);
+        unrelatedChampion.setAssetId(9L);
+        unrelatedChampion.setProductType("STOCK");
+        unrelatedChampion.setModelFamily("A_SHARE_STOCK");
+        unrelatedChampion.setHorizonCode("SHORT");
+        unrelatedChampion.setDeploymentRole("CHAMPION");
+        unrelatedChampion.setStatus("CHAMPION");
         QuantModelVersion model = new QuantModelVersion();
         model.setModelVersion("model-v1");
         model.setHorizonDays(2);
@@ -107,11 +134,19 @@ class QuantModelMonitorServiceTest {
         ));
         when(fillMapper.countTradingDays("strategy-v1")).thenReturn(60L);
         when(orderMapper.selectCount(any())).thenReturn(0L);
-        when(strategyMapper.selectList(any())).thenReturn(List.of());
+        when(strategyMapper.selectList(any())).thenReturn(List.of(
+                currentChampion,
+                unrelatedChampion
+        ));
 
         service.monitor(strategy);
 
         assertThat(strategy.getStatus()).isEqualTo("CHAMPION");
+        assertThat(strategy.getDeploymentRole()).isEqualTo("CHAMPION");
+        assertThat(currentChampion.getStatus()).isEqualTo("ARCHIVED");
+        assertThat(currentChampion.getDeploymentRole()).isEqualTo("ARCHIVED");
+        assertThat(unrelatedChampion.getStatus()).isEqualTo("CHAMPION");
+        assertThat(unrelatedChampion.getDeploymentRole()).isEqualTo("CHAMPION");
         assertThat(model.getStatus()).isEqualTo("PAPER_VERIFIED");
         ArgumentCaptor<QuantModelMonitor> monitorCaptor =
                 ArgumentCaptor.forClass(QuantModelMonitor.class);

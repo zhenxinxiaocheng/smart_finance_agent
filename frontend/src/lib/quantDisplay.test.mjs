@@ -40,6 +40,24 @@ test('无有效模型时摘要不泄漏候选概率', () => {
   )
 })
 
+test('有效模型摘要显示未来盈利概率而不是跑赢基准概率', () => {
+  assert.deepEqual(
+    quantSummaryMetric({
+      status: 'READY',
+      modelLifecycle: 'PAPER_VERIFIED',
+      deploymentStatus: 'CHAMPION',
+      profitProbability: 0.64,
+      probabilityPositiveExcess: 0.89,
+      action: 'HOLD',
+    }, value => `${value * 100}%`),
+    {
+      label: '未来盈利概率',
+      value: '64%',
+      hint: 'HOLD',
+    },
+  )
+})
+
 test('任务完成与模型验证通过使用不同提示', () => {
   assert.equal(trainingCompletionMessage({
     status: 'SUCCEEDED',

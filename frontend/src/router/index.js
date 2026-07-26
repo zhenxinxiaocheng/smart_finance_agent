@@ -38,9 +38,15 @@ const routes = [
       },
       {
         path: 'quant-lab',
+        name: 'QuantModelManagement',
+        component: () => import('../views/QuantModelManagement.vue'),
+        meta: { title: '量化模型管理' }
+      },
+      {
+        path: 'quant-lab/expert',
         name: 'QuantResearchLab',
         component: () => import('../views/QuantResearchLab.vue'),
-        meta: { title: '量化研究实验室' }
+        meta: { title: '量化研究专家模式' }
       },
       {
         path: 'statistics',
