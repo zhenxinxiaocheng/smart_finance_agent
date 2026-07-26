@@ -130,6 +130,11 @@ public class QuantModelRegistryService {
 
     @Transactional
     public void activatePaperModel(Long userId, String modelVersion) {
+        activatePaperModel(userId, null, modelVersion);
+    }
+
+    @Transactional
+    public void activatePaperModel(Long userId, Long assetId, String modelVersion) {
         QuantModelVersion model = modelMapper.selectOne(new LambdaQueryWrapper<QuantModelVersion>()
                 .eq(QuantModelVersion::getModelVersion, modelVersion)
                 .last("LIMIT 1"));
@@ -148,6 +153,7 @@ public class QuantModelRegistryService {
         QuantPrediction prediction = predictionMapper.selectOne(
                 new LambdaQueryWrapper<QuantPrediction>()
                         .eq(QuantPrediction::getUserId, userId)
+                        .eq(assetId != null, QuantPrediction::getAssetId, assetId)
                         .eq(QuantPrediction::getModelVersion, modelVersion)
                         .orderByDesc(QuantPrediction::getAsOfDate)
                         .last("LIMIT 1"));

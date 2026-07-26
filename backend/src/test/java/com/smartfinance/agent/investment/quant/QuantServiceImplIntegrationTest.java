@@ -4,6 +4,8 @@ import com.smartfinance.agent.investment.quant.PaperTradingService;
 import com.smartfinance.agent.investment.quant.QuantPaperProperties;
 import com.smartfinance.agent.investment.quant.QuantPrediction;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
+import com.smartfinance.agent.investment.quant.QuantActionPlanService;
+import com.smartfinance.agent.investment.quant.QuantModelManagementService;
 import com.smartfinance.agent.investment.quant.QuantModelRegistryService;
 import com.smartfinance.agent.investment.quant.QuantPredictionQueryService;
 import com.smartfinance.agent.investment.quant.QuantService;
@@ -47,6 +49,8 @@ import static org.mockito.Mockito.when;
 @Import({
         QuantServiceImpl.class,
         QuantPredictionQueryService.class,
+        QuantActionPlanService.class,
+        QuantModelManagementService.class,
         QuantModelRegistryService.class,
         QuantTrainingOrchestrator.class,
         QuantTradingDecisionService.class
@@ -63,6 +67,10 @@ class QuantServiceImplIntegrationTest {
     private QuantService quantService;
     @Autowired
     private QuantPredictionQueryService predictionQueryService;
+    @Autowired
+    private QuantActionPlanService actionPlanService;
+    @Autowired
+    private QuantModelManagementService modelManagementService;
     @Autowired
     private QuantModelRegistryService modelRegistryService;
     @Autowired
@@ -450,8 +458,94 @@ class QuantServiceImplIntegrationTest {
                 .containsEntry("positions", List.of());
     }
 
+    @Test
+    void actionPlanPausesWithoutADeployedModelAndDoesNotInventAnOrderAmount() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        insertAllowedQuality();
+
+        Map<String, Object> result = actionPlanService.actionPlan(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "PAUSED")
+                .containsEntry("action", "PAUSE")
+                .containsEntry("targetWeight", null)
+                .containsEntry("orderAmountCny", null)
+                .containsEntry("estimatedQuantity", null)
+                .containsEntry("userMessage", "暂无有效量化模型");
+    }
+
+    @Test
+    void modelManagementSeparatesChampionAndChallengerForTheSelectedAsset() {
+        String championModel = "1".repeat(64);
+        String challengerModel = "2".repeat(64);
+        insertModel(championModel, "PAPER_VERIFIED");
+        insertModel(challengerModel, "VALIDATED");
+        jdbc.update("""
+                INSERT INTO quant_strategy_version
+                    (strategy_version, model_version, user_id, asset_id, product_type,
+                     model_family, horizon_code, deployment_role, status,
+                     validation_metrics_json, activated_at)
+                VALUES
+                    (?, ?, 7, 12, 'STOCK', 'A_SHARE_STOCK', 'WAVE',
+                     'CHAMPION', 'CHAMPION', '{}', CURRENT_TIMESTAMP),
+                    (?, ?, 7, 12, 'STOCK', 'A_SHARE_STOCK', 'WAVE',
+                     'CHALLENGER', 'PAPER', '{}', CURRENT_TIMESTAMP)
+                """,
+                "strategy-champion", championModel,
+                "strategy-challenger", challengerModel
+        );
+
+        Map<String, Object> result = modelManagementService.management(7L, 12L);
+
+        assertThat(result)
+                .containsEntry("assetId", 12L)
+                .containsEntry("automaticTraining", true);
+        assertThat(castView(result.get("champion")))
+                .containsEntry("modelVersion", championModel)
+                .containsEntry("modelLifecycle", "PAPER_VERIFIED");
+        assertThat(castView(result.get("challenger")))
+                .containsEntry("modelVersion", challengerModel)
+                .containsEntry("modelLifecycle", "VALIDATED");
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
+    }
+
+    private void insertModel(String modelVersion, String lifecycle) {
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, ?, ?, '{}', CURRENT_TIMESTAMP)
+                """, modelVersion, FEATURE_VERSION, lifecycle, "9".repeat(64));
+    }
+
+    private void insertAllowedQuality() {
+        jdbc.update("""
+                INSERT INTO investment_data_quality_snapshot
+                    (dataset_version, product_type, code, market, frequency, adjust_type,
+                     provider, adapter_version, quality_config_version, quality_rule_set_version,
+                     quality_status, decision, enforcement_mode, requested_start_date,
+                     requested_end_date, sample_start_date, sample_end_date, fetched_at,
+                     evaluated_at, manifest_json, report_json)
+                VALUES (?, 'STOCK', '600519', 'SSE', 'DAILY', 'QFQ',
+                        'TEST', 'test-v1', 'quality-v1', 'rules-v1',
+                        'PASS', 'ALLOW', 'STRICT', DATE '2024-01-01',
+                        DATE '2026-07-24', DATE '2024-01-01', DATE '2026-07-24',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', '{}')
+                """, DATASET_VERSION);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castView(Object value) {
+        return (Map<String, Object>) value;
     }
 
     private static Map<String, Object> completedRemoteJob() {

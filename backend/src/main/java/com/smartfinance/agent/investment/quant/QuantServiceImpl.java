@@ -2,6 +2,7 @@ package com.smartfinance.agent.investment.quant;
 
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -10,15 +11,21 @@ public class QuantServiceImpl implements QuantService {
     private final QuantTrainingOrchestrator trainingOrchestrator;
     private final QuantModelRegistryService modelRegistryService;
     private final QuantTradingDecisionService tradingDecisionService;
+    private final QuantActionPlanService actionPlanService;
+    private final QuantModelManagementService modelManagementService;
 
     public QuantServiceImpl(QuantPredictionQueryService predictionQueryService,
                             QuantTrainingOrchestrator trainingOrchestrator,
                             QuantModelRegistryService modelRegistryService,
-                            QuantTradingDecisionService tradingDecisionService) {
+                            QuantTradingDecisionService tradingDecisionService,
+                            QuantActionPlanService actionPlanService,
+                            QuantModelManagementService modelManagementService) {
         this.predictionQueryService = predictionQueryService;
         this.trainingOrchestrator = trainingOrchestrator;
         this.modelRegistryService = modelRegistryService;
         this.tradingDecisionService = tradingDecisionService;
+        this.actionPlanService = actionPlanService;
+        this.modelManagementService = modelManagementService;
     }
 
     @Override
@@ -106,6 +113,26 @@ public class QuantServiceImpl implements QuantService {
     @Override
     public void activatePaperModel(Long userId, String modelVersion) {
         modelRegistryService.activatePaperModel(userId, modelVersion);
+    }
+
+    @Override
+    public void activateAssetModel(Long userId, Long assetId, String modelVersion) {
+        modelRegistryService.activatePaperModel(userId, assetId, modelVersion);
+    }
+
+    @Override
+    public Map<String, Object> modelManagement(Long userId, Long assetId) {
+        return modelManagementService.management(userId, assetId);
+    }
+
+    @Override
+    public List<Map<String, Object>> models(Long userId, Long assetId) {
+        return modelManagementService.models(userId, assetId);
+    }
+
+    @Override
+    public Map<String, Object> actionPlan(Long userId, Long assetId, String horizonCode) {
+        return actionPlanService.actionPlan(userId, assetId, horizonCode);
     }
 
     @Override
