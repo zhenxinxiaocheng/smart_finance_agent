@@ -140,6 +140,16 @@ class QuantServiceImplIntegrationTest {
                 String.class,
                 JOB_ID
         )).contains("\"sharpe\":0.82");
+        assertThat(jdbc.queryForObject(
+                "SELECT profit_probability FROM quant_prediction WHERE model_version = ?",
+                java.math.BigDecimal.class,
+                MODEL_VERSION
+        )).isEqualByComparingTo("0.68");
+        assertThat(jdbc.queryForObject(
+                "SELECT expected_net_return FROM quant_prediction WHERE model_version = ?",
+                java.math.BigDecimal.class,
+                MODEL_VERSION
+        )).isEqualByComparingTo("0.025");
         verify(paperTradingService).queueValidatedPrediction(
                 eq(7L),
                 any(),
@@ -470,6 +480,9 @@ class QuantServiceImplIntegrationTest {
         ));
         result.put("strategyVersion", STRATEGY_VERSION);
         result.put("asOfDate", "2026-07-24");
+        result.put("profitProbability", 0.68);
+        result.put("lossProbability", 0.32);
+        result.put("expectedNetReturn", 0.025);
         result.put("probabilityPositiveExcess", 0.68);
         result.put("expectedExcessReturn", 0.025);
         result.put("predictionInterval", List.of(0.005, 0.045));

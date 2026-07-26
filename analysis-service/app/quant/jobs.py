@@ -45,7 +45,12 @@ class QuantJobService:
 
     def submit(self, request: Mapping[str, Any]) -> dict[str, Any]:
         job_type = str(request.get("type", "")).strip().upper()
-        if job_type not in {"FACTOR_ANALYSIS", "TRAIN_PREDICT", "BACKTEST"}:
+        if job_type not in {
+            "FACTOR_ANALYSIS",
+            "TRAIN_PREDICT",
+            "AUTO_SEARCH",
+            "BACKTEST",
+        }:
             raise ValueError("unsupported quant job type")
         job_id = uuid.uuid4().hex
         now = _now()
@@ -165,7 +170,7 @@ class QuantJobService:
         }
         samples = None
         factor_rows = [latest_factor_row]
-        if job_type == "TRAIN_PREDICT":
+        if job_type in {"TRAIN_PREDICT", "AUTO_SEARCH"}:
             samples = engine.training_samples(records, product_type, horizon_days, benchmark, fundamentals)
             member_batches: list[tuple[str, Sequence[TrainingSample]]] = []
             for position, member in enumerate(request.get("universeRecords") or []):
@@ -192,6 +197,9 @@ class QuantJobService:
                 "asOfDate": sample.as_of_date,
                 "seriesId": sample.series_id,
                 "sampleRole": "TRAINING",
+                "netReturn": sample.net_return,
+                "positiveReturn": sample.positive_return,
+                "negativeReturn": sample.negative_return,
                 "netExcessReturn": sample.net_excess_return,
                 "positiveExcess": sample.positive_excess,
                 **sample.features,
@@ -225,6 +233,9 @@ class QuantJobService:
                 "strategyVersion": None,
                 "probabilityPositiveExcess": None,
                 "expectedExcessReturn": None,
+                "profitProbability": None,
+                "lossProbability": None,
+                "expectedNetReturn": None,
                 "predictionInterval": None,
                 "confidence": "LOW",
                 "action": "NO_TRADE",
@@ -235,23 +246,50 @@ class QuantJobService:
             }
         assert samples is not None
         from .models import attach_event_backtest, predict_ensemble, train_ensemble
-        artifact = train_ensemble(
-            samples,
-            config,
-            benchmark_available=bool(benchmark_code and benchmark),
-            algorithm=str(request.get("algorithm") or "VALIDATED_ENSEMBLE"),
-        )
-        if product_type == "STOCK":
-            event_result = simulate_a_share_long_only(
-                _a_share_records(records),
-                _validation_signals(
-                    len(records),
-                    artifact.validation_as_of_indices,
-                    artifact.validation_target_weights,
-                ),
-                config,
+
+        def train_candidate(
+            candidate_samples: Sequence[TrainingSample],
+            candidate_config: QuantConfig,
+            **training_options: Any,
+        ) -> Any:
+            candidate = train_ensemble(
+                candidate_samples,
+                candidate_config,
+                **training_options,
             )
-            attach_event_backtest(artifact, event_result, config)
+            if product_type == "STOCK":
+                event_result = simulate_a_share_long_only(
+                    _a_share_records(records),
+                    _validation_signals(
+                        len(records),
+                        candidate.validation_as_of_indices,
+                        candidate.validation_target_weights,
+                    ),
+                    candidate_config,
+                )
+                attach_event_backtest(candidate, event_result, candidate_config)
+            return candidate
+
+        search_summary = None
+        if job_type == "AUTO_SEARCH":
+            from .auto_search import AutoSearchEngine
+
+            search_result = AutoSearchEngine(
+                config,
+                trainer=train_candidate,
+            ).search(
+                samples,
+                benchmark_available=bool(benchmark_code and benchmark),
+            )
+            artifact = search_result.artifact
+            search_summary = search_result.summary
+        else:
+            artifact = train_candidate(
+                samples,
+                config,
+                benchmark_available=bool(benchmark_code and benchmark),
+                algorithm=str(request.get("algorithm") or "VALIDATED_ENSEMBLE"),
+            )
         prediction = predict_ensemble(artifact, factor.values)
         model_file_hash = self._save_model(artifact)
         risk_flags = [] if artifact.status == "VALIDATED" else ["MODEL_NOT_VALIDATED"]
@@ -277,8 +315,11 @@ class QuantJobService:
             "modelFileHash": model_file_hash,
             "modelStatus": artifact.status,
             "strategyVersion": f"strategy-{artifact.model_version[:16]}",
-            "probabilityPositiveExcess": prediction.probability_positive_excess,
-            "expectedExcessReturn": prediction.expected_excess_return,
+            "probabilityPositiveExcess": None,
+            "expectedExcessReturn": None,
+            "profitProbability": prediction.probability_positive_excess,
+            "lossProbability": 1.0 - prediction.probability_positive_excess,
+            "expectedNetReturn": prediction.expected_excess_return,
             "predictionInterval": list(prediction.prediction_interval),
             "confidence": prediction.confidence,
             "action": prediction.action,
@@ -288,6 +329,7 @@ class QuantJobService:
             "riskFlags": risk_flags,
             "validationReport": validation_report,
             "backtestSummary": artifact.metrics,
+            "searchSummary": search_summary,
         }
 
     def _regime(self, factors: Mapping[str, float], config: QuantConfig) -> str:

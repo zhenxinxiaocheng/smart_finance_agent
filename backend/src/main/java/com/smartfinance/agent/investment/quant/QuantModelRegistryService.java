@@ -95,6 +95,9 @@ public class QuantModelRegistryService {
         prediction.setHorizonCode(job.getHorizonCode());
         prediction.setHorizonDays(job.getHorizonDays());
         prediction.setAsOfDate(LocalDate.parse(String.valueOf(result.get("asOfDate"))));
+        prediction.setProfitProbability(decimal(result.get("profitProbability")));
+        prediction.setLossProbability(decimal(result.get("lossProbability")));
+        prediction.setExpectedNetReturn(decimal(result.get("expectedNetReturn")));
         prediction.setProbabilityPositiveExcess(decimal(result.get("probabilityPositiveExcess")));
         prediction.setExpectedExcessReturn(decimal(result.get("expectedExcessReturn")));
         if (result.get("predictionInterval") instanceof List<?> interval && interval.size() == 2) {

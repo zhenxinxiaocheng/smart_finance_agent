@@ -150,6 +150,9 @@ public class QuantPredictionQueryService {
         result.put("horizonCode", prediction.getHorizonCode());
         result.put("horizonDays", prediction.getHorizonDays());
         result.put("asOfDate", prediction.getAsOfDate());
+        result.put("profitProbability", prediction.getProfitProbability());
+        result.put("lossProbability", prediction.getLossProbability());
+        result.put("expectedNetReturn", prediction.getExpectedNetReturn());
         result.put("probabilityPositiveExcess", prediction.getProbabilityPositiveExcess());
         result.put("expectedExcessReturn", prediction.getExpectedExcessReturn());
         List<BigDecimal> predictionInterval = new ArrayList<>();

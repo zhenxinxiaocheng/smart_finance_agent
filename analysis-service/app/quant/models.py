@@ -83,8 +83,20 @@ def train_ensemble(
     if any(tuple(sorted(sample.features)) != feature_names for sample in samples):
         raise ValueError("all training samples must share one feature schema")
     x = np.asarray([[sample.features[name] for name in feature_names] for sample in samples], dtype=float)
-    y_class = np.asarray([int(sample.positive_excess) for sample in samples], dtype=int)
-    y_return = np.asarray([sample.net_excess_return for sample in samples], dtype=float)
+    y_class = np.asarray([
+        int(
+            sample.positive_return
+            if sample.positive_return is not None
+            else sample.positive_excess
+        )
+        for sample in samples
+    ], dtype=int)
+    y_return = np.asarray([
+        sample.net_return
+        if sample.net_return is not None
+        else sample.net_excess_return
+        for sample in samples
+    ], dtype=float)
     _require_binary_labels(y_class, "training")
 
     folds = min(config.integer("training.walkForwardFolds"), max(2, len(samples) // minimum))
@@ -339,7 +351,15 @@ def train_ensemble(
         "algorithm": algorithm,
         "features": feature_names,
         "dates": [sample.as_of_date for sample in samples],
-        "labels": [round(sample.net_excess_return, 12) for sample in samples],
+        "labels": [
+            round(
+                sample.net_return
+                if sample.net_return is not None
+                else sample.net_excess_return,
+                12,
+            )
+            for sample in samples
+        ],
         "metrics": metrics,
     }
     model_version = hashlib.sha256(

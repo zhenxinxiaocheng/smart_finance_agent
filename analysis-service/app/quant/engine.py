@@ -41,6 +41,9 @@ class TrainingSample:
     net_excess_return: float
     positive_excess: bool
     series_id: str = "TARGET"
+    net_return: float | None = None
+    positive_return: bool | None = None
+    negative_return: bool | None = None
 
 
 class QuantEngine:
@@ -183,6 +186,7 @@ class QuantEngine:
             benchmark_return = 0.0
             if start_date in benchmark_by_date and end_date in benchmark_by_date:
                 benchmark_return = _safe_ratio(benchmark_by_date[end_date], benchmark_by_date[start_date]) - 1
+            net_return = asset_return - cost
             net_excess = asset_return - benchmark_return - cost
             result.append(TrainingSample(
                 as_of_index=index,
@@ -191,6 +195,9 @@ class QuantEngine:
                 features=row.values,
                 net_excess_return=_finite(net_excess),
                 positive_excess=net_excess > 0,
+                net_return=_finite(net_return),
+                positive_return=net_return > 0,
+                negative_return=net_return < 0,
             ))
         return result
 

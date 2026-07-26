@@ -12,7 +12,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 _ROW_METADATA = frozenset({
-    "asOfDate", "sampleRole", "netExcessReturn", "positiveExcess",
+    "asOfDate", "sampleRole", "netReturn", "positiveReturn", "negativeReturn",
+    "netExcessReturn", "positiveExcess",
 })
 
 

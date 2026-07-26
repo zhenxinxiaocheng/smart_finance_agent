@@ -27,6 +27,9 @@ public class QuantPrediction {
     private String horizonCode;
     private Integer horizonDays;
     private LocalDate asOfDate;
+    private BigDecimal profitProbability;
+    private BigDecimal lossProbability;
+    private BigDecimal expectedNetReturn;
     private BigDecimal probabilityPositiveExcess;
     private BigDecimal expectedExcessReturn;
     private BigDecimal intervalLower;

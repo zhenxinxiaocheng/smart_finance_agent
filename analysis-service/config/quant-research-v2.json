@@ -50,6 +50,54 @@
       "l2Regularization": 2.0
     }
   },
+  "autoSearch": {
+    "maximumCandidates": 6,
+    "timeBudgetSeconds": 900,
+    "noImprovementLimit": 3,
+    "candidates": [
+      {
+        "algorithm": "ELASTIC_NET",
+        "parameters": {
+          "classificationC": 0.5,
+          "regressionAlpha": 0.001
+        }
+      },
+      {
+        "algorithm": "GRADIENT_BOOSTING",
+        "parameters": {
+          "estimators": 48,
+          "maximumDepth": 3,
+          "learningRate": 0.05
+        }
+      },
+      {
+        "algorithm": "GRADIENT_BOOSTING",
+        "parameters": {
+          "estimators": 96,
+          "maximumDepth": 3,
+          "learningRate": 0.03
+        }
+      },
+      {
+        "algorithm": "VALIDATED_ENSEMBLE",
+        "parameters": {
+          "linearWeight": 0.35
+        }
+      },
+      {
+        "algorithm": "VALIDATED_ENSEMBLE",
+        "parameters": {
+          "linearWeight": 0.5
+        }
+      },
+      {
+        "algorithm": "VALIDATED_ENSEMBLE",
+        "parameters": {
+          "linearWeight": 0.65
+        }
+      }
+    ]
+  },
   "promotion": {
     "minimumAnnualizedExcessReturn": 0.0,
     "minimumSharpe": 0.5,

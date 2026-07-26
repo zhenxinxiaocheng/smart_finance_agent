@@ -175,7 +175,8 @@ public class QuantTrainingOrchestrator {
                     "INSUFFICIENT_DATA", experimentFingerprint);
         }
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("type", "TRAIN_PREDICT");
+        String jobType = experimentFingerprint == null ? "AUTO_SEARCH" : "TRAIN_PREDICT";
+        request.put("type", jobType);
         request.put("datasetVersion", quality.getDatasetVersion());
         request.put("productType", product.getProductType());
         request.put("horizonProfileVersion", profile.version());
@@ -235,7 +236,7 @@ public class QuantTrainingOrchestrator {
         job.setUserId(userId);
         job.setAssetId(assetId);
         job.setExternalJobId(requiredText(remote, "jobId"));
-        job.setJobType("TRAIN_PREDICT");
+        job.setJobType(jobType);
         job.setStatus(String.valueOf(remote.getOrDefault("status", "QUEUED")));
         job.setDatasetVersion(quality.getDatasetVersion());
         job.setQuantConfigVersion(text(remote.get("configVersion")));
@@ -351,7 +352,7 @@ public class QuantTrainingOrchestrator {
         job.setUserId(userId);
         job.setAssetId(assetId);
         job.setExternalJobId(UUID.randomUUID().toString().replace("-", ""));
-        job.setJobType("TRAIN_PREDICT");
+        job.setJobType(experimentFingerprint == null ? "AUTO_SEARCH" : "TRAIN_PREDICT");
         job.setStatus("SUCCEEDED");
         job.setExperimentFingerprint(experimentFingerprint);
         job.setErrorCode(errorCode);

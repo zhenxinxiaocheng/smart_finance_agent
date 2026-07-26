@@ -155,7 +155,7 @@ class BacktestRequest(AnalysisRequest):
 class QuantJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    type: Literal["FACTOR_ANALYSIS", "TRAIN_PREDICT", "BACKTEST"]
+    type: Literal["FACTOR_ANALYSIS", "TRAIN_PREDICT", "AUTO_SEARCH", "BACKTEST"]
     dataset_version: str | None = Field(
         default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
@@ -202,7 +202,7 @@ class QuantJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_job_payload(self) -> "QuantJobRequest":
-        if self.type in {"FACTOR_ANALYSIS", "TRAIN_PREDICT"}:
+        if self.type in {"FACTOR_ANALYSIS", "TRAIN_PREDICT", "AUTO_SEARCH"}:
             if not self.dataset_version or not self.product_type or self.horizon_days is None:
                 raise ValueError("analysis jobs require datasetVersion, productType and horizonDays")
             if len(self.records) < 2:

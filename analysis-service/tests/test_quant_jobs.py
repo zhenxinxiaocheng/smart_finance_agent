@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import math
 import tempfile
 import time
@@ -8,7 +9,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from app.quant.config import load_quant_config
+from app.quant.config import QuantConfig, load_quant_config
 from app.quant.jobs import QuantJobService
 
 
@@ -41,6 +42,47 @@ def training_market_records(count: int) -> list[dict[str, object]]:
 
 
 class QuantJobServiceTest(unittest.TestCase):
+    def test_auto_search_job_uses_configured_candidates_and_returns_search_summary(self):
+        data = copy.deepcopy(load_quant_config().data)
+        data["autoSearch"] = {
+            "maximumCandidates": 1,
+            "timeBudgetSeconds": 60,
+            "noImprovementLimit": 1,
+            "candidates": [
+                {"algorithm": "ELASTIC_NET", "parameters": {}},
+            ],
+        }
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(
+                Path(root),
+                QuantConfig(data),
+                max_workers=1,
+            )
+            created = service.submit({
+                "type": "AUTO_SEARCH",
+                "datasetVersion": "e" * 64,
+                "productType": "STOCK",
+                "horizonCode": "WAVE",
+                "horizonDays": 20,
+                "records": training_market_records(700),
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("SUCCEEDED", completed["status"])
+            self.assertEqual("AUTO_SEARCH", completed["type"])
+            self.assertEqual(
+                1,
+                completed["result"]["searchSummary"]["evaluatedCandidates"],
+            )
+            self.assertEqual(
+                completed["result"]["modelVersion"],
+                completed["result"]["searchSummary"]["selectedModelVersion"],
+            )
+
     def test_train_predict_job_persists_versioned_model_artifact(self):
         test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
         test_root.mkdir(exist_ok=True)

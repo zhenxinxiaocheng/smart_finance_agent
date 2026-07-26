@@ -95,6 +95,12 @@ class InvestmentSqliteMigrationTest {
                         .isTrue();
                 assertThat(columnExists(connection, "quant_prediction", "target_weight"))
                         .isTrue();
+                assertThat(columnExists(connection, "quant_prediction", "profit_probability"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_prediction", "loss_probability"))
+                        .isTrue();
+                assertThat(columnExists(connection, "quant_prediction", "expected_net_return"))
+                        .isTrue();
                 assertThat(tableExists(connection, "quant_training_run")).isFalse();
             }
             try (var connection = DriverManager.getConnection(url);
@@ -113,7 +119,7 @@ class InvestmentSqliteMigrationTest {
                 assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
                         .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("15");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("16");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -163,7 +169,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("15");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("16");
         } finally {
             Files.deleteIfExists(database);
         }
