@@ -34,7 +34,7 @@ test('分析周期来自后端画像且单资产设置可恢复为全局配置',
 test('数据不足的周期不展示伪造评分', () => {
   assert.match(pageSource, /item\.data\.status === 'INSUFFICIENT'/)
   assert.match(pageSource, /历史数据不足，暂不生成评分/)
-  assert.match(pageSource, /quant\.value\.status !== 'READY'/)
+  assert.match(pageSource, /hasUsableQuantModel/)
 })
 
 test('风险警告与技术结果在页面上分区呈现', () => {

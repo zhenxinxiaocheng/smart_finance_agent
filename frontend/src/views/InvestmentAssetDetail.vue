@@ -15,14 +15,14 @@
         <div class="mx-auto mb-4 grid size-12 place-items-center rounded-full bg-destructive/10 text-destructive"><TriangleAlert /></div>
         <h1 class="text-lg font-semibold">详情暂时无法加载</h1>
         <p class="mt-2 text-sm text-muted-foreground">{{ error }}</p>
-        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="router.push('/stocks')">返回列表</Button><Button @click="loadAll">重新加载</Button></div>
+        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="returnToAssetList">返回列表</Button><Button @click="loadAll">重新加载</Button></div>
       </div>
     </div>
 
     <template v-else-if="detail?.asset">
       <header class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex min-w-0 items-start gap-3">
-          <Button variant="ghost" size="icon" class="mt-0.5" title="返回资产列表" @click="router.push('/stocks')"><ArrowLeft /></Button>
+          <Button variant="ghost" size="icon" class="mt-0.5" title="返回资产列表" @click="returnToAssetList"><ArrowLeft /></Button>
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <h1 class="truncate text-2xl font-semibold tracking-tight">{{ asset.name }}</h1>
@@ -116,7 +116,7 @@
               <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ quant.userMessage || quantConclusion }}</p>
             </div>
 
-            <div class="grid grid-cols-2 gap-2">
+            <div v-if="hasUsableQuantModel" class="grid grid-cols-2 gap-2">
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">跑赢概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.probabilityPositiveExcess) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预期超额收益</div><strong class="mt-1 block text-lg tabular-nums" :class="tone(quant.expectedExcessReturn)">{{ decimalPercent(quant.expectedExcessReturn) }}</strong></div>
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">模型置信度</div><strong class="mt-1 block">{{ confidenceLabel(quant.confidence) }}</strong></div>
@@ -126,7 +126,7 @@
               <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预测区间</div><strong class="mt-1 block text-xs tabular-nums">{{ predictionIntervalText(quant.predictionInterval) }}</strong></div>
             </div>
 
-            <div v-if="quant.topFactors?.length" class="space-y-2">
+            <div v-if="hasUsableQuantModel && quant.topFactors?.length" class="space-y-2">
               <div class="text-xs text-muted-foreground">主要影响因子</div>
               <div v-for="factor in quant.topFactors" :key="factor.name" class="flex items-center justify-between gap-3 text-sm">
                 <span>{{ factorLabel(factor.name) }}</span><strong class="tabular-nums" :class="tone(factor.contribution)">{{ signedDecimal(factor.contribution) }}</strong>
@@ -137,7 +137,7 @@
               {{ quant.riskFlags.map(riskFlagLabel).join('；') }}
             </div>
 
-            <details v-if="quant.modelVersion" class="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
+            <details v-if="hasUsableQuantModel && quant.modelVersion" class="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
               <summary class="cursor-pointer select-none">模型与验证信息</summary>
               <div class="mt-2 space-y-1 break-all">
                 <p>模型版本：{{ shortVersion(quant.modelVersion) }}</p>
@@ -328,6 +328,12 @@ import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.v
 import { buildQuantityReferenceState, missingPriceZoneText } from '@/lib/investmentActionState'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
 import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
+import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
+import {
+  isUsableQuantAnalysis,
+  quantSummaryMetric,
+  trainingCompletionMessage,
+} from '@/lib/quantDisplay'
 import { feedback } from '@/lib/feedback'
 import {
   clearInvestmentAssetHorizonOverrideAPI,
@@ -350,7 +356,7 @@ const quantRefreshing = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
 const detail = ref(null)
-const quant = ref({ status: 'UNAVAILABLE', action: 'NO_TRADE', riskFlags: ['MODEL_UNAVAILABLE'] })
+const quant = ref({ status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_UNAVAILABLE'] })
 const activeHorizon = ref('')
 const editOpen = ref(false)
 const preferenceOpen = ref(false)
@@ -383,8 +389,9 @@ const isFund = computed(() => asset.value.productType === 'MUTUAL_FUND')
 const activeAnalysis = computed(() => technical.value.horizons?.[activeHorizon.value] || technical.value)
 const activeBacktest = computed(() => backtest.value.horizons?.[activeHorizon.value] || backtest.value)
 const activeLevels = computed(() => activeAnalysis.value.levels || technical.value.levels || {})
+const hasUsableQuantModel = computed(() => isUsableQuantAnalysis(quant.value))
 const quantConclusion = computed(() => {
-  if (quant.value.status !== 'READY') return '量化模型尚未完成训练，当前不生成交易建议。'
+  if (!hasUsableQuantModel.value) return quant.value.userMessage || '暂无有效量化模型'
   const probability = probabilityPercent(quant.value.probabilityPositiveExcess)
   return `模型基于当前数据估计跑赢概率为 ${probability}；结论已计入交易成本和风险门槛。`
 })
@@ -433,11 +440,19 @@ const sourceLabel = computed(() => ({
   PREPARING: '数据准备中',
 }[sourceStatus.value.dataState] || '数据准备中'))
 const dataTime = computed(() => sourceStatus.value.quoteDate || asset.value.dataDate || '暂无日期')
+const quantSummary = computed(() => quantSummaryMetric(
+  quant.value,
+  probabilityPercent,
+))
 const topMetrics = computed(() => [
   { label: asset.value.productType === 'MUTUAL_FUND' ? '最新净值' : '当前价格', value: originalMoney(asset.value.latestPrice, asset.value.currency), hint: `${signedPercent(asset.value.changePercent)} 今日涨跌`, tone: tone(asset.value.changePercent) },
   { label: '持仓市值', value: money(asset.value.marketValueCny), hint: asset.value.quantity == null ? '尚未填写持仓' : `${decimal(asset.value.quantity)} ${asset.value.productType === 'MUTUAL_FUND' ? '份' : '股'}` },
   { label: '持仓盈亏', value: signedMoney(asset.value.unrealizedPnlCny), hint: `${signedPercent(asset.value.holdingReturnPercent)} 持仓收益`, tone: tone(asset.value.unrealizedPnlCny) },
-  { label: '量化跑赢概率', value: probabilityPercent(quant.value.probabilityPositiveExcess), hint: quantActionLabel(quant.value.action), tone: quantActionTone(quant.value.action), help: helpText.quantProbability }
+  {
+    ...quantSummary.value,
+    tone: hasUsableQuantModel.value ? quantActionTone(quant.value.action) : '',
+    help: helpText.quantProbability,
+  }
 ])
 
 const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
@@ -536,9 +551,9 @@ async function loadQuantAnalysis() {
   if (!route.params.assetId || !activeHorizon.value) return
   try {
     const response = await getInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value)
-    quant.value = response.data || { status: 'UNAVAILABLE', action: 'NO_TRADE' }
+    quant.value = response.data || { status: 'UNAVAILABLE', action: 'PAUSE' }
   } catch {
-    quant.value = { status: 'UNAVAILABLE', action: 'NO_TRADE', riskFlags: ['RESULT_UNAVAILABLE'], userMessage: '量化结果正在准备中，当前不生成交易建议。' }
+    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['RESULT_UNAVAILABLE'], userMessage: '暂无有效量化模型' }
   }
 }
 
@@ -549,7 +564,7 @@ async function refreshQuantAnalysis() {
     const response = await refreshInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value)
     let job = response.data || {}
     if (job.status === 'BLOCKED') {
-      quant.value = job.result || { status: 'UNAVAILABLE', action: 'NO_TRADE' }
+      quant.value = job.result || { status: 'UNAVAILABLE', action: 'PAUSE' }
       feedback.info(job.userMessage || '可靠数据准备完成后再训练量化模型')
       return
     }
@@ -561,11 +576,13 @@ async function refreshQuantAnalysis() {
       job = statusResponse.data || job
       if (job.status === 'SUCCEEDED') {
         await loadQuantAnalysis()
-        feedback.success('量化模型已更新')
+        const message = trainingCompletionMessage(job)
+        if (isUsableQuantAnalysis(quant.value)) feedback.success(message)
+        else feedback.info(message)
         return
       }
       if (job.status === 'FAILED' || job.status === 'BLOCKED') {
-        quant.value = job.result || { status: 'UNAVAILABLE', action: 'NO_TRADE' }
+        quant.value = job.result || { status: 'UNAVAILABLE', action: 'PAUSE' }
         feedback.info(job.userMessage || `${job.errorCode || 'MODEL_REJECTED'}：本次模型不生成交易建议`)
         return
       }
@@ -582,13 +599,18 @@ function openQuantLab() {
   router.push({ path: '/quant-lab', query: { assetId: route.params.assetId } })
 }
 
+function returnToAssetList() {
+  clearInvestmentDetailPath()
+  router.push('/stocks')
+}
+
 async function savePreference(payload) {
   if (savingPreference.value) return
   savingPreference.value = true
   try {
     const response = await updateInvestmentAssetHorizonOverrideAPI(route.params.assetId, payload)
     detail.value = response.data
-    quant.value = { status: 'UNAVAILABLE', action: 'NO_TRADE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已更新，请重新训练该周期的量化模型。' }
+    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已更新，系统将自动重新训练该周期的量化模型。' }
     preferenceOpen.value = false
     feedback.success('该资产的周期设置已保存')
   } finally { savingPreference.value = false }
@@ -600,7 +622,7 @@ async function clearPreference() {
   try {
     const response = await clearInvestmentAssetHorizonOverrideAPI(route.params.assetId)
     detail.value = response.data
-    quant.value = { status: 'UNAVAILABLE', action: 'NO_TRADE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已恢复为全局设置，请重新训练该周期的量化模型。' }
+    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已恢复为全局设置，系统将自动重新训练该周期的量化模型。' }
     preferenceOpen.value = false
     feedback.success('已恢复全局周期设置')
   } finally { savingPreference.value = false }

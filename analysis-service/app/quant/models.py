@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 
 from .config import QuantConfig
-from .engine import TrainingSample
+from .engine import InsufficientQuantData, TrainingSample
 from .validation import choose_calibration_method, evaluate_validation
 
 
@@ -76,15 +76,16 @@ def train_ensemble(
 ) -> ModelArtifact:
     minimum = config.integer("training.minimumSamples")
     if len(samples) < minimum:
-        raise ValueError(f"quant training requires at least {minimum} samples")
+        raise InsufficientQuantData(
+            f"training partition requires at least {minimum} samples"
+        )
     feature_names = tuple(sorted(samples[0].features))
     if any(tuple(sorted(sample.features)) != feature_names for sample in samples):
         raise ValueError("all training samples must share one feature schema")
     x = np.asarray([[sample.features[name] for name in feature_names] for sample in samples], dtype=float)
     y_class = np.asarray([int(sample.positive_excess) for sample in samples], dtype=int)
     y_return = np.asarray([sample.net_excess_return for sample in samples], dtype=float)
-    if len(np.unique(y_class)) < 2:
-        raise ValueError("quant training requires positive and negative excess-return labels")
+    _require_binary_labels(y_class, "training")
 
     folds = min(config.integer("training.walkForwardFolds"), max(2, len(samples) // minimum))
     gap = max(0, int(round(samples[0].label_end_index - samples[0].as_of_index)
@@ -168,7 +169,11 @@ def train_ensemble(
         config.number("training.embargoHorizonMultiplier"),
     )
     if not len(calibration_indices) or not len(evaluation_indices):
-        raise ValueError("walk-forward validation produced insufficient out-of-sample predictions")
+        raise InsufficientQuantData(
+            "walk-forward validation produced insufficient out-of-sample predictions"
+        )
+    _require_binary_labels(y_class[calibration_indices], "calibration")
+    _require_binary_labels(y_class[evaluation_indices], "evaluation")
 
     calibration_method = choose_calibration_method(len(calibration_indices))
     evaluation_calibrator = _new_calibrator(calibration_method)
@@ -680,6 +685,13 @@ def _new_calibrator(method: str) -> Any:
     if method == "isotonic":
         return IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
     raise ValueError(f"unsupported probability calibration method: {method}")
+
+
+def _require_binary_labels(labels: np.ndarray, partition: str) -> None:
+    if len(np.unique(labels)) < 2:
+        raise InsufficientQuantData(
+            f"{partition} partition requires positive and negative labels"
+        )
 
 
 def _oos_r2(actual: np.ndarray, predicted: np.ndarray) -> float:

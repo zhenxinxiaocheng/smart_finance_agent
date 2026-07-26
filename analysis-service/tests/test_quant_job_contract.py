@@ -12,7 +12,7 @@ from app.quant.jobs import (
     _merge_panel_samples,
     _visible_target_weight,
 )
-from app.quant.engine import TrainingSample
+from app.quant.engine import InsufficientQuantData, TrainingSample
 
 
 class QuantJobContractTest(unittest.TestCase):
@@ -51,6 +51,20 @@ class QuantJobContractTest(unittest.TestCase):
         self.assertEqual("ValueError: records cannot be empty", payload["errorSummary"])
         self.assertEqual(["JOB_FAILED"], payload["result"]["riskFlags"])
         self.assertNotIn("上一份有效结果", payload["result"]["userMessage"])
+
+    def test_insufficient_training_data_is_not_reported_as_system_failure(self):
+        payload = _failure_payload(
+            InsufficientQuantData(
+                "calibration partition requires positive and negative labels"
+            )
+        )
+
+        self.assertEqual("INSUFFICIENT_DATA", payload["errorCode"])
+        self.assertEqual(["INSUFFICIENT_DATA"], payload["result"]["riskFlags"])
+        self.assertEqual(
+            "有效训练样本不足，当前无法训练可靠模型",
+            payload["result"]["userMessage"],
+        )
 
     def test_only_tradable_lifecycle_exposes_target_weight(self):
         self.assertIsNone(_visible_target_weight("DRAFT", 0.18))

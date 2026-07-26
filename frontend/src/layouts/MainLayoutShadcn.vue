@@ -238,6 +238,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
+import { resolveInvestmentEntryPath } from '@/lib/investmentNavigation'
 import { getUnreadAlertsAPI, markAlertReadAPI } from '@/api/alert'
 import { useChatConversationsStore } from '@/stores/chatConversations'
 import { useAuthStore } from '../stores/auth'
@@ -292,7 +293,9 @@ onMounted(() => {
 function navItemClass(item) {
   const path = typeof item === 'string' ? item : item.path
   const disabled = typeof item === 'object' && item.disabled
-  const active = activeMenu.value === path
+  const active = path === '/stocks'
+    ? activeMenu.value.startsWith('/stocks')
+    : activeMenu.value === path
   return cn(
     active
       ? 'bg-sidebar-accent text-sidebar-primary shadow-sm'
@@ -321,7 +324,7 @@ function navigate(item) {
   }
 
   const path = typeof item === 'string' ? item : item.path
-  router.push(path)
+  router.push(path === '/stocks' ? resolveInvestmentEntryPath() : path)
 }
 
 async function fetchNotifications() {

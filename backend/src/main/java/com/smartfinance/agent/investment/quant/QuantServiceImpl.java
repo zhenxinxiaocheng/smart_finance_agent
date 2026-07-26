@@ -155,11 +155,16 @@ public class QuantServiceImpl implements QuantService {
                 .eq(QuantPrediction::getHorizonProfileVersion, profile.version())
                 .eq(QuantPrediction::getDatasetVersion, quality.getDatasetVersion())
                 .orderByDesc(QuantPrediction::getAsOfDate)
-                .orderByDesc(QuantPrediction::getCreatedAt)
-                .last("LIMIT 1");
-        QuantPrediction prediction = predictionMapper.selectOne(query);
-        if (prediction == null) return unavailable(normalizedHorizon);
-        Map<String, Object> result = predictionView(prediction);
+                .orderByDesc(QuantPrediction::getCreatedAt);
+        Map<String, Object> result = null;
+        for (QuantPrediction prediction : predictionMapper.selectList(query)) {
+            Map<String, Object> candidate = predictionView(prediction);
+            if ("READY".equals(candidate.get("status"))) {
+                result = candidate;
+                break;
+            }
+        }
+        if (result == null) return unavailable(normalizedHorizon);
         List<ProductDailyQuote> currentQuotes = loadQuotes(product);
         BigDecimal latestPrice = currentQuotes.isEmpty()
                 ? null
@@ -283,6 +288,17 @@ public class QuantServiceImpl implements QuantService {
                 quotes.get(0).getTradeDate(),
                 quotes.get(quotes.size() - 1).getTradeDate()
         );
+        if ("MUTUAL_FUND".equals(product.getProductType()) && !benchmark.available()) {
+            return blockedJob(
+                    userId,
+                    assetId,
+                    profile,
+                    horizon,
+                    quality.getDatasetVersion(),
+                    "BENCHMARK_UNAVAILABLE",
+                    experimentFingerprint
+            );
+        }
         String resolvedModelFamily = benchmark.available()
                 ? benchmark.modelFamily()
                 : defaultModelFamily(product.getProductType());
@@ -568,18 +584,23 @@ public class QuantServiceImpl implements QuantService {
         job.setStatus("SUCCEEDED");
         job.setExperimentFingerprint(experimentFingerprint);
         job.setErrorCode(errorCode);
-        job.setErrorSummary("DATA_STALE".equals(errorCode)
-                ? "最新研究数据未通过质量校验"
-                : "有效训练样本不足");
+        job.setErrorSummary(switch (errorCode) {
+            case "DATA_STALE" -> "最新研究数据未通过质量校验";
+            case "BENCHMARK_UNAVAILABLE" -> "官方基准数据尚未准备完成";
+            default -> "有效训练样本不足";
+        });
         job.setDatasetVersion(datasetVersion);
         job.setHorizonProfileVersion(profile.version());
         job.setHorizonCode(horizon.code());
         job.setHorizonDays(horizon.targetHoldingDays());
-        job.setUserMessage("当前数据尚未达到模型训练要求，系统不会生成交易建议。");
+        job.setUserMessage(switch (errorCode) {
+            case "DATA_STALE" -> "最新数据尚未通过质量检查，当前暂停模型训练";
+            case "BENCHMARK_UNAVAILABLE" -> "官方基准数据尚未准备完成，当前暂停模型训练";
+            default -> "当前有效样本不足，暂不训练模型";
+        });
         job.setResultJson(writeJson(Map.of(
-                "action", "NO_TRADE",
+                "action", "PAUSE",
                 "modelStatus", "DRAFT",
-                "targetWeight", BigDecimal.ZERO,
                 "riskFlags", List.of(errorCode))));
         job.setFinishedAt(LocalDateTime.now());
         jobMapper.insert(job);
@@ -871,7 +892,6 @@ public class QuantServiceImpl implements QuantService {
     }
 
     private Map<String, Object> predictionView(QuantPrediction prediction) {
-        Map<String, Object> result = new LinkedHashMap<>();
         QuantModelVersion model = prediction.getModelVersion() == null
                 ? null
                 : modelMapper.selectOne(new LambdaQueryWrapper<QuantModelVersion>()
@@ -879,8 +899,23 @@ public class QuantServiceImpl implements QuantService {
                         .last("LIMIT 1"));
         String lifecycle = model == null ? "DRAFT" : model.getStatus();
         boolean tradable = List.of("VALIDATED", "PAPER_VERIFIED").contains(lifecycle);
+        QuantStrategyVersion deployment = prediction.getStrategyVersion() == null
+                ? null
+                : strategyMapper.selectOne(new LambdaQueryWrapper<QuantStrategyVersion>()
+                        .eq(QuantStrategyVersion::getStrategyVersion, prediction.getStrategyVersion())
+                        .in(QuantStrategyVersion::getStatus, "PAPER", "CHAMPION", "CHALLENGER")
+                        .last("LIMIT 1"));
+        if (!tradable || deployment == null) {
+            return unavailable(
+                    prediction.getHorizonCode(),
+                    "MODEL_UNAVAILABLE",
+                    "暂无有效量化模型"
+            );
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "READY");
         result.put("modelLifecycle", lifecycle);
+        result.put("deploymentStatus", deployment.getStatus());
         result.put("datasetVersion", prediction.getDatasetVersion());
         result.put("featureSetVersion", prediction.getFeatureSetVersion());
         result.put("modelVersion", prediction.getModelVersion());
@@ -912,7 +947,7 @@ public class QuantServiceImpl implements QuantService {
         return unavailable(
                 horizonCode,
                 "MODEL_UNAVAILABLE",
-                "量化模型尚未完成训练，当前不生成交易建议。"
+                "暂无有效量化模型"
         );
     }
 
@@ -922,7 +957,7 @@ public class QuantServiceImpl implements QuantService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "UNAVAILABLE");
         result.put("horizonCode", horizonCode);
-        result.put("action", "NO_TRADE");
+        result.put("action", "PAUSE");
         result.put("confidence", "LOW");
         result.put("riskFlags", List.of(failureCode));
         result.put("errorCode", failureCode);

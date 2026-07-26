@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { rememberInvestmentDetailPath } from '../lib/investmentNavigation'
 
 const routes = [
   {
@@ -121,6 +122,10 @@ router.beforeEach((to, from, next) => {
   } else {
     next()
   }
+})
+
+router.afterEach(to => {
+  rememberInvestmentDetailPath(to.path)
 })
 
 export default router

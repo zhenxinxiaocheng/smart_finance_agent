@@ -6,8 +6,11 @@ import com.smartfinance.agent.investment.quant.QuantPrediction;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import com.smartfinance.agent.investment.quant.QuantService;
 import com.smartfinance.agent.investment.quant.QuantServiceImpl;
+import com.smartfinance.agent.investment.domain.HorizonSetting;
+import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentHorizonService;
+import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -147,6 +150,197 @@ class QuantServiceImplIntegrationTest {
                 MODEL_VERSION
         )).isEqualByComparingTo("0");
         verify(paperTradingService, never()).queueValidatedPrediction(any(), any(), any(), any());
+    }
+
+    @Test
+    void draftPredictionIsNeverReturnedToTheAssetDetailPage() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        jdbc.update("""
+                INSERT INTO investment_data_quality_snapshot
+                    (dataset_version, product_type, code, market, frequency, adjust_type,
+                     provider, adapter_version, quality_config_version, quality_rule_set_version,
+                     quality_status, decision, enforcement_mode, requested_start_date,
+                     requested_end_date, sample_start_date, sample_end_date, fetched_at,
+                     evaluated_at, manifest_json, report_json)
+                VALUES (?, 'STOCK', '600519', 'SSE', 'DAILY', 'QFQ',
+                        'TEST', 'test-v1', 'quality-v1', 'rules-v1',
+                        'PASS', 'ALLOW', 'STRICT', DATE '2024-01-01',
+                        DATE '2026-07-24', DATE '2024-01-01', DATE '2026-07-24',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', '{}')
+                """, DATASET_VERSION);
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'DRAFT', ?, '{}', CURRENT_TIMESTAMP)
+                """, MODEL_VERSION, FEATURE_VERSION, "1".repeat(64));
+        jdbc.update("""
+                INSERT INTO quant_prediction
+                    (user_id, asset_id, dataset_version, feature_set_version, model_version,
+                     horizon_profile_version, horizon_code, horizon_days, as_of_date,
+                     probability_positive_excess, expected_excess_return, interval_lower,
+                     interval_upper, confidence, action, target_weight, top_factors_json,
+                     risk_flags_json, backtest_summary_json)
+                VALUES (7, 12, ?, ?, ?, 'profile-v1', 'WAVE', 20, DATE '2026-07-24',
+                        1.0, 0.20, -0.05, 0.35, 'HIGH', 'BUY', 0.75, '[]', '[]', '{}')
+                """, DATASET_VERSION, FEATURE_VERSION, MODEL_VERSION);
+
+        Map<String, Object> result = quantService.latestAnalysis(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "UNAVAILABLE")
+                .containsEntry("errorCode", "MODEL_UNAVAILABLE")
+                .containsEntry("userMessage", "暂无有效量化模型");
+        assertThat(result).doesNotContainKeys(
+                "probabilityPositiveExcess",
+                "expectedExcessReturn",
+                "predictionInterval",
+                "topFactors",
+                "modelVersion"
+        );
+    }
+
+    @Test
+    void latestDraftPredictionDoesNotHidePreviouslyDeployedValidatedPrediction() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        WealthOverviewResponse overview = new WealthOverviewResponse();
+        overview.setTotalAssets(java.math.BigDecimal.valueOf(100_000));
+        when(wealthService.overview(7L)).thenReturn(overview);
+        jdbc.update("""
+                INSERT INTO investment_data_quality_snapshot
+                    (dataset_version, product_type, code, market, frequency, adjust_type,
+                     provider, adapter_version, quality_config_version, quality_rule_set_version,
+                     quality_status, decision, enforcement_mode, requested_start_date,
+                     requested_end_date, sample_start_date, sample_end_date, fetched_at,
+                     evaluated_at, manifest_json, report_json)
+                VALUES (?, 'STOCK', '600519', 'SSE', 'DAILY', 'QFQ',
+                        'TEST', 'test-v1', 'quality-v1', 'rules-v1',
+                        'PASS', 'ALLOW', 'STRICT', DATE '2024-01-01',
+                        DATE '2026-07-24', DATE '2024-01-01', DATE '2026-07-24',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', '{}')
+                """, DATASET_VERSION);
+        String validatedModel = "1".repeat(64);
+        String draftModel = "2".repeat(64);
+        String deployedStrategy = "strategy-" + "3".repeat(32);
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'VALIDATED', ?, '{}',
+                        DATEADD('MINUTE', -2, CURRENT_TIMESTAMP))
+                """, validatedModel, FEATURE_VERSION, "4".repeat(64));
+        jdbc.update("""
+                INSERT INTO quant_strategy_version
+                    (strategy_version, model_version, product_type, status, validation_metrics_json)
+                VALUES (?, ?, 'STOCK', 'PAPER', '{}')
+                """, deployedStrategy, validatedModel);
+        jdbc.update("""
+                INSERT INTO quant_prediction
+                    (user_id, asset_id, dataset_version, feature_set_version, model_version,
+                     strategy_version, horizon_profile_version, horizon_code, horizon_days,
+                     as_of_date, probability_positive_excess, expected_excess_return,
+                     interval_lower, interval_upper, confidence, action, target_weight,
+                     top_factors_json, risk_flags_json, backtest_summary_json, created_at)
+                VALUES (7, 12, ?, ?, ?, ?, 'profile-v1', 'WAVE', 20, DATE '2026-07-24',
+                        0.68, 0.025, -0.01, 0.06, 'MEDIUM', 'HOLD', 0.10,
+                        '[]', '[]', '{}', DATEADD('MINUTE', -1, CURRENT_TIMESTAMP))
+                """, DATASET_VERSION, FEATURE_VERSION, validatedModel, deployedStrategy);
+        jdbc.update("""
+                INSERT INTO quant_model_version
+                    (model_version, feature_set_version, quant_config_version, product_type,
+                     horizon_days, status, artifact_hash, metrics_json, trained_at)
+                VALUES (?, ?, 'quant-research-v2', 'STOCK', 20, 'DRAFT', ?, '{}',
+                        CURRENT_TIMESTAMP)
+                """, draftModel, FEATURE_VERSION, "5".repeat(64));
+        jdbc.update("""
+                INSERT INTO quant_prediction
+                    (user_id, asset_id, dataset_version, feature_set_version, model_version,
+                     horizon_profile_version, horizon_code, horizon_days, as_of_date,
+                     probability_positive_excess, expected_excess_return, interval_lower,
+                     interval_upper, confidence, action, target_weight, top_factors_json,
+                     risk_flags_json, backtest_summary_json, created_at)
+                VALUES (7, 12, ?, ?, ?, 'profile-v1', 'WAVE', 20, DATE '2026-07-24',
+                        1.0, 0.20, -0.05, 0.35, 'HIGH', 'BUY', 0.75,
+                        '[]', '[]', '{}', CURRENT_TIMESTAMP)
+                """, DATASET_VERSION, FEATURE_VERSION, draftModel);
+
+        Map<String, Object> result = quantService.latestAnalysis(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "READY")
+                .containsEntry("modelLifecycle", "VALIDATED")
+                .containsEntry("modelVersion", validatedModel)
+                .containsEntry("deploymentStatus", "PAPER");
+    }
+
+    @Test
+    void missingOfficialFundBenchmarkBlocksTrainingRequest() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        jdbc.update("""
+                UPDATE investment_product
+                SET product_type = 'MUTUAL_FUND', market = 'FUND_CN', code = '270042',
+                    name = '广发纳斯达克100ETF联接人民币(QDII)A'
+                WHERE id = 11
+                """);
+        jdbc.update("""
+                INSERT INTO investment_data_quality_snapshot
+                    (dataset_version, product_type, code, market, frequency, adjust_type,
+                     provider, adapter_version, quality_config_version, quality_rule_set_version,
+                     quality_status, decision, enforcement_mode, requested_start_date,
+                     requested_end_date, sample_start_date, sample_end_date, fetched_at,
+                     evaluated_at, manifest_json, report_json)
+                VALUES (?, 'MUTUAL_FUND', '270042', 'FUND_CN', 'DAILY', 'NONE',
+                        'TEST', 'test-v1', 'quality-v1', 'rules-v1',
+                        'PASS', 'ALLOW', 'STRICT', DATE '2024-01-01',
+                        DATE '2026-07-24', DATE '2024-01-01', DATE '2026-07-24',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', '{}')
+                """, DATASET_VERSION);
+        jdbc.update("""
+                INSERT INTO product_daily_quote
+                    (product_id, trade_date, close_price, adjust_type, source)
+                VALUES (11, DATE '2026-07-24', 1.25, 'NONE', 'TEST')
+                """);
+        when(benchmarkProfileService.resolve(
+                eq("MUTUAL_FUND"),
+                eq("270042"),
+                any(),
+                any(),
+                any()
+        )).thenReturn(new QuantBenchmarkProfileService.ResolvedBenchmark(
+                false,
+                null,
+                null,
+                null,
+                List.of(),
+                "BENCHMARK_UNAVAILABLE",
+                "官方基准数据尚未准备完成"
+        ));
+
+        Map<String, Object> result = quantService.refresh(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("errorCode", "BENCHMARK_UNAVAILABLE")
+                .containsEntry("userMessage", "官方基准数据尚未准备完成，当前暂停模型训练");
+        verify(analysisServiceClient, never()).createQuantJob(any());
     }
 
     @Test

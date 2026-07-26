@@ -15,7 +15,12 @@ from typing import Any, Mapping, Sequence
 
 from .backtest import simulate_a_share_long_only
 from .config import QuantConfig, with_experiment_parameters
-from .engine import QuantEngine, TrainingSample
+from .engine import (
+    BenchmarkUnavailable,
+    QuantDomainError,
+    QuantEngine,
+    TrainingSample,
+)
 from .factor_store import FactorSnapshotStore
 from .risk import size_target_weight
 from .validation import tradable_target_weight
@@ -132,6 +137,10 @@ class QuantJobService:
             request.get("benchmarkCode"),
             benchmark,
         )
+        if product_type == "MUTUAL_FUND" and not benchmark_code:
+            raise BenchmarkUnavailable(
+                "official benchmark records are required for fund training"
+            )
         fundamentals = request.get("fundamentals") or []
         engine = QuantEngine(config)
         factor = engine.factor_row(records, product_type, horizon_days, benchmark, fundamentals)
@@ -381,13 +390,23 @@ def _merge_panel_samples(
 
 def _failure_payload(error: Exception) -> dict[str, Any]:
     summary = f"{type(error).__name__}: {str(error).strip() or 'unknown error'}"
+    error_code = (
+        error.error_code
+        if isinstance(error, QuantDomainError)
+        else "JOB_FAILED"
+    )
+    user_message = (
+        error.user_message
+        if isinstance(error, QuantDomainError)
+        else "量化任务执行失败，请查看错误原因后重试。"
+    )
     return {
-        "errorCode": "JOB_FAILED",
+        "errorCode": error_code,
         "errorSummary": summary[:500],
         "result": {
-            "action": "NO_TRADE",
-            "riskFlags": ["JOB_FAILED"],
-            "userMessage": "量化任务执行失败，请查看错误原因后重试。",
+            "action": "PAUSE",
+            "riskFlags": [error_code],
+            "userMessage": user_message,
         },
     }
 

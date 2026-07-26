@@ -187,6 +187,35 @@ class QuantJobServiceTest(unittest.TestCase):
             )
             self.assertNotIn("上一份有效结果", completed["result"]["userMessage"])
 
+    def test_fund_training_without_official_benchmark_is_blocked(self):
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(Path(root), load_quant_config(), max_workers=1)
+            created = service.submit({
+                "type": "TRAIN_PREDICT",
+                "datasetVersion": "d" * 64,
+                "productType": "MUTUAL_FUND",
+                "modelFamily": "QDII_INDEX_FUND",
+                "horizonCode": "SHORT",
+                "horizonDays": 20,
+                "records": market_records(220),
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("FAILED", completed["status"])
+            self.assertEqual("BENCHMARK_UNAVAILABLE", completed["errorCode"])
+            self.assertEqual(
+                ["BENCHMARK_UNAVAILABLE"],
+                completed["result"]["riskFlags"],
+            )
+            self.assertEqual(
+                "官方基准数据尚未准备完成，当前暂停模型训练",
+                completed["result"]["userMessage"],
+            )
+
     @staticmethod
     def _wait(service: QuantJobService, job_id: str) -> dict:
         deadline = time.time() + 30

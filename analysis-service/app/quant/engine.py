@@ -9,8 +9,19 @@ from typing import Any, Iterable, Mapping, Sequence
 from .config import QuantConfig
 
 
-class InsufficientQuantData(ValueError):
-    pass
+class QuantDomainError(ValueError):
+    error_code = "JOB_FAILED"
+    user_message = "量化任务执行失败，请检查错误原因后重试"
+
+
+class InsufficientQuantData(QuantDomainError):
+    error_code = "INSUFFICIENT_DATA"
+    user_message = "有效训练样本不足，当前无法训练可靠模型"
+
+
+class BenchmarkUnavailable(QuantDomainError):
+    error_code = "BENCHMARK_UNAVAILABLE"
+    user_message = "官方基准数据尚未准备完成，当前暂停模型训练"
 
 
 @dataclass(frozen=True)

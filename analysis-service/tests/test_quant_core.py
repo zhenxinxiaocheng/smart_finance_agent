@@ -13,7 +13,7 @@ import app.quant.models as quant_models
 from app.quant.backtest import simulate_a_share_long_only, simulate_long_only
 from app.quant.config import load_quant_config
 from app.quant.config import QuantConfig
-from app.quant.engine import QuantEngine, TrainingSample
+from app.quant.engine import InsufficientQuantData, QuantEngine, TrainingSample
 from app.quant.models import predict_ensemble, train_ensemble
 from app.quant.risk import size_target_weight
 
@@ -297,6 +297,25 @@ class QuantCoreTest(unittest.TestCase):
             )
 
         self.assertEqual("sigmoid", artifact.metrics["calibrationMethod"])
+
+    def test_training_reports_single_class_labels_as_insufficient_data(self):
+        samples = [
+            TrainingSample(
+                as_of_index=item.as_of_index,
+                label_end_index=item.label_end_index,
+                as_of_date=item.as_of_date,
+                features=item.features,
+                net_excess_return=0.01,
+                positive_excess=True,
+                series_id=item.series_id,
+            )
+            for item in self.synthetic_training_samples()
+        ]
+
+        with self.assertRaisesRegex(
+                InsufficientQuantData,
+                "training.*positive and negative"):
+            train_ensemble(samples, self.fast_model_config())
 
     def test_training_exposes_strict_validation_metrics(self):
         with patch("app.quant.models._fit_models", side_effect=self.fake_fitted_models), \
