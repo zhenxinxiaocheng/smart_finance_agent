@@ -168,6 +168,18 @@ public class QuantTrainingOrchestrator {
                     quality == null ? "INSUFFICIENT_DATA" : "DATA_STALE",
                     experimentFingerprint);
         }
+        if (experimentFingerprint == null) {
+            QuantJob reusable = reusableAutomaticJob(
+                    userId,
+                    assetId,
+                    quality.getDatasetVersion(),
+                    profile.version(),
+                    horizon
+            );
+            if (reusable != null) {
+                return jobView(reusable);
+            }
+        }
         List<ProductDailyQuote> quotes = loadQuotes(product);
         if (quotes.isEmpty()) {
             return blockedJob(
@@ -282,6 +294,24 @@ public class QuantTrainingOrchestrator {
         }
         syncExperiment(job, rawResult);
         return jobView(job);
+    }
+
+    private QuantJob reusableAutomaticJob(Long userId,
+                                          Long assetId,
+                                          String datasetVersion,
+                                          String horizonProfileVersion,
+                                          HorizonSetting horizon) {
+        return jobMapper.selectOne(new LambdaQueryWrapper<QuantJob>()
+                .eq(QuantJob::getUserId, userId)
+                .eq(QuantJob::getAssetId, assetId)
+                .eq(QuantJob::getJobType, "AUTO_SEARCH")
+                .eq(QuantJob::getDatasetVersion, datasetVersion)
+                .eq(QuantJob::getHorizonProfileVersion, horizonProfileVersion)
+                .eq(QuantJob::getHorizonCode, horizon.code())
+                .eq(QuantJob::getHorizonDays, horizon.targetHoldingDays())
+                .in(QuantJob::getStatus, "QUEUED", "RUNNING")
+                .orderByDesc(QuantJob::getCreatedAt)
+                .last("LIMIT 1"));
     }
 
     @Transactional
