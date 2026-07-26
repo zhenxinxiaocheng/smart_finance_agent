@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import pickle
 import re
 import threading
 import uuid
@@ -22,6 +19,7 @@ from .engine import (
     TrainingSample,
 )
 from .factor_store import FactorSnapshotStore
+from .model_store import ImmutableModelStore
 from .risk import size_target_weight
 from .validation import tradable_target_weight
 
@@ -37,6 +35,7 @@ class QuantJobService:
         self.models_root = self.storage_root / "quant-models"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.models_root.mkdir(parents=True, exist_ok=True)
+        self.model_store = ImmutableModelStore(self.models_root)
         self.factor_store = FactorSnapshotStore(self.storage_root)
         workers = max_workers or config.integer("jobs.maximumWorkers")
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="quant-job")
@@ -49,6 +48,7 @@ class QuantJobService:
             "FACTOR_ANALYSIS",
             "TRAIN_PREDICT",
             "AUTO_SEARCH",
+            "PREDICT",
             "BACKTEST",
         }:
             raise ValueError("unsupported quant job type")
@@ -244,6 +244,45 @@ class QuantJobService:
                 "riskFlags": ["MODEL_UNAVAILABLE", *benchmark_flags],
                 "backtestSummary": None,
             }
+        if job_type == "PREDICT":
+            from .inference import SavedModelInferenceService
+
+            prediction = SavedModelInferenceService(self.model_store).predict(
+                str(request["modelVersion"]),
+                model_hash=str(request["modelFileHash"]),
+                config_version=str(request["modelConfigVersion"]),
+                features=factor.values,
+            )
+            target_weight = size_target_weight(
+                product_type=product_type,
+                action=prediction.action,
+                confidence=prediction.confidence,
+                market_regime=common["marketRegime"],
+                annualized_volatility=factor.values.get("realized_volatility", 0.0),
+                current_weight=float(request.get("currentWeight") or 0.0),
+                config=config,
+            )
+            return common | {
+                "modelVersion": request["modelVersion"],
+                "modelFileHash": request["modelFileHash"],
+                "modelStatus": request["modelStatus"],
+                "strategyVersion": request["strategyVersion"],
+                "profitProbability": prediction.probability_positive_excess,
+                "lossProbability": 1.0 - prediction.probability_positive_excess,
+                "expectedNetReturn": prediction.expected_excess_return,
+                "probabilityPositiveExcess": None,
+                "expectedExcessReturn": None,
+                "predictionInterval": list(prediction.prediction_interval),
+                "confidence": prediction.confidence,
+                "action": prediction.action,
+                "targetWeight": target_weight,
+                "topFactors": list(prediction.top_factors),
+                "featureVector": factor.values,
+                "riskFlags": list(benchmark_flags),
+                "validationReport": None,
+                "backtestSummary": None,
+                "searchSummary": None,
+            }
         assert samples is not None
         from .models import attach_event_backtest, predict_ensemble, train_ensemble
 
@@ -343,18 +382,7 @@ class QuantJobService:
         return "RANGE"
 
     def _save_model(self, artifact: Any) -> str:
-        target = self.models_root / f"{artifact.model_version}.pkl"
-        payload = pickle.dumps(artifact, protocol=pickle.HIGHEST_PROTOCOL)
-        digest = hashlib.sha256(payload).hexdigest()
-        if target.exists():
-            existing = target.read_bytes()
-            if hashlib.sha256(existing).hexdigest() != digest:
-                raise ValueError("immutable model artifact hash conflict")
-            return digest
-        temporary = target.with_suffix(".tmp")
-        temporary.write_bytes(payload)
-        os.replace(temporary, target)
-        return digest
+        return self.model_store.save(artifact)
 
     def _path(self, job_id: str) -> Path:
         if not _JOB_ID.fullmatch(job_id):
@@ -367,7 +395,7 @@ class QuantJobService:
         payload = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._lock:
             temporary.write_text(payload, encoding="utf-8")
-            os.replace(temporary, path)
+            temporary.replace(path)
 
 
 def default_quant_storage_root(config: QuantConfig) -> Path:

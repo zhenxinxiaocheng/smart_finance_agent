@@ -155,7 +155,13 @@ class BacktestRequest(AnalysisRequest):
 class QuantJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    type: Literal["FACTOR_ANALYSIS", "TRAIN_PREDICT", "AUTO_SEARCH", "BACKTEST"]
+    type: Literal[
+        "FACTOR_ANALYSIS",
+        "TRAIN_PREDICT",
+        "AUTO_SEARCH",
+        "PREDICT",
+        "BACKTEST",
+    ]
     dataset_version: str | None = Field(
         default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
@@ -185,6 +191,21 @@ class QuantJobRequest(BaseModel):
     experiment_parameters: dict[str, float | int] = Field(
         default_factory=dict, alias="experimentParameters"
     )
+    model_version: str | None = Field(
+        default=None, alias="modelVersion", pattern=r"^[0-9a-f]{64}$"
+    )
+    model_file_hash: str | None = Field(
+        default=None, alias="modelFileHash", pattern=r"^[0-9a-f]{64}$"
+    )
+    model_config_version: str | None = Field(
+        default=None, alias="modelConfigVersion", min_length=1, max_length=160
+    )
+    model_status: Literal["VALIDATED", "PAPER_VERIFIED"] | None = Field(
+        default=None, alias="modelStatus"
+    )
+    strategy_version: str | None = Field(
+        default=None, alias="strategyVersion", min_length=1, max_length=80
+    )
     algorithm: Literal[
         "ELASTIC_NET",
         "GRADIENT_BOOSTING",
@@ -202,11 +223,26 @@ class QuantJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_job_payload(self) -> "QuantJobRequest":
-        if self.type in {"FACTOR_ANALYSIS", "TRAIN_PREDICT", "AUTO_SEARCH"}:
+        if self.type in {
+            "FACTOR_ANALYSIS",
+            "TRAIN_PREDICT",
+            "AUTO_SEARCH",
+            "PREDICT",
+        }:
             if not self.dataset_version or not self.product_type or self.horizon_days is None:
                 raise ValueError("analysis jobs require datasetVersion, productType and horizonDays")
             if len(self.records) < 2:
                 raise ValueError("analysis jobs require market records")
+        if self.type == "PREDICT" and (
+            not self.model_version
+            or not self.model_file_hash
+            or not self.model_config_version
+            or not self.model_status
+            or not self.strategy_version
+        ):
+            raise ValueError(
+                "prediction jobs require deployed model version, hash, config and strategy"
+            )
         if self.type == "BACKTEST":
             if len(self.records) < 2 or len(self.records) != len(self.signals):
                 raise ValueError("backtest jobs require equal market records and signals")
