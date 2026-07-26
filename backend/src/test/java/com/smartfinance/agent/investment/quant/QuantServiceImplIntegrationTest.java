@@ -8,6 +8,8 @@ import com.smartfinance.agent.investment.quant.QuantModelRegistryService;
 import com.smartfinance.agent.investment.quant.QuantPredictionQueryService;
 import com.smartfinance.agent.investment.quant.QuantService;
 import com.smartfinance.agent.investment.quant.QuantServiceImpl;
+import com.smartfinance.agent.investment.quant.QuantTrainingOrchestrator;
+import com.smartfinance.agent.investment.quant.QuantTradingDecisionService;
 import com.smartfinance.agent.investment.domain.HorizonSetting;
 import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
@@ -45,7 +47,9 @@ import static org.mockito.Mockito.when;
 @Import({
         QuantServiceImpl.class,
         QuantPredictionQueryService.class,
-        QuantModelRegistryService.class
+        QuantModelRegistryService.class,
+        QuantTrainingOrchestrator.class,
+        QuantTradingDecisionService.class
 })
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class QuantServiceImplIntegrationTest {
@@ -61,6 +65,10 @@ class QuantServiceImplIntegrationTest {
     private QuantPredictionQueryService predictionQueryService;
     @Autowired
     private QuantModelRegistryService modelRegistryService;
+    @Autowired
+    private QuantTradingDecisionService tradingDecisionService;
+    @Autowired
+    private QuantTrainingOrchestrator trainingOrchestrator;
     @Autowired
     private JdbcTemplate jdbc;
     @MockBean
@@ -337,7 +345,7 @@ class QuantServiceImplIntegrationTest {
                 "官方基准数据尚未准备完成"
         ));
 
-        Map<String, Object> result = quantService.refresh(7L, 12L, "WAVE");
+        Map<String, Object> result = trainingOrchestrator.refresh(7L, 12L, "WAVE");
 
         assertThat(result)
                 .containsEntry("status", "SUCCEEDED")
@@ -420,6 +428,16 @@ class QuantServiceImplIntegrationTest {
                 .containsEntry("errorSummary", "训练进程退出")
                 .containsEntry("userMessage", "训练执行失败，请查看错误摘要");
         assertThat(view.get("userMessage").toString()).doesNotContain("上一份有效结果");
+    }
+
+    @Test
+    void paperAccountQueryIsOwnedByTradingDecisionService() {
+        Map<String, Object> result = tradingDecisionService.paperAccount(7L);
+
+        assertThat(result)
+                .containsEntry("status", "NOT_STARTED")
+                .containsEntry("cash", List.of())
+                .containsEntry("positions", List.of());
     }
 
     private int count(String table) {
