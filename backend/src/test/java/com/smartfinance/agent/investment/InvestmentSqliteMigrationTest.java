@@ -35,11 +35,11 @@ class InvestmentSqliteMigrationTest {
                                  "'quant_prediction','quant_paper_order','investment_data_job'," +
                                  "'benchmark_profile','quant_research_universe'," +
                                  "'quant_universe_membership','quant_experiment'," +
-                                 "'quant_validation_report')")) {
+                                 "'quant_validation_report','quant_benchmark_snapshot')")) {
                 try (var result = statement.executeQuery()) {
                     int count = 0;
                     while (result.next()) count++;
-                    assertThat(count).isEqualTo(20);
+                    assertThat(count).isEqualTo(21);
                 }
             }
             try (var connection = DriverManager.getConnection(url);
@@ -119,7 +119,7 @@ class InvestmentSqliteMigrationTest {
                 assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
                         .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("16");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("17");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -169,7 +169,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("16");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("17");
         } finally {
             Files.deleteIfExists(database);
         }
