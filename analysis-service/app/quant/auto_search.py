@@ -6,6 +6,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .config import QuantConfig, with_experiment_parameters
 from .engine import TrainingSample
+from .nested_validation import split_search_and_final_holdout
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,19 @@ class AutoSearchEngine:
         config: QuantConfig,
         *,
         trainer: Callable[..., Any] | None = None,
+        final_evaluator: Callable[..., Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         if trainer is None:
-            from .models import train_ensemble
+            from .models import evaluate_final_holdout, train_ensemble
 
             trainer = train_ensemble
+            final_evaluator = evaluate_final_holdout
+        elif final_evaluator is None:
+            raise ValueError("a custom trainer requires a final evaluator")
         self.config = config
         self.trainer = trainer
+        self.final_evaluator = final_evaluator
         self.clock = clock
 
     def search(
@@ -37,6 +43,18 @@ class AutoSearchEngine:
         benchmark_available: bool,
         data_fresh: bool = True,
     ) -> AutoSearchResult:
+        selection_samples, final_holdout = split_search_and_final_holdout(
+            samples,
+            holdout_fraction=self.config.number(
+                "autoSearch.finalHoldoutFraction"
+            ),
+            minimum_holdout_samples=self.config.integer(
+                "autoSearch.minimumFinalHoldoutSamples"
+            ),
+            minimum_selection_samples=self.config.integer(
+                "training.minimumSamples"
+            ),
+        )
         candidates = self._candidates()
         maximum = min(
             self.config.integer("autoSearch.maximumCandidates"),
@@ -49,6 +67,8 @@ class AutoSearchEngine:
             "autoSearch.timeBudgetSeconds"
         )
         best_artifact: Any | None = None
+        best_config: QuantConfig | None = None
+        best_algorithm: str | None = None
         best_rank: tuple[float, ...] | None = None
         no_improvement = 0
         evaluated: list[dict[str, Any]] = []
@@ -64,7 +84,7 @@ class AutoSearchEngine:
             )
             try:
                 artifact = self.trainer(
-                    samples,
+                    selection_samples,
                     candidate_config,
                     benchmark_available=benchmark_available,
                     data_fresh=data_fresh,
@@ -91,6 +111,8 @@ class AutoSearchEngine:
                 })
                 if best_rank is None or rank > best_rank:
                     best_artifact = artifact
+                    best_config = candidate_config
+                    best_algorithm = algorithm
                     best_rank = rank
                     no_improvement = 0
                 else:
@@ -101,6 +123,16 @@ class AutoSearchEngine:
             if failures:
                 raise failures[-1]
             raise ValueError("auto search did not evaluate any candidate")
+        final_holdout_evaluated = best_artifact.status == "VALIDATED"
+        if final_holdout_evaluated:
+            best_artifact = self.final_evaluator(
+                best_artifact,
+                final_holdout,
+                best_config,
+                benchmark_available=benchmark_available,
+                data_fresh=data_fresh,
+                algorithm=best_algorithm,
+            )
         qualified = best_artifact.status == "VALIDATED"
         return AutoSearchResult(
             artifact=best_artifact,
@@ -110,6 +142,9 @@ class AutoSearchEngine:
                 "maximumCandidates": maximum,
                 "selectedModelVersion": best_artifact.model_version,
                 "selectedStatus": best_artifact.status,
+                "selectionSamples": len(selection_samples),
+                "finalHoldoutSamples": len(final_holdout),
+                "finalHoldoutEvaluated": final_holdout_evaluated,
                 "candidates": evaluated,
                 "userMessage": (
                     "已找到通过严格验证的模型"

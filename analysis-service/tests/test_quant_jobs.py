@@ -48,6 +48,11 @@ class QuantJobServiceTest(unittest.TestCase):
             "maximumCandidates": 1,
             "timeBudgetSeconds": 60,
             "noImprovementLimit": 1,
+            "finalHoldoutFraction": 0.2,
+            "minimumFinalHoldoutSamples": 40,
+            "finalHoldoutValidation": copy.deepcopy(
+                data["autoSearch"]["finalHoldoutValidation"]
+            ),
             "candidates": [
                 {"algorithm": "ELASTIC_NET", "parameters": {}},
             ],

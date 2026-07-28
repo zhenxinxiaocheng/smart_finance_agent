@@ -54,6 +54,17 @@
     "maximumCandidates": 6,
     "timeBudgetSeconds": 900,
     "noImprovementLimit": 3,
+    "finalHoldoutFraction": 0.2,
+    "minimumFinalHoldoutSamples": 40,
+    "finalHoldoutValidation": {
+      "minimumSamples": 40,
+      "minimumOosR2": 0.0,
+      "minimumBrierSkill": 0.0,
+      "minimumLogLossSkill": 0.0,
+      "minimumNetReturn": 0.0,
+      "minimumIntervalCoverage": 0.75,
+      "maximumIntervalCoverage": 0.85
+    },
     "candidates": [
       {
         "algorithm": "ELASTIC_NET",

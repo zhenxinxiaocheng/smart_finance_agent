@@ -99,4 +99,13 @@ def load_quant_config(path: str | Path | None = None) -> QuantConfig:
     config.integer("training.walkForwardFolds")
     config.integer("training.minimumCalibrationSamples")
     config.integer("training.minimumEvaluationSamples")
+    config.number("autoSearch.finalHoldoutFraction")
+    config.integer("autoSearch.minimumFinalHoldoutSamples")
+    config.integer("autoSearch.finalHoldoutValidation.minimumSamples")
+    config.number("autoSearch.finalHoldoutValidation.minimumOosR2")
+    config.number("autoSearch.finalHoldoutValidation.minimumBrierSkill")
+    config.number("autoSearch.finalHoldoutValidation.minimumLogLossSkill")
+    config.number("autoSearch.finalHoldoutValidation.minimumNetReturn")
+    config.number("autoSearch.finalHoldoutValidation.minimumIntervalCoverage")
+    config.number("autoSearch.finalHoldoutValidation.maximumIntervalCoverage")
     return config

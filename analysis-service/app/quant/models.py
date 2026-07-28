@@ -296,6 +296,7 @@ def train_ensemble(
         "maximumDrawdown": round(maximum_drawdown, 10),
         "brierSkill": round(float(brier_skill), 10),
         "logLossSkill": round(float(log_loss_skill), 10),
+        "positiveLabelRate": round(float(np.mean(y_class)), 10),
         "calibrationMethod": calibration_method,
         "calibrationSlope": round(calibration_slope, 10),
         "calibrationIntercept": round(calibration_intercept, 10),
@@ -398,6 +399,198 @@ def train_ensemble(
         ),
         validation_target_weights=tuple(float(value) for value in event_target_weights),
     )
+
+
+def evaluate_final_holdout(
+    artifact: ModelArtifact,
+    samples: Sequence[TrainingSample],
+    config: QuantConfig,
+    *,
+    benchmark_available: bool,
+    data_fresh: bool,
+    algorithm: str,
+) -> ModelArtifact:
+    minimum_samples = config.integer(
+        "autoSearch.finalHoldoutValidation.minimumSamples"
+    )
+    labels = np.asarray([
+        int(
+            sample.positive_return
+            if sample.positive_return is not None
+            else sample.positive_excess
+        )
+        for sample in samples
+    ], dtype=int)
+    actual = np.asarray([
+        sample.net_return
+        if sample.net_return is not None
+        else sample.net_excess_return
+        for sample in samples
+    ], dtype=float)
+    failure_codes: list[str] = []
+    if len(samples) < minimum_samples or len(np.unique(labels)) < 2:
+        failure_codes.append("INSUFFICIENT_DATA")
+        holdout_metrics = {
+            "passed": False,
+            "sampleCount": len(samples),
+            "failureCodes": failure_codes,
+            "checks": [],
+        }
+    else:
+        predictions = [predict_ensemble(artifact, sample.features) for sample in samples]
+        probabilities = np.clip(np.asarray([
+            prediction.probability_positive_excess
+            for prediction in predictions
+        ], dtype=float), 1e-6, 1 - 1e-6)
+        expected = np.asarray([
+            prediction.expected_excess_return
+            for prediction in predictions
+        ], dtype=float)
+        baseline_probability = float(artifact.metrics["positiveLabelRate"])
+        baseline_probabilities = np.full(len(samples), baseline_probability)
+        baseline_brier = brier_score_loss(labels, baseline_probabilities)
+        brier_skill = (
+            0.0
+            if baseline_brier <= 1e-18
+            else 1 - brier_score_loss(labels, probabilities) / baseline_brier
+        )
+        baseline_log_loss = log_loss(
+            labels,
+            baseline_probabilities,
+            labels=[0, 1],
+        )
+        log_loss_skill = (
+            0.0
+            if baseline_log_loss <= 1e-18
+            else 1 - log_loss(labels, probabilities, labels=[0, 1])
+            / baseline_log_loss
+        )
+        positions = _non_overlapping_positions(
+            samples,
+            np.arange(len(samples), dtype=int),
+        )
+        tradable_actions = {"BUY", "BUY_WATCH", "ADD"}
+        strategy_returns = np.asarray([
+            actual[position]
+            if predictions[position].action in tradable_actions
+            else 0.0
+            for position in positions
+        ], dtype=float)
+        interval_coverage = float(np.mean([
+            prediction.prediction_interval[0]
+            <= actual[index]
+            <= prediction.prediction_interval[1]
+            for index, prediction in enumerate(predictions)
+        ]))
+        actual_metrics = {
+            "oosR2": _oos_r2(actual, expected),
+            "brierSkill": float(brier_skill),
+            "logLossSkill": float(log_loss_skill),
+            "netReturn": _compounded_return(strategy_returns),
+            "intervalCoverage": interval_coverage,
+        }
+        specifications = (
+            (
+                "oosR2",
+                ">",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.minimumOosR2"
+                ),
+            ),
+            (
+                "brierSkill",
+                ">",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.minimumBrierSkill"
+                ),
+            ),
+            (
+                "logLossSkill",
+                ">",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.minimumLogLossSkill"
+                ),
+            ),
+            (
+                "netReturn",
+                ">",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.minimumNetReturn"
+                ),
+            ),
+            (
+                "intervalCoverage",
+                ">=",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.minimumIntervalCoverage"
+                ),
+            ),
+            (
+                "intervalCoverage",
+                "<=",
+                config.number(
+                    "autoSearch.finalHoldoutValidation.maximumIntervalCoverage"
+                ),
+            ),
+        )
+        checks = [
+            {
+                "key": key,
+                "actual": round(actual_metrics[key], 10),
+                "operator": operator,
+                "threshold": threshold,
+                "passed": _compare_metric(
+                    actual_metrics[key],
+                    operator,
+                    threshold,
+                ),
+            }
+            for key, operator, threshold in specifications
+        ]
+        if not benchmark_available:
+            failure_codes.append("BENCHMARK_UNAVAILABLE")
+        if not data_fresh:
+            failure_codes.append("DATA_STALE")
+        if any(not check["passed"] for check in checks):
+            failure_codes.append("MODEL_REJECTED")
+        holdout_metrics = {
+            "passed": not failure_codes,
+            "sampleCount": len(samples),
+            "independentEventCount": len(positions),
+            "dataStart": samples[0].as_of_date,
+            "dataEnd": samples[-1].as_of_date,
+            "algorithm": algorithm,
+            "failureCodes": failure_codes,
+            "checks": checks,
+            **{
+                key: round(value, 10)
+                for key, value in actual_metrics.items()
+            },
+        }
+    artifact.metrics = artifact.metrics | {"finalHoldout": holdout_metrics}
+    validation_report = dict(artifact.metrics.get("validationReport") or {})
+    combined_failures = list(dict.fromkeys([
+        *validation_report.get("failureCodes", []),
+        *failure_codes,
+    ]))
+    passed = bool(validation_report.get("passed")) and not combined_failures
+    validation_report.update({
+        "passed": passed,
+        "lifecycle": "VALIDATED" if passed else "DRAFT",
+        "failureCodes": combined_failures,
+    })
+    artifact.metrics["validationReport"] = validation_report
+    artifact.status = "VALIDATED" if passed else "DRAFT"
+    artifact.model_version = hashlib.sha256((
+        artifact.model_version
+        + json.dumps(
+            holdout_metrics,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    ).encode("utf-8")).hexdigest()
+    return artifact
 
 
 def attach_event_backtest(artifact: ModelArtifact,
@@ -588,6 +781,16 @@ def _action(artifact: ModelArtifact, probability: float, expected: float) -> str
     if probability >= thresholds["buy"]:
         return "BUY_WATCH"
     return "HOLD"
+
+
+def _compare_metric(actual: float, operator: str, threshold: float) -> bool:
+    if operator == ">":
+        return actual > threshold
+    if operator == ">=":
+        return actual >= threshold
+    if operator == "<=":
+        return actual <= threshold
+    raise ValueError(f"unsupported final holdout operator: {operator}")
 
 
 def _maximum_drawdown(returns: np.ndarray) -> float:
