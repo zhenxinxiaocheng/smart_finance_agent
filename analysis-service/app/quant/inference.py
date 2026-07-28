@@ -37,4 +37,9 @@ class SavedModelInferenceService:
             expected_config_version=config_version,
             expected_feature_names=tuple(sorted(normalized_features)),
         )
+        if getattr(artifact, "status", None) not in {
+            "VALIDATED",
+            "PAPER_VERIFIED",
+        }:
+            raise ValueError("quant model is not deployable")
         return self.predictor(artifact, normalized_features)

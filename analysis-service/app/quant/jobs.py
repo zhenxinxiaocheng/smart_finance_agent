@@ -247,6 +247,11 @@ class QuantJobService:
         if job_type == "PREDICT":
             from .inference import SavedModelInferenceService
 
+            requested_model_status = str(
+                request.get("modelStatus") or ""
+            ).strip().upper()
+            if requested_model_status not in {"VALIDATED", "PAPER_VERIFIED"}:
+                raise ValueError("quant model is not deployable")
             prediction = SavedModelInferenceService(self.model_store).predict(
                 str(request["modelVersion"]),
                 model_hash=str(request["modelFileHash"]),
@@ -265,7 +270,7 @@ class QuantJobService:
             return common | {
                 "modelVersion": request["modelVersion"],
                 "modelFileHash": request["modelFileHash"],
-                "modelStatus": request["modelStatus"],
+                "modelStatus": requested_model_status,
                 "strategyVersion": request["strategyVersion"],
                 "profitProbability": prediction.probability_positive_excess,
                 "lossProbability": 1.0 - prediction.probability_positive_excess,
@@ -284,7 +289,12 @@ class QuantJobService:
                 "searchSummary": None,
             }
         assert samples is not None
-        from .models import attach_event_backtest, predict_ensemble, train_ensemble
+        from .models import (
+            attach_event_backtest,
+            evaluate_final_holdout,
+            predict_ensemble,
+            train_ensemble,
+        )
 
         def train_candidate(
             candidate_samples: Sequence[TrainingSample],
@@ -316,6 +326,7 @@ class QuantJobService:
             search_result = AutoSearchEngine(
                 config,
                 trainer=train_candidate,
+                final_evaluator=evaluate_final_holdout,
             ).search(
                 samples,
                 benchmark_available=bool(benchmark_code and benchmark),
