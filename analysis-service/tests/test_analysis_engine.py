@@ -46,7 +46,7 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertIsNotNone(latest["macd"])
         self.assertIsNotNone(latest["rsi"])
         self.assertIsNotNone(latest["atr"])
-        self.assertEqual("technical-strategy-v2", result["strategyVersion"])
+        self.assertEqual("technical-strategy-v3", result["strategyVersion"])
         self.assertEqual({"SHORT", "MEDIUM", "LONG"}, set(result["horizons"]))
         self.assertIn(result["horizons"]["SHORT"]["verdict"], {"FAVORABLE", "WAIT", "WEAK"})
         self.assertLess(result["levels"]["support"]["low"], result["levels"]["support"]["high"])
@@ -86,14 +86,20 @@ class AnalysisEngineTest(unittest.TestCase):
             price_records(620),
             {"WAVE": [7, 45], "POSITION": [80, 260]},
             "POSITION",
+            {"turnoverRate": 3.2, "volumeRatio": 1.4, "amplitude": 4.1},
         )
 
         self.assertEqual({"WAVE", "POSITION"}, set(result["horizons"]))
         self.assertEqual(result["horizons"]["POSITION"]["score"], result["score"])
         self.assertEqual(result["horizons"]["POSITION"]["levels"], result["levels"])
+        self.assertEqual(result["horizons"]["POSITION"]["outlook"], result["outlook"])
+        self.assertIn(result["outlook"]["direction"], {
+            "BULLISH", "LEAN_BULLISH", "SIDEWAYS", "LEAN_BEARISH", "BEARISH",
+        })
+        self.assertNotIn("quant", result["outlook"])
         self.assertEqual(135, result["horizons"]["WAVE"]["levelLookbackDays"])
 
-    def test_insufficient_horizon_has_no_fabricated_score(self):
+    def test_incomplete_long_horizon_returns_limited_outlook_from_available_history(self):
         result = analyze_technical(
             price_records(200),
             {"PERSONAL_LONG": [300, 900]},
@@ -101,12 +107,15 @@ class AnalysisEngineTest(unittest.TestCase):
         )
 
         horizon = result["horizons"]["PERSONAL_LONG"]
-        self.assertEqual("INSUFFICIENT", result["status"])
-        self.assertEqual("INSUFFICIENT", horizon["status"])
+        self.assertEqual("LIMITED", result["status"])
+        self.assertEqual("LIMITED", horizon["status"])
         self.assertEqual(200, horizon["availableHistoryDays"])
         self.assertEqual(900, horizon["requiredHistoryDays"])
-        self.assertNotIn("score", horizon)
-        self.assertNotIn("score", result)
+        self.assertEqual(199, horizon["effectiveLookbackDays"])
+        self.assertEqual("LOW", horizon["outlook"]["confidence"])
+        self.assertIn("HORIZON_HISTORY_INCOMPLETE", horizon["outlook"]["missingInputs"])
+        self.assertIn("score", horizon)
+        self.assertIn("score", result)
 
     def test_fund_analysis_reports_returns_volatility_and_drawdown(self):
         records = price_records(260, step=0.04)

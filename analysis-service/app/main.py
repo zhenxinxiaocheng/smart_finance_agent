@@ -132,12 +132,31 @@ class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+class MarketSnapshot(AnalysisRequest):
+    turnover_rate: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("turnover_rate", "turnoverRate"),
+        serialization_alias="turnoverRate",
+    )
+    volume_ratio: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("volume_ratio", "volumeRatio"),
+        serialization_alias="volumeRatio",
+    )
+    amplitude: float | None = None
+
+
 class TechnicalAnalysisRequest(AnalysisRequest):
     records: list[dict[str, Any]]
     horizons: dict[str, list[int]]
     primary_horizon: str = Field(
         validation_alias=AliasChoices("primary_horizon", "primaryHorizon"),
         serialization_alias="primaryHorizon",
+    )
+    market_snapshot: MarketSnapshot | None = Field(
+        default=None,
+        validation_alias=AliasChoices("market_snapshot", "marketSnapshot"),
+        serialization_alias="marketSnapshot",
     )
 
     @field_validator("horizons")
@@ -489,7 +508,17 @@ def market_calendar(year: int, market: str = "A_SHARE"):
 
 @app.post("/internal/v1/analysis/technical", dependencies=[Depends(internal_auth)])
 def technical_analysis(request: TechnicalAnalysisRequest):
-    return analyze_technical(request.records, request.horizons, request.primary_horizon)
+    market_snapshot = (
+        request.market_snapshot.model_dump(by_alias=True, exclude_none=True)
+        if request.market_snapshot is not None
+        else None
+    )
+    return analyze_technical(
+        request.records,
+        request.horizons,
+        request.primary_horizon,
+        market_snapshot,
+    )
 
 
 @app.post("/internal/v1/analysis/fundamental", dependencies=[Depends(internal_auth)])

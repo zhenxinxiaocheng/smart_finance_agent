@@ -149,6 +149,11 @@ class AnalysisEndpointsTest(unittest.TestCase):
             records=price_records(260),
             horizons={"WAVE": [7, 45], "POSITION": [80, 200]},
             primaryHorizon="WAVE",
+            marketSnapshot={
+                "turnoverRate": 3.2,
+                "volumeRatio": 1.4,
+                "amplitude": 4.1,
+            },
         )
 
         result = technical_analysis(request)
@@ -156,6 +161,18 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual("READY", result["status"])
         self.assertNotIn("riskPreference", request.model_dump())
         self.assertEqual({"WAVE", "POSITION"}, set(result["horizons"]))
+        self.assertEqual("technical-strategy-v3", result["strategyVersion"])
+        self.assertIn("outlook", result)
+        self.assertEqual(3.2, request.market_snapshot.turnover_rate)
+
+    def test_technical_market_snapshot_rejects_unknown_context(self):
+        with self.assertRaises(ValidationError):
+            TechnicalAnalysisRequest(
+                records=price_records(260),
+                horizons={"WAVE": [7, 45]},
+                primaryHorizon="WAVE",
+                marketSnapshot={"wealth": 1_000_000},
+            )
 
     def test_technical_request_requires_valid_caller_horizons(self):
         with self.assertRaises(ValidationError):

@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .strategy_config import StrategyConfig, load_strategy_config
+from .technical_outlook import TechnicalObservation, evaluate_outlook
 
 
 NUMBER = int | float
@@ -228,6 +229,7 @@ def analyze_technical(
     records: Iterable[Mapping[str, Any]],
     horizons: Mapping[str, Sequence[int]],
     primary_horizon: str,
+    market_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     quotes = _normalized_quotes(records)
     minimum_history = STRATEGY.integer("technical.minimum_history_days")
@@ -313,20 +315,15 @@ def analyze_technical(
     for name, configured_bounds in horizons.items():
         bounds = list(configured_bounds)
         minimum, maximum = int(bounds[0]), int(bounds[-1])
-        if len(closes) < maximum:
-            horizon_results[name] = {
-                "status": "INSUFFICIENT",
-                "minimumDays": minimum,
-                "maximumDays": maximum,
-                "availableHistoryDays": len(closes),
-                "requiredHistoryDays": maximum,
-                "reason": "可用历史数据不足以覆盖用户配置周期",
-            }
-            continue
-        score = _trend_score(closes, ma[trend_fast], ma[trend_slow], maximum)
+        history_complete = len(closes) >= maximum
+        effective_lookback = min(maximum, len(closes) - 1)
+        horizon_fast_period = max(2, min(minimum, effective_lookback))
+        horizon_slow_period = max(horizon_fast_period, effective_lookback)
+        horizon_fast_average = _moving_average(closes, horizon_fast_period)
+        horizon_slow_average = _moving_average(closes, horizon_slow_period)
         level_lookback = min(len(closes), max(
             STRATEGY.integer("technical.levels.minimum_lookback_days"),
-            maximum * STRATEGY.integer("technical.levels.horizon_multiplier"),
+            effective_lookback * STRATEGY.integer("technical.levels.horizon_multiplier"),
         ))
         level_highs = highs[-level_lookback:]
         level_lows = lows[-level_lookback:]
@@ -345,12 +342,70 @@ def analyze_technical(
                 horizon_support["low"]
                 - horizon_atr * STRATEGY.number("technical.levels.risk_atr_multiplier"))},
         }
+        snapshot = market_snapshot or {}
+        outlook = evaluate_outlook(
+            TechnicalObservation(
+                close=closes[-1],
+                previous_close=closes[-2] if len(closes) > 1 else None,
+                horizon_return_percent=(
+                    (closes[-1] / closes[-effective_lookback - 1] - 1) * 100
+                    if effective_lookback > 0 and closes[-effective_lookback - 1]
+                    else None
+                ),
+                fast_average=horizon_fast_average[-1],
+                slow_average=horizon_slow_average[-1],
+                previous_fast_average=horizon_fast_average[-2],
+                previous_slow_average=horizon_slow_average[-2],
+                macd_histogram=histogram[-1],
+                previous_macd_histogram=histogram[-2],
+                rsi=rsi_values[-1],
+                kdj_k=k_values[-1],
+                kdj_d=d_values[-1],
+                bollinger_upper=boll_upper[-1],
+                bollinger_lower=boll_lower[-1],
+                atr=horizon_atr,
+                volume=volumes[-1],
+                volume_average=volume_ma[volume_signal_period][-1],
+                turnover_rate=_number(
+                    snapshot.get("turnoverRate", snapshot.get("turnover_rate"))
+                ),
+                volume_ratio=_number(
+                    snapshot.get("volumeRatio", snapshot.get("volume_ratio"))
+                ),
+                amplitude=_number(snapshot.get("amplitude")),
+            ),
+            horizon_levels,
+            STRATEGY,
+        )
+        if not history_complete:
+            outlook = dict(outlook)
+            outlook["confidence"] = "LOW"
+            outlook["missingInputs"] = list(dict.fromkeys([
+                *outlook["missingInputs"],
+                "HORIZON_HISTORY_INCOMPLETE",
+            ]))
+        legacy_score = _score_clamp(50.0 + float(outlook["signedScore"]) / 2.0)
+        legacy_verdict = (
+            "FAVORABLE"
+            if outlook["direction"] in {"BULLISH", "LEAN_BULLISH"}
+            else "WEAK"
+            if outlook["direction"] in {"BEARISH", "LEAN_BEARISH"}
+            else "WAIT"
+        )
         horizon_results[name] = {
-            "status": "READY",
+            "status": "READY" if history_complete else "LIMITED",
             "minimumDays": minimum,
             "maximumDays": maximum,
-            "score": _round(score, 1),
-            "verdict": _verdict(score),
+            "availableHistoryDays": len(closes),
+            "requiredHistoryDays": maximum,
+            "effectiveLookbackDays": effective_lookback,
+            "trendPeriods": {
+                "fast": horizon_fast_period,
+                "slow": horizon_slow_period,
+            },
+            "score": _round(legacy_score, 1),
+            "verdict": legacy_verdict,
+            "outlook": outlook,
             "levelLookbackDays": level_lookback,
             "levels": horizon_levels,
             "actionZones": horizon_action_zones,
@@ -379,21 +434,20 @@ def analyze_technical(
         },
     }
     primary = horizon_results[primary_horizon]
-    if primary["status"] != "READY":
-        result.update({
-            "status": "INSUFFICIENT",
-            "reason": primary["reason"],
-            "availableHistoryDays": primary["availableHistoryDays"],
-            "requiredHistoryDays": primary["requiredHistoryDays"],
-        })
-        return result
     result.update({
-        "status": "READY",
+        "status": primary["status"],
         "score": primary["score"],
         "verdict": primary["verdict"],
+        "outlook": primary["outlook"],
         "levels": primary["levels"],
         "actionZones": primary["actionZones"],
     })
+    if primary["status"] == "LIMITED":
+        result.update({
+            "reason": "可用历史尚未覆盖完整配置周期，当前为低置信度走势研判",
+            "availableHistoryDays": primary["availableHistoryDays"],
+            "requiredHistoryDays": primary["requiredHistoryDays"],
+        })
     return result
 
 
