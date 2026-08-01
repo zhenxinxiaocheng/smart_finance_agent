@@ -1,5 +1,5 @@
 {
-  "version": "technical-strategy-v2",
+  "version": "technical-strategy-v3",
   "providers": {
     "realtime_http_timeout_seconds": 5,
     "history_http_timeout_seconds": 8,
@@ -58,6 +58,62 @@
       "fast_moving_average": 5,
       "slow_moving_average": 20,
       "volume_moving_average": 5
+    },
+    "outlook": {
+      "minimum_core_history_days": 20,
+      "weights": {
+        "trend": 0.30,
+        "momentum": 0.20,
+        "volumePrice": 0.20,
+        "volatility": 0.15,
+        "structure": 0.15
+      },
+      "direction_thresholds": {
+        "bullish": 35,
+        "lean_bullish": 12,
+        "lean_bearish": -12,
+        "bearish": -35
+      },
+      "confidence_thresholds": {
+        "high_agreement": 0.75,
+        "medium_agreement": 0.50,
+        "minimum_full_availability": 0.80,
+        "maximum_without_market_snapshot": "MEDIUM"
+      },
+      "component_clip": 100,
+      "trend": {
+        "return_clip_percent": 20,
+        "return_weight": 2.0,
+        "price_average_adjustment": 20,
+        "average_alignment_adjustment": 25,
+        "slope_adjustment": 15
+      },
+      "momentum": {
+        "macd_adjustment": 35,
+        "macd_turn_adjustment": 15,
+        "rsi_center": 50,
+        "rsi_weight": 1.2,
+        "overbought_penalty": 15,
+        "oversold_rebound_bonus": 15,
+        "kdj_cross_adjustment": 15
+      },
+      "volume_price": {
+        "expansion_ratio": 1.20,
+        "contraction_ratio": 0.80,
+        "confirmation_adjustment": 35,
+        "divergence_adjustment": 30,
+        "snapshot_confirmation_adjustment": 10
+      },
+      "volatility": {
+        "atr_close_warning_ratio": 0.04,
+        "bollinger_edge_adjustment": 20,
+        "high_volatility_penalty": 30
+      },
+      "structure": {
+        "near_level_atr_multiplier": 1.0,
+        "breakout_adjustment": 40,
+        "level_proximity_adjustment": 20
+      }
     }
   },
   "fund": {

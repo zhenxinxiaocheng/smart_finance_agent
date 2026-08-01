@@ -9,10 +9,16 @@ class StrategyConfigTest(unittest.TestCase):
     def test_versioned_file_is_the_only_runtime_strategy_parameter_source(self):
         strategy = load_strategy_config()
 
-        self.assertEqual("technical-strategy-v2", strategy.version)
+        self.assertEqual("technical-strategy-v3", strategy.version)
         self.assertEqual([5, 10, 20, 60, 120, 250],
                          strategy.integer_list("technical.moving_average_periods"))
         self.assertEqual(20, strategy.integer("backtest.warmup_days"))
+        weights = strategy.value("technical.outlook.weights")
+        self.assertEqual(
+            {"trend", "momentum", "volumePrice", "volatility", "structure"},
+            set(weights),
+        )
+        self.assertAlmostEqual(1.0, sum(float(value) for value in weights.values()))
 
     def test_engine_uses_supplied_strategy_periods_instead_of_source_defaults(self):
         original = analysis.STRATEGY
