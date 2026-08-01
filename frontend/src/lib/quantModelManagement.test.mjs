@@ -3,10 +3,12 @@ import test from 'node:test'
 
 import {
   actionLabel,
+  formatDuration,
   formatModelStatus,
   formatTrainingStatus,
   modelCanBeRestored,
   shouldShowExecutionPlan,
+  trainingDurationView,
   visiblePredictionMetrics,
 } from './quantModelManagement.js'
 
@@ -49,4 +51,36 @@ test('暂停状态或风险参考状态不显示零值执行计划', () => {
 test('仅通过模拟验证的历史模型允许恢复', () => {
   assert.equal(modelCanBeRestored({ modelLifecycle: 'VALIDATED' }), false)
   assert.equal(modelCanBeRestored({ modelLifecycle: 'PAPER_VERIFIED' }), true)
+})
+
+test('训练时长使用简短中文格式', () => {
+  assert.equal(formatDuration(45), '45秒')
+  assert.equal(formatDuration(125), '2分5秒')
+  assert.equal(formatDuration(3723), '1小时2分')
+})
+
+test('运行中的训练显示已运行、预计时长和超时标识', () => {
+  const now = new Date('2026-08-01T10:12:30').getTime()
+
+  assert.deepEqual(trainingDurationView({
+    status: 'RUNNING',
+    createdAt: '2026-08-01T10:00:00',
+    estimatedDurationSeconds: 600,
+  }, now), {
+    elapsed: '已运行 12分30秒',
+    estimate: '预计时长 约10分钟',
+    overdue: '已超过预计时长 2分30秒',
+  })
+})
+
+test('结束后显示实际耗时，缺少估算时不伪造分钟数', () => {
+  assert.deepEqual(trainingDurationView({
+    status: 'SUCCEEDED',
+    executionStatus: 'COMPLETED',
+    actualDurationSeconds: 125,
+  }, Date.now()), {
+    elapsed: '实际耗时 2分5秒',
+    estimate: '预计时长 计算中',
+    overdue: null,
+  })
 })

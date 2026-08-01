@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 
 from .backtest import simulate_a_share_long_only
 from .config import QuantConfig, with_experiment_parameters
+from .duration import estimate_job_duration_seconds
 from .engine import (
     BenchmarkUnavailable,
     InsufficientQuantData,
@@ -80,6 +81,10 @@ class QuantJobService:
             "economicRole": None,
             "configVersion": self.config.version,
             "datasetVersion": request.get("datasetVersion"),
+            "estimatedDurationSeconds": estimate_job_duration_seconds(
+                request,
+                self.config,
+            ),
             "createdAt": now,
             "updatedAt": now,
             "result": None,

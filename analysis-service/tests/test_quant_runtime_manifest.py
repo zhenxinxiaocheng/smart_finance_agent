@@ -42,6 +42,66 @@ class QuantRuntimeManifestTest(unittest.TestCase):
         )
         self.assertEqual(64, len(original["runtimeVersion"]))
 
+    def test_research_schema_is_derived_from_the_training_configuration(self):
+        config = QuantConfig({
+            "version": "quant-research-test",
+            "randomSeed": 17,
+            "training": {
+                "walkForwardFolds": 7,
+                "embargoHorizonMultiplier": 1.5,
+                "xgboost": {"maximumDepth": 4},
+            },
+            "researchInterface": {
+                "schemaVersion": "research-ui-v2",
+                "modelFamilies": [{
+                    "code": "A_SHARE_STOCK",
+                    "name": "A股股票",
+                    "predictionHeads": ["RELATIVE_ALPHA"],
+                }],
+            },
+            "validation": {"diagnostics": {"maximumDmPValue": 0.08}},
+            "promotion": {"returnEnhancer": {
+                "minimumDeflatedSharpeProbability": 0.91,
+                "maximumPbo": 0.24,
+            }},
+            "autoSearch": {"strategies": [{
+                "algorithm": "XGBOOST",
+                "parameters": [{
+                    "name": "maximumDepth",
+                    "label": "树最大深度",
+                    "configPath": "training.xgboost.maximumDepth",
+                    "type": "int",
+                    "low": 1,
+                    "high": 6,
+                    "step": 1,
+                }],
+            }]},
+        })
+
+        schema = build_runtime_manifest(config)["researchSchema"]
+
+        self.assertEqual("research-ui-v2", schema["schemaVersion"])
+        self.assertEqual(["XGBOOST"], schema["algorithms"])
+        self.assertEqual("A_SHARE_STOCK", schema["modelFamilies"][0]["code"])
+        self.assertEqual({
+            "key": "maximumDepth",
+            "label": "树最大深度",
+            "type": "INTEGER",
+            "defaultValue": 4,
+            "minimum": 1,
+            "maximum": 6,
+            "step": 1,
+            "sampling": "LINEAR",
+            "algorithms": ["XGBOOST"],
+        }, schema["fields"][0])
+        self.assertEqual({
+            "minimumWalkForwardFolds": 7,
+            "embargoHorizonMultiplier": 1.5,
+            "maximumDmPValue": 0.08,
+            "minimumDeflatedSharpeProbability": 0.91,
+            "maximumPbo": 0.24,
+        }, schema["immutableValidation"])
+
 
 if __name__ == "__main__":
     unittest.main()

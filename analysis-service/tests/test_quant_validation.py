@@ -9,11 +9,16 @@ from app.quant.validation import (
     choose_calibration_method,
     evaluate_validation,
     tradable_target_weight,
+    validation_policy,
 )
+from app.quant.config import load_quant_config
 from app.quant.engine import TrainingSample
 from app.quant.models import _date_walk_forward_splits
 from app.quant.models import _drawdown_guard_fold_pass
 from app.quant.models import probability_of_backtest_overfitting
+
+
+VALIDATION_POLICY = validation_policy(load_quant_config())
 
 
 def passing_metrics() -> dict[str, float]:
@@ -119,7 +124,7 @@ class QuantValidationTest(unittest.TestCase):
         }
         report = evaluate_validation(
             metrics,
-            horizon_code="SHORT",
+            policy=VALIDATION_POLICY,
             benchmark_available=False,
             data_fresh=True,
         )
@@ -131,7 +136,7 @@ class QuantValidationTest(unittest.TestCase):
     def test_strict_metrics_produce_validated_report(self):
         report = evaluate_validation(
             passing_metrics(),
-            horizon_code="SHORT",
+            policy=VALIDATION_POLICY,
             benchmark_available=True,
             data_fresh=True,
         )
@@ -155,7 +160,7 @@ class QuantValidationTest(unittest.TestCase):
 
         report = evaluate_validation(
             metrics,
-            horizon_code="SHORT",
+            policy=VALIDATION_POLICY,
             benchmark_available=True,
             data_fresh=True,
         )
@@ -174,7 +179,7 @@ class QuantValidationTest(unittest.TestCase):
 
         report = evaluate_validation(
             metrics,
-            horizon_code="SHORT",
+            policy=VALIDATION_POLICY,
             benchmark_available=True,
             data_fresh=True,
         )
@@ -189,7 +194,7 @@ class QuantValidationTest(unittest.TestCase):
 
         report = evaluate_validation(
             metrics,
-            horizon_code="LONG",
+            policy=VALIDATION_POLICY,
             benchmark_available=True,
             data_fresh=True,
         )
@@ -208,7 +213,7 @@ class QuantValidationTest(unittest.TestCase):
 
         report = evaluate_validation(
             metrics,
-            horizon_code="MEDIUM",
+            policy=VALIDATION_POLICY,
             benchmark_available=True,
             data_fresh=True,
         )
@@ -224,6 +229,27 @@ class QuantValidationTest(unittest.TestCase):
             ValidationFailureCode.INSUFFICIENT_DATA,
             report.failure_codes,
         )
+
+    def test_arbitrary_horizon_code_uses_actual_horizon_days(self):
+        metrics = passing_metrics() | {
+            "independentEventCount": 20.0,
+            "evaluationSampleCount": 740.0,
+            "horizonDays": 37.0,
+        }
+
+        report = evaluate_validation(
+            metrics,
+            policy=VALIDATION_POLICY,
+            benchmark_available=True,
+            data_fresh=True,
+        )
+
+        independent_check = next(
+            item for item in report.checks
+            if item.key == "independentEventCount"
+        )
+        self.assertEqual(20.0, independent_check.threshold)
+        self.assertTrue(independent_check.passed)
 
     def test_draft_model_never_exposes_a_target_weight(self):
         self.assertIsNone(tradable_target_weight(ModelLifecycle.DRAFT, 0.18))

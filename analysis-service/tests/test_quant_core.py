@@ -161,6 +161,31 @@ class QuantCoreTest(unittest.TestCase):
         self.assertEqual(0.0, result.final_quantity)
         self.assertLess(result.total_return, 0.0)
 
+    def test_a_share_backtest_counts_profitable_partial_exits_as_wins(self):
+        prices = [10.0, 10.0, 12.0, 13.0]
+        records = [
+            {
+                "data_date": (date(2026, 7, 1) + timedelta(days=index)).isoformat(),
+                "open": price,
+                "high": price + 0.2,
+                "low": price - 0.2,
+                "close": price,
+                "previous_close": price,
+                "volume": 1_000_000,
+            }
+            for index, price in enumerate(prices)
+        ]
+
+        result = simulate_a_share_long_only(
+            records,
+            [0.50, 0.25, 0.0, 0.0],
+            load_quant_config(),
+        )
+
+        self.assertGreater(result.total_return, 0.0)
+        self.assertEqual(("BUY", "SELL", "SELL"), result.fill_sides)
+        self.assertEqual(1.0, result.win_rate)
+
     def test_a_share_backtest_retries_after_suspension_and_limit_up_lock(self):
         records = [
             {

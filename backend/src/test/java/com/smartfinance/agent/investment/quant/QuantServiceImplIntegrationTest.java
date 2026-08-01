@@ -481,14 +481,22 @@ class QuantServiceImplIntegrationTest {
         when(analysisServiceClient.createQuantJob(any())).thenReturn(Map.of(
                 "jobId", "8".repeat(32),
                 "status", "QUEUED",
-                "configVersion", "quant-research-v2"
+                "configVersion", "quant-research-v2",
+                "estimatedDurationSeconds", 2460L
         ));
 
         Map<String, Object> result = trainingOrchestrator.refresh(7L, 12L, "WAVE");
+        Map<String, Object> training = castView(
+                modelManagementService.management(7L, 12L, "WAVE").get("training")
+        );
 
         assertThat(result)
                 .containsEntry("status", "QUEUED")
-                .containsEntry("jobId", "8".repeat(32));
+                .containsEntry("jobId", "8".repeat(32))
+                .containsEntry("estimatedDurationSeconds", 2460L);
+        assertThat(training)
+                .containsEntry("estimatedDurationSeconds", 2460L)
+                .containsKey("createdAt");
         ArgumentCaptor<Map> request = ArgumentCaptor.forClass(Map.class);
         verify(analysisServiceClient).createQuantJob(request.capture());
         assertThat(castView(request.getValue()))
@@ -689,6 +697,27 @@ class QuantServiceImplIntegrationTest {
         assertThat(castView(result.get("challenger")))
                 .containsEntry("modelVersion", challengerModel)
                 .containsEntry("modelLifecycle", "VALIDATED");
+    }
+
+    @Test
+    void completedTrainingExposesActualDuration() {
+        jdbc.update("""
+                UPDATE quant_job
+                   SET status = 'SUCCEEDED',
+                       execution_status = 'COMPLETED',
+                       training_outcome = 'VALIDATION_FAILED',
+                       started_at = TIMESTAMP '2026-08-01 10:00:00',
+                       finished_at = TIMESTAMP '2026-08-01 10:02:05'
+                 WHERE external_job_id = ?
+                """, JOB_ID);
+
+        Map<String, Object> training = castView(
+                modelManagementService.management(7L, 12L, "WAVE").get("training")
+        );
+
+        assertThat(training)
+                .containsEntry("startedAt", java.time.LocalDateTime.of(2026, 8, 1, 10, 0))
+                .containsEntry("actualDurationSeconds", 125L);
     }
 
     @Test

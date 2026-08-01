@@ -119,7 +119,7 @@ public class QuantResearchUniversePreparationService {
         versionMaterial.put("benchmarkSourceVersion", profile.getSourceVersion());
         versionMaterial.put("selectionRule", discovery.rule());
         versionMaterial.put("members", acceptedVersions);
-        universe.setDatasetVersion(QuantResearchCatalog.canonicalHash(versionMaterial));
+        universe.setDatasetVersion(QuantExperimentFingerprint.canonicalHash(versionMaterial));
         universe.setUpdatedAt(LocalDateTime.now());
         universeMapper.updateById(universe);
         return acceptedVersions.size();
@@ -336,7 +336,7 @@ public class QuantResearchUniversePreparationService {
     }
 
     private String universeCode(String family, String benchmarkCode, String sourceVersion) {
-        String hash = QuantResearchCatalog.canonicalHash(Map.of(
+        String hash = QuantExperimentFingerprint.canonicalHash(Map.of(
                 "modelFamily", family,
                 "benchmarkCode", benchmarkCode,
                 "benchmarkSourceVersion", sourceVersion

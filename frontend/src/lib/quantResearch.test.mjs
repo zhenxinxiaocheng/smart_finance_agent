@@ -10,13 +10,16 @@ import {
 
 const schema = {
   fields: [
-    { key: 'linearWeight', defaultValue: 0.5 },
-    { key: 'estimators', defaultValue: 48 }
+    { key: 'linearWeight', defaultValue: 0.5, algorithms: ['REGIME_ENSEMBLE'] },
+    { key: 'estimators', defaultValue: 48, algorithms: ['XGBOOST'] }
   ]
 }
 
 assert.deepEqual(buildDefaultParameters(schema), {
   linearWeight: 0.5,
+  estimators: 48
+})
+assert.deepEqual(buildDefaultParameters(schema, 'XGBOOST'), {
   estimators: 48
 })
 

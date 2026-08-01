@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.investment.domain.HorizonSetting;
+import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
+import com.smartfinance.agent.investment.service.InvestmentHorizonService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,24 +24,6 @@ import java.util.Set;
 public class QuantResearchServiceImpl implements QuantResearchService {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
-    private static final Set<String> MODEL_FAMILIES = Set.of(
-            "A_SHARE_STOCK",
-            "INDEX_FUND",
-            "ACTIVE_FUND",
-            "QDII_INDEX_FUND",
-            "COMMODITY_FUND"
-    );
-    private static final Set<String> ALGORITHMS = Set.of(
-            "ELASTIC_NET",
-            "XGBOOST",
-            "EXTRA_TREES",
-            "TREND_VOLATILITY",
-            "RISK_FILTERED_MEAN_REVERSION",
-            "REGIME_ENSEMBLE",
-            // One compatibility cycle for persisted v1 experiments.
-            "GRADIENT_BOOSTING",
-            "VALIDATED_ENSEMBLE"
-    );
     private static final Set<String> TERMINAL_EXPERIMENT_STATUSES =
             Set.of("SUCCEEDED", "FAILED", "CANCELLED");
 
@@ -50,6 +35,8 @@ public class QuantResearchServiceImpl implements QuantResearchService {
     private final QuantResearchUniverseMapper universeMapper;
     private final QuantUniverseMembershipMapper membershipMapper;
     private final QuantService quantService;
+    private final InvestmentHorizonService horizonService;
+    private final QuantResearchSchemaService schemaService;
     private final ObjectMapper objectMapper;
 
     public QuantResearchServiceImpl(
@@ -61,6 +48,8 @@ public class QuantResearchServiceImpl implements QuantResearchService {
             QuantResearchUniverseMapper universeMapper,
             QuantUniverseMembershipMapper membershipMapper,
             QuantService quantService,
+            InvestmentHorizonService horizonService,
+            QuantResearchSchemaService schemaService,
             ObjectMapper objectMapper
     ) {
         this.benchmarkMapper = benchmarkMapper;
@@ -71,17 +60,14 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         this.universeMapper = universeMapper;
         this.membershipMapper = membershipMapper;
         this.quantService = quantService;
+        this.horizonService = horizonService;
+        this.schemaService = schemaService;
         this.objectMapper = objectMapper;
     }
 
     @Override
-    public List<Map<String, Object>> modelFamilies() {
-        return QuantResearchCatalog.modelFamilies();
-    }
-
-    @Override
     public Map<String, Object> parameterSchema() {
-        return QuantResearchCatalog.parameterSchema();
+        return schemaService.load().parameterSchema();
     }
 
     @Override
@@ -112,23 +98,34 @@ public class QuantResearchServiceImpl implements QuantResearchService {
             Long userId,
             QuantResearchController.ExperimentRequest request
     ) {
-        String family = normalizeFamily(request.modelFamily());
-        String horizon = normalizeHorizon(request.horizonCode());
-        String algorithm = normalizeAlgorithm(request.algorithm());
-        validateParameters(request.parameters());
+        QuantResearchSchemaService.SchemaSnapshot schema = schemaService.load();
+        String family = schema.normalizeFamily(request.modelFamily());
+        ResolvedHorizonProfile horizonProfile = horizonService.resolve(
+                userId,
+                request.assetId()
+        );
+        HorizonSetting resolvedHorizon = resolveHorizon(
+                horizonProfile,
+                request.horizonCode()
+        );
+        String horizon = resolvedHorizon.code();
+        String algorithm = schema.normalizeAlgorithm(request.algorithm());
+        schema.validateParameters(request.parameters(), algorithm);
         QuantResearchUniverse universe = resolveUniverse(request.universeId(), family);
         String universeVersion = quantService.researchContextVersion(
                 userId,
                 request.assetId(),
                 universe == null ? null : universe.getId()
         );
-        String fingerprint = QuantResearchCatalog.experimentFingerprint(
+        String fingerprint = QuantExperimentFingerprint.experiment(
                 userId,
                 request.assetId(),
                 universe == null ? null : universe.getId(),
                 universeVersion,
                 family,
                 horizon,
+                horizonProfile.version(),
+                resolvedHorizon.targetHoldingDays(),
                 algorithm,
                 request.parameters()
         );
@@ -150,7 +147,7 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         experiment.setUniverseId(universe == null ? null : universe.getId());
         experiment.setModelFamily(family);
         experiment.setHorizonCode(horizon);
-        experiment.setHorizonDays(horizonDays(horizon));
+        experiment.setHorizonDays(resolvedHorizon.targetHoldingDays());
         experiment.setStatus("QUEUED");
         experiment.setExecutionStatus("QUEUED");
         experiment.setTrainingOutcome("OPTIMIZING");
@@ -161,9 +158,11 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         experiment.setExperimentFingerprint(fingerprint);
         experiment.setConfigJson(writeJson(Map.of(
                 "algorithm", algorithm,
-                "parameters", request.parameters()
+                "parameters", request.parameters(),
+                "horizonProfileVersion", horizonProfile.version(),
+                "horizonDays", resolvedHorizon.targetHoldingDays()
         )));
-        experiment.setQuantConfigVersion("quant-research-v2");
+        experiment.setQuantConfigVersion(schema.quantConfigVersion());
         experiment.setCodeVersion("quant-research-lab-v1");
         experimentMapper.insert(experiment);
 
@@ -312,29 +311,6 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         );
     }
 
-    @Override
-    public Map<String, Object> paperStrategy(Long userId, Long strategyId) {
-        QuantStrategyVersion strategy = strategyMapper.selectById(strategyId);
-        if (strategy == null) {
-            throw new IllegalArgumentException("模拟策略不存在");
-        }
-        long ownership = experimentMapper.selectCount(
-                new LambdaQueryWrapper<QuantExperiment>()
-                        .eq(QuantExperiment::getUserId, userId)
-                        .eq(QuantExperiment::getCandidateModelVersion, strategy.getModelVersion())
-        );
-        if (ownership == 0) {
-            throw new IllegalArgumentException("模拟策略不存在");
-        }
-        return Map.of(
-                "id", strategy.getId(),
-                "strategyVersion", strategy.getStrategyVersion(),
-                "modelVersion", strategy.getModelVersion(),
-                "status", strategy.getStatus(),
-                "validation", readJson(strategy.getValidationMetricsJson())
-        );
-    }
-
     private QuantExperiment requireExperiment(Long userId, Long experimentId) {
         QuantExperiment experiment = experimentMapper.selectOne(
                 new LambdaQueryWrapper<QuantExperiment>()
@@ -374,6 +350,7 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         result.put("experimentFingerprint", experiment.getExperimentFingerprint());
         Map<String, Object> config = readJson(experiment.getConfigJson());
         result.put("algorithm", config.getOrDefault("algorithm", "VALIDATED_ENSEMBLE"));
+        result.put("horizonProfileVersion", config.get("horizonProfileVersion"));
         result.put("parameters", config.get("parameters") instanceof Map<?, ?>
                 ? config.get("parameters")
                 : config);
@@ -648,7 +625,7 @@ public class QuantResearchServiceImpl implements QuantResearchService {
                 "validTo", item.getValidTo() == null ? "" : item.getValidTo().toString(),
                 "sourceSnapshot", item.getSourceSnapshot()
         )).toList();
-        return QuantResearchCatalog.canonicalHash(members);
+        return QuantExperimentFingerprint.canonicalHash(members);
     }
 
     private Map<String, Object> validationReportView(QuantValidationReport report) {
@@ -683,61 +660,18 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         return result;
     }
 
-    private void validateParameters(Map<String, Object> parameters) {
-        Map<String, Map<String, Object>> allowed = new LinkedHashMap<>();
-        for (Object raw : (List<?>) QuantResearchCatalog.parameterSchema().get("fields")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> field = (Map<String, Object>) raw;
-            allowed.put(String.valueOf(field.get("key")), field);
+    private static HorizonSetting resolveHorizon(
+            ResolvedHorizonProfile profile,
+            String value
+    ) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("请选择预测周期");
         }
-        for (Map.Entry<String, Object> entry : parameters.entrySet()) {
-            Map<String, Object> field = allowed.get(entry.getKey());
-            if (field == null) {
-                throw new IllegalArgumentException("不支持的模型参数: " + entry.getKey());
-            }
-            if (!(entry.getValue() instanceof Number number)) {
-                throw new IllegalArgumentException("模型参数必须是数字: " + entry.getKey());
-            }
-            double value = number.doubleValue();
-            double minimum = ((Number) field.get("minimum")).doubleValue();
-            double maximum = ((Number) field.get("maximum")).doubleValue();
-            if (value < minimum || value > maximum) {
-                throw new IllegalArgumentException("模型参数超出允许范围: " + entry.getKey());
-            }
-        }
-    }
-
-    private static String normalizeFamily(String value) {
         String normalized = value.trim().toUpperCase(Locale.ROOT);
-        if (!MODEL_FAMILIES.contains(normalized)) {
-            throw new IllegalArgumentException("不支持的模型家族");
-        }
-        return normalized;
-    }
-
-    private static String normalizeHorizon(String value) {
-        String normalized = value.trim().toUpperCase(Locale.ROOT);
-        if (!Set.of("SHORT", "MEDIUM", "LONG").contains(normalized)) {
-            throw new IllegalArgumentException("不支持的预测周期");
-        }
-        return normalized;
-    }
-
-    private static String normalizeAlgorithm(String value) {
-        String normalized = value.trim().toUpperCase(Locale.ROOT);
-        if (!ALGORITHMS.contains(normalized)) {
-            throw new IllegalArgumentException("不支持的量化算法");
-        }
-        return normalized;
-    }
-
-    private static int horizonDays(String horizon) {
-        return switch (horizon) {
-            case "SHORT" -> 20;
-            case "MEDIUM" -> 60;
-            case "LONG" -> 250;
-            default -> throw new IllegalArgumentException("不支持的预测周期");
-        };
+        return profile.settings().stream()
+                .filter(item -> item.code().equals(normalized))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("预测周期不在当前资产配置中"));
     }
 
     private String writeJson(Object value) {

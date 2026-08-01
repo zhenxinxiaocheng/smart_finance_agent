@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.dto.HorizonProfileResponse;
 import com.smartfinance.agent.investment.service.InvestmentHorizonService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,6 +26,14 @@ public class InvestmentHorizonController {
     @GetMapping
     public Result<HorizonProfileResponse> get(@RequestAttribute Long userId) {
         return Result.success(service.global(userId));
+    }
+
+    @GetMapping("/assets/{assetId}")
+    public Result<HorizonProfileResponse> getForAsset(
+            @RequestAttribute Long userId,
+            @PathVariable Long assetId
+    ) {
+        return Result.success(service.describe(service.resolve(userId, assetId)));
     }
 
     @PutMapping

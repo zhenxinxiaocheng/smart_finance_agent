@@ -26,13 +26,4 @@ public class QuantController {
         return Result.success(service.latestAnalysis(userId, id, horizonCode));
     }
 
-    @GetMapping("/quant/strategy-status")
-    public Result<Map<String, Object>> strategyStatus(@RequestAttribute Long userId) {
-        return Result.success(service.strategyStatus(userId));
-    }
-
-    @GetMapping("/paper/account")
-    public Result<Map<String, Object>> paperAccount(@RequestAttribute Long userId) {
-        return Result.success(service.paperAccount(userId));
-    }
 }

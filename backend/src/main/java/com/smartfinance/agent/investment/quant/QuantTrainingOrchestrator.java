@@ -279,7 +279,7 @@ public class QuantTrainingOrchestrator {
                 fingerprintMaterial.put("researchUniverseVersion",
                         researchContextVersion(userId, assetId, effectiveUniverseId));
             }
-            requestFingerprint = QuantResearchCatalog.canonicalHash(fingerprintMaterial);
+            requestFingerprint = QuantExperimentFingerprint.canonicalHash(fingerprintMaterial);
             QuantJob reusable = reusableAutomaticJob(userId, assetId, requestFingerprint);
             if (reusable != null) {
                 return jobView(reusable);
@@ -335,6 +335,9 @@ public class QuantTrainingOrchestrator {
         job.setHorizonProfileVersion(profile.version());
         job.setHorizonCode(horizon.code());
         job.setHorizonDays(horizon.targetHoldingDays());
+        job.setEstimatedDurationSeconds(longValue(
+                remote.get("estimatedDurationSeconds")
+        ));
         job.setExperimentFingerprint(experimentFingerprint);
         job.setRequestFingerprint(requestFingerprint);
         jobMapper.insert(job);
@@ -364,6 +367,12 @@ public class QuantTrainingOrchestrator {
         if (remoteDeploymentStatus != null) job.setDeploymentStatus(remoteDeploymentStatus);
         String remoteEconomicRole = text(remote.get("economicRole"));
         if (remoteEconomicRole != null) job.setEconomicRole(remoteEconomicRole);
+        Long remoteEstimatedDuration = longValue(
+                remote.get("estimatedDurationSeconds")
+        );
+        if (remoteEstimatedDuration != null) {
+            job.setEstimatedDurationSeconds(remoteEstimatedDuration);
+        }
         job.setErrorCode(text(remote.get("errorCode")));
         job.setErrorSummary(text(remote.get("errorSummary")));
         job.setUserMessage(text(remote.get("userMessage")));
@@ -490,7 +499,7 @@ public class QuantTrainingOrchestrator {
             }
             material.put("members", members);
         }
-        return QuantResearchCatalog.canonicalHash(material);
+        return QuantExperimentFingerprint.canonicalHash(material);
     }
 
     private Map<String, Object> blockedJob(Long userId, Long assetId,
@@ -649,6 +658,10 @@ public class QuantTrainingOrchestrator {
         result.put("strategyVersion", job.getStrategyVersion());
         result.put("horizonCode", job.getHorizonCode());
         result.put("horizonDays", job.getHorizonDays());
+        result.put("estimatedDurationSeconds", job.getEstimatedDurationSeconds());
+        result.put("createdAt", job.getCreatedAt());
+        result.put("startedAt", job.getStartedAt());
+        result.put("finishedAt", job.getFinishedAt());
         result.put("userMessage", job.getUserMessage());
         result.put("result", readJson(job.getResultJson()));
         return result;
@@ -826,6 +839,15 @@ public class QuantTrainingOrchestrator {
         if (value instanceof Number number) return number.intValue();
         try {
             return value == null ? null : Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static Long longValue(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
         } catch (NumberFormatException ignored) {
             return null;
         }

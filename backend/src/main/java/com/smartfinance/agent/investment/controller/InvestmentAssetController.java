@@ -102,11 +102,6 @@ public class InvestmentAssetController {
         return Result.success(dataJobService.statusForAsset(userId, id));
     }
 
-    @GetMapping("/{id}/analysis")
-    public Result<InvestmentAssetDetailResponse> analysis(@RequestAttribute Long userId, @PathVariable Long id) {
-        return Result.success(analysisService.analysis(userId, id));
-    }
-
     @PutMapping("/{id}/analysis-preference")
     public Result<InvestmentAssetDetailResponse> updateAnalysisPreference(
             @RequestAttribute Long userId, @PathVariable Long id,

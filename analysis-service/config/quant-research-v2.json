@@ -2,6 +2,36 @@
   "version": "quant-research-v2",
   "randomSeed": 20260718,
   "annualizationDays": 252,
+  "researchInterface": {
+    "schemaVersion": "quant-research-interface-v2",
+    "modelFamilies": [
+      {
+        "code": "A_SHARE_STOCK",
+        "name": "A股股票",
+        "predictionHeads": ["RELATIVE_ALPHA", "ABSOLUTE_RETURN", "DOWNSIDE_PROBABILITY"]
+      },
+      {
+        "code": "INDEX_FUND",
+        "name": "指数及指数增强基金",
+        "predictionHeads": ["BENCHMARK_ALLOCATION", "TRACKING_ALPHA"]
+      },
+      {
+        "code": "ACTIVE_FUND",
+        "name": "主动基金",
+        "predictionHeads": ["MARKET_ALLOCATION", "PEER_ALPHA"]
+      },
+      {
+        "code": "QDII_INDEX_FUND",
+        "name": "QDII指数基金",
+        "predictionHeads": ["FX_ADJUSTED_ALLOCATION", "TRACKING_ALPHA"]
+      },
+      {
+        "code": "COMMODITY_FUND",
+        "name": "商品基金",
+        "predictionHeads": ["COMMODITY_ALLOCATION", "TRACKING_ALPHA"]
+      }
+    ]
+  },
   "jobs": {
     "storageRootEnv": "ANALYSIS_DATA_ROOT",
     "maximumWorkers": 2
@@ -58,6 +88,10 @@
   },
   "autoSearch": {
     "timeBudgetSeconds": 1800,
+    "durationEstimate": {
+      "preprocessingSecondsPerRecord": 0.01,
+      "finalizationSeconds": 60
+    },
     "finalHoldoutFraction": 0.2,
     "minimumFinalHoldoutSamples": 40,
     "failureRouting": {
@@ -70,7 +104,9 @@
       "maximumAbsoluteCalibrationIntercept": 0.05,
       "minimumStableFoldRatio": 0.6,
       "maximumCrossWindowVolatility": 0.25,
-      "minimumNetExcess": 0.0
+      "minimumNetExcess": 0.0,
+      "minimumOosR2": 0.0,
+      "minimumMedianRankIc": 0.0
     },
     "finalHoldoutValidation": {
       "minimumSamples": 40,
@@ -87,6 +123,7 @@
         "parameters": [
           {
             "name": "classificationC",
+            "label": "Logistic 正则强度",
             "configPath": "training.elasticNet.classificationC",
             "type": "float",
             "low": 0.01,
@@ -95,6 +132,7 @@
           },
           {
             "name": "regressionAlpha",
+            "label": "ElasticNet Alpha",
             "configPath": "training.elasticNet.regressionAlpha",
             "type": "float",
             "low": 0.00001,
@@ -103,10 +141,12 @@
           },
           {
             "name": "elasticNetL1Ratio",
+            "label": "ElasticNet L1 比例",
             "configPath": "training.elasticNet.l1Ratio",
             "type": "float",
             "low": 0.05,
-            "high": 0.95
+            "high": 0.95,
+            "step": 0.05
           }
         ]
       },
@@ -115,6 +155,7 @@
         "parameters": [
           {
             "name": "estimators",
+            "label": "XGBoost 树数量",
             "configPath": "training.xgboost.estimators",
             "type": "int",
             "low": 32,
@@ -123,6 +164,7 @@
           },
           {
             "name": "maximumDepth",
+            "label": "XGBoost 树最大深度",
             "configPath": "training.xgboost.maximumDepth",
             "type": "int",
             "low": 1,
@@ -130,6 +172,7 @@
           },
           {
             "name": "learningRate",
+            "label": "XGBoost 学习率",
             "configPath": "training.xgboost.learningRate",
             "type": "float",
             "low": 0.005,
@@ -138,20 +181,25 @@
           },
           {
             "name": "xgbSubsample",
+            "label": "XGBoost 样本采样率",
             "configPath": "training.xgboost.subsample",
             "type": "float",
             "low": 0.6,
-            "high": 1.0
+            "high": 1.0,
+            "step": 0.05
           },
           {
             "name": "xgbColumnSample",
+            "label": "XGBoost 特征采样率",
             "configPath": "training.xgboost.columnSample",
             "type": "float",
             "low": 0.6,
-            "high": 1.0
+            "high": 1.0,
+            "step": 0.05
           },
           {
             "name": "xgbL1Regularization",
+            "label": "XGBoost L1 正则",
             "configPath": "training.xgboost.l1Regularization",
             "type": "float",
             "low": 0.00001,
@@ -160,6 +208,7 @@
           },
           {
             "name": "xgbL2Regularization",
+            "label": "XGBoost L2 正则",
             "configPath": "training.xgboost.l2Regularization",
             "type": "float",
             "low": 0.0001,
@@ -173,6 +222,7 @@
         "parameters": [
           {
             "name": "extraTreesEstimators",
+            "label": "Extra Trees 树数量",
             "configPath": "training.extraTrees.estimators",
             "type": "int",
             "low": 32,
@@ -181,6 +231,7 @@
           },
           {
             "name": "extraTreesMaximumDepth",
+            "label": "Extra Trees 树最大深度",
             "configPath": "training.extraTrees.maximumDepth",
             "type": "int",
             "low": 1,
@@ -188,6 +239,7 @@
           },
           {
             "name": "extraTreesMinimumLeaf",
+            "label": "Extra Trees 最小叶节点样本",
             "configPath": "training.extraTrees.minimumLeaf",
             "type": "int",
             "low": 1,
@@ -195,10 +247,12 @@
           },
           {
             "name": "extraTreesMaximumFeatures",
+            "label": "Extra Trees 特征采样率",
             "configPath": "training.extraTrees.maximumFeatures",
             "type": "float",
             "low": 0.3,
-            "high": 1.0
+            "high": 1.0,
+            "step": 0.05
           }
         ]
       },
@@ -207,6 +261,7 @@
         "parameters": [
           {
             "name": "trendFastWindow",
+            "label": "趋势快速窗口",
             "configPath": "strategy.trendVolatility.fastWindow",
             "type": "horizon_window",
             "multipleLow": 0.5,
@@ -216,6 +271,7 @@
           },
           {
             "name": "trendSlowWindow",
+            "label": "趋势慢速窗口",
             "configPath": "strategy.trendVolatility.slowWindow",
             "type": "horizon_window",
             "multipleLow": 1.0,
@@ -225,6 +281,7 @@
           },
           {
             "name": "trendVolatilityWindow",
+            "label": "趋势波动率窗口",
             "configPath": "strategy.trendVolatility.volatilityWindow",
             "type": "horizon_window",
             "multipleLow": 0.5,
@@ -234,10 +291,12 @@
           },
           {
             "name": "targetAnnualizedVolatility",
+            "label": "目标年化波动率",
             "configPath": "risk.targetAnnualizedVolatility",
             "type": "float",
             "low": 0.06,
-            "high": 0.18
+            "high": 0.18,
+            "step": 0.01
           }
         ]
       },
@@ -246,6 +305,7 @@
         "parameters": [
           {
             "name": "meanReversionWindow",
+            "label": "均值回归窗口",
             "configPath": "strategy.meanReversion.window",
             "type": "horizon_window",
             "multipleLow": 0.5,
@@ -255,24 +315,30 @@
           },
           {
             "name": "meanReversionEntryZ",
+            "label": "均值回归入场 Z 值",
             "configPath": "strategy.meanReversion.entryZ",
             "type": "float",
             "low": 0.5,
-            "high": 2.5
+            "high": 2.5,
+            "step": 0.05
           },
           {
             "name": "meanReversionExitZ",
+            "label": "均值回归退出 Z 值",
             "configPath": "strategy.meanReversion.exitZ",
             "type": "float",
             "low": 0.0,
-            "high": 0.75
+            "high": 0.75,
+            "step": 0.05
           },
           {
             "name": "targetAnnualizedVolatility",
+            "label": "目标年化波动率",
             "configPath": "risk.targetAnnualizedVolatility",
             "type": "float",
             "low": 0.06,
-            "high": 0.18
+            "high": 0.18,
+            "step": 0.01
           }
         ]
       },
@@ -281,13 +347,16 @@
         "parameters": [
           {
             "name": "linearWeight",
+            "label": "集成线性模型权重",
             "configPath": "prediction.ensemble.linearWeight",
             "type": "float",
             "low": 0.1,
-            "high": 0.9
+            "high": 0.9,
+            "step": 0.05
           },
           {
             "name": "regimeWindow",
+            "label": "市场状态识别窗口",
             "configPath": "strategy.regimeEnsemble.window",
             "type": "horizon_window",
             "multipleLow": 0.5,
@@ -297,17 +366,21 @@
           },
           {
             "name": "regimeHighVolatility",
+            "label": "高波动状态阈值",
             "configPath": "strategy.regimeEnsemble.highVolatility",
             "type": "float",
             "low": 0.18,
-            "high": 0.6
+            "high": 0.6,
+            "step": 0.01
           },
           {
             "name": "targetAnnualizedVolatility",
+            "label": "目标年化波动率",
             "configPath": "risk.targetAnnualizedVolatility",
             "type": "float",
             "low": 0.06,
-            "high": 0.18
+            "high": 0.18,
+            "step": 0.01
           }
         ]
       }
@@ -352,6 +425,26 @@
       "maximumDownsideCapture": 0.8,
       "minimumFoldPassRatio": 0.6,
       "maximumCrossWindowVolatility": 0.25
+    }
+  },
+  "validation": {
+    "diagnostics": {
+      "minimumOosR2": 0.0,
+      "maximumDmPValue": 0.05,
+      "minimumMedianRankIc": 0.0,
+      "minimumPositiveIcFoldRatio": 0.6,
+      "minimumBrierSkill": 0.0,
+      "minimumLogLossSkill": 0.0,
+      "minimumCalibrationSlope": 0.8,
+      "maximumCalibrationSlope": 1.2,
+      "maximumAbsoluteCalibrationIntercept": 0.05,
+      "minimumIntervalCoverage": 0.75,
+      "maximumIntervalCoverage": 0.85,
+      "minimumPinballSkill": 0.0
+    },
+    "data": {
+      "targetIndependentEvents": 60,
+      "minimumStatisticalBlocks": 8
     }
   },
   "monitoring": {

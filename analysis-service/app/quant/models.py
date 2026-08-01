@@ -18,7 +18,11 @@ from xgboost import XGBClassifier, XGBRegressor
 
 from .config import QuantConfig
 from .engine import InsufficientQuantData, TrainingSample
-from .validation import choose_calibration_method, evaluate_validation
+from .validation import (
+    choose_calibration_method,
+    evaluate_validation,
+    validation_policy,
+)
 
 
 class SigmoidCalibrator:
@@ -525,7 +529,7 @@ def train_ensemble(
     }
     validation_report = evaluate_validation(
         metrics,
-        horizon_code=_horizon_code(samples),
+        policy=validation_policy(config),
         benchmark_available=benchmark_available,
         data_fresh=data_fresh,
     )
@@ -1683,12 +1687,3 @@ def _deflated_sharpe_probability(
         / np.sqrt(denominator)
     )
     return float(norm.cdf(statistic))
-
-
-def _horizon_code(samples: Sequence[TrainingSample]) -> str:
-    horizon = samples[0].label_end_index - samples[0].as_of_index
-    if horizon <= 30:
-        return "SHORT"
-    if horizon <= 120:
-        return "MEDIUM"
-    return "LONG"

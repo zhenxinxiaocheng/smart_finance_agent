@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from app.quant.failure_diagnostics import diagnose_failure
+from app.quant.config import load_quant_config
+
+
+FAILURE_POLICY = load_quant_config().value("autoSearch.failureRouting")
 
 
 class QuantFailureDiagnosticsTest(unittest.TestCase):
@@ -10,6 +14,7 @@ class QuantFailureDiagnosticsTest(unittest.TestCase):
         diagnosis = diagnose_failure(
             {"validationReport": {"failureCodes": ["INSUFFICIENT_DATA"]}},
             current_algorithm="XGBOOST",
+            policy=FAILURE_POLICY,
         )
 
         self.assertEqual("DATA_INSUFFICIENT", diagnosis.code)
@@ -24,6 +29,7 @@ class QuantFailureDiagnosticsTest(unittest.TestCase):
                 "foldPassRatio": 0.3,
             },
             current_algorithm="XGBOOST",
+            policy=FAILURE_POLICY,
         )
 
         self.assertEqual("OVERFITTING", diagnosis.code)
@@ -37,6 +43,7 @@ class QuantFailureDiagnosticsTest(unittest.TestCase):
                 "costStressAnnualizedExcessReturn": -0.03,
             },
             current_algorithm="EXTRA_TREES",
+            policy=FAILURE_POLICY,
         )
 
         self.assertEqual("COST_TOO_HIGH", diagnosis.code)
@@ -53,6 +60,7 @@ class QuantFailureDiagnosticsTest(unittest.TestCase):
                 "crossWindowVolatility": 0.1,
             },
             current_algorithm="XGBOOST",
+            policy=FAILURE_POLICY,
         )
         regime = diagnose_failure(
             {
@@ -62,6 +70,7 @@ class QuantFailureDiagnosticsTest(unittest.TestCase):
                 "foldPassRatio": 0.4,
             },
             current_algorithm="ELASTIC_NET",
+            policy=FAILURE_POLICY,
         )
 
         self.assertEqual("CALIBRATION_FAILED", calibration.code)

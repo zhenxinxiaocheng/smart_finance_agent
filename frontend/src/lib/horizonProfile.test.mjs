@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  chooseHorizonCode,
+  horizonDisplayName,
   normalizeHorizonProfile,
   profileSavePayload,
   validateHorizonSettings,
@@ -36,4 +38,16 @@ test('保存载荷不携带前端默认值或只读来源字段', () => {
   assert.deepEqual(payload, { settings: [
     { code: 'POSITION', displayName: '配置', sortOrder: 3, minHoldingDays: 80, maxHoldingDays: 260, targetHoldingDays: 160, primary: true },
   ] })
+})
+
+test('模型页面从服务端周期中选择并显示任意 WAVE 周期', () => {
+  const profile = normalizeHorizonProfile({ settings: [
+    { code: 'CORE', displayName: '核心配置', sortOrder: 10, minHoldingDays: 80, maxHoldingDays: 120, targetHoldingDays: 100, primary: true },
+    { code: 'WAVE', displayName: '波段观察', sortOrder: 20, minHoldingDays: 25, maxHoldingDays: 50, targetHoldingDays: 37 },
+  ] })
+
+  assert.equal(chooseHorizonCode(profile, 'wave'), 'WAVE')
+  assert.equal(chooseHorizonCode(profile, 'REMOVED_CODE'), 'CORE')
+  assert.equal(horizonDisplayName(profile, 'WAVE'), '波段观察')
+  assert.equal(horizonDisplayName(profile, 'ARCHIVED'), 'ARCHIVED')
 })

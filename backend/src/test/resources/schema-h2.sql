@@ -682,6 +682,7 @@ CREATE TABLE quant_job (
     product_type VARCHAR(30), metrics_json CLOB,
     model_version VARCHAR(64), strategy_version VARCHAR(80),
     horizon_profile_version VARCHAR(255), horizon_code VARCHAR(32), horizon_days INT,
+    estimated_duration_seconds BIGINT,
     result_json CLOB, user_message VARCHAR(500), started_at TIMESTAMP, finished_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

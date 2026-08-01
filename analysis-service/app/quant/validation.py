@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
 
+from .config import QuantConfig
+
 
 class ModelLifecycle(StrEnum):
     DRAFT = "DRAFT"
@@ -71,29 +73,49 @@ class ValidationReport:
         }
 
 
-_MINIMUM_EVENTS = {
-    "SHORT": 60.0,
-    "MEDIUM": 40.0,
-    "LONG": 20.0,
-}
-
-
 def choose_calibration_method(independent_samples: int) -> str:
     if independent_samples < 0:
         raise ValueError("independent calibration sample count cannot be negative")
     return "isotonic" if independent_samples >= 1000 else "sigmoid"
 
 
+def validation_policy(config: QuantConfig) -> dict[str, float]:
+    paths = {
+        "minimumOosR2": "validation.diagnostics.minimumOosR2",
+        "maximumDmPValue": "validation.diagnostics.maximumDmPValue",
+        "minimumMedianRankIc": "validation.diagnostics.minimumMedianRankIc",
+        "minimumPositiveIcFoldRatio": "validation.diagnostics.minimumPositiveIcFoldRatio",
+        "minimumBrierSkill": "validation.diagnostics.minimumBrierSkill",
+        "minimumLogLossSkill": "validation.diagnostics.minimumLogLossSkill",
+        "minimumCalibrationSlope": "validation.diagnostics.minimumCalibrationSlope",
+        "maximumCalibrationSlope": "validation.diagnostics.maximumCalibrationSlope",
+        "maximumAbsoluteCalibrationIntercept": "validation.diagnostics.maximumAbsoluteCalibrationIntercept",
+        "minimumIntervalCoverage": "validation.diagnostics.minimumIntervalCoverage",
+        "maximumIntervalCoverage": "validation.diagnostics.maximumIntervalCoverage",
+        "minimumPinballSkill": "validation.diagnostics.minimumPinballSkill",
+        "targetIndependentEvents": "validation.data.targetIndependentEvents",
+        "minimumStatisticalBlocks": "validation.data.minimumStatisticalBlocks",
+        "minimumWalkForwardFolds": "training.walkForwardFolds",
+        "minimumNetExcess": "promotion.returnEnhancer.minimumNetExcessVsStrongestBaseline",
+        "minimumDeflatedSharpeProbability": "promotion.returnEnhancer.minimumDeflatedSharpeProbability",
+        "maximumPbo": "promotion.returnEnhancer.maximumPbo",
+        "minimumReturnFoldPassRatio": "promotion.returnEnhancer.minimumFoldPassRatio",
+        "maximumReturnCrossWindowVolatility": "promotion.returnEnhancer.maximumCrossWindowVolatility",
+        "minimumDrawdownReduction": "promotion.drawdownGuard.minimumDrawdownReduction",
+        "maximumDownsideCapture": "promotion.drawdownGuard.maximumDownsideCapture",
+        "minimumGuardFoldPassRatio": "promotion.drawdownGuard.minimumFoldPassRatio",
+        "maximumGuardCrossWindowVolatility": "promotion.drawdownGuard.maximumCrossWindowVolatility",
+    }
+    return {key: config.number(path) for key, path in paths.items()}
+
+
 def evaluate_validation(
     metrics: Mapping[str, object],
     *,
-    horizon_code: str,
+    policy: Mapping[str, float],
     benchmark_available: bool,
     data_fresh: bool,
 ) -> ValidationReport:
-    normalized_horizon = str(horizon_code).strip().upper()
-    if normalized_horizon not in _MINIMUM_EVENTS:
-        raise ValueError(f"unsupported validation horizon: {horizon_code}")
     normalized_metrics = dict(metrics)
     normalized_metrics.setdefault(
         "drawdownGuardFoldPassRatio",
@@ -102,26 +124,26 @@ def evaluate_validation(
     metrics = normalized_metrics
 
     diagnostic_specifications = (
-        ("oosR2", "PREDICTION", ">", 0.0, "样本外 R² 必须大于零"),
-        ("dmPValue", "PREDICTION", "<", 0.05, "预测误差必须显著优于基线"),
-        ("medianRankIc", "PREDICTION", ">", 0.0, "Rank IC 中位数必须为正"),
-        ("positiveIcFoldRatio", "STABILITY", ">=", 0.6, "至少 60% 窗口的 IC 为正"),
-        ("brierSkill", "CALIBRATION", ">", 0.0, "Brier Skill 必须优于历史概率"),
-        ("logLossSkill", "CALIBRATION", ">", 0.0, "LogLoss Skill 必须优于历史概率"),
-        ("calibrationSlope", "CALIBRATION", ">=", 0.8, "概率校准斜率不得低于 0.8"),
-        ("calibrationSlope", "CALIBRATION", "<=", 1.2, "概率校准斜率不得高于 1.2"),
-        ("calibrationIntercept", "CALIBRATION", "abs<=", 0.05, "概率校准截距偏差不得超过 0.05"),
-        ("intervalCoverage", "INTERVAL", ">=", 0.75, "80% 区间覆盖率不得低于 75%"),
-        ("intervalCoverage", "INTERVAL", "<=", 0.85, "80% 区间覆盖率不得高于 85%"),
-        ("pinballSkill", "INTERVAL", ">", 0.0, "区间损失必须优于基线"),
+        ("oosR2", "PREDICTION", ">", policy["minimumOosR2"], "样本外 R² 必须优于配置基线"),
+        ("dmPValue", "PREDICTION", "<", policy["maximumDmPValue"], "预测误差必须显著优于基线"),
+        ("medianRankIc", "PREDICTION", ">", policy["minimumMedianRankIc"], "Rank IC 中位数必须为正"),
+        ("positiveIcFoldRatio", "STABILITY", ">=", policy["minimumPositiveIcFoldRatio"], "正向 IC 窗口比例不足"),
+        ("brierSkill", "CALIBRATION", ">", policy["minimumBrierSkill"], "Brier Skill 必须优于历史概率"),
+        ("logLossSkill", "CALIBRATION", ">", policy["minimumLogLossSkill"], "LogLoss Skill 必须优于历史概率"),
+        ("calibrationSlope", "CALIBRATION", ">=", policy["minimumCalibrationSlope"], "概率校准斜率过低"),
+        ("calibrationSlope", "CALIBRATION", "<=", policy["maximumCalibrationSlope"], "概率校准斜率过高"),
+        ("calibrationIntercept", "CALIBRATION", "abs<=", policy["maximumAbsoluteCalibrationIntercept"], "概率校准截距偏差过高"),
+        ("intervalCoverage", "INTERVAL", ">=", policy["minimumIntervalCoverage"], "预测区间覆盖率过低"),
+        ("intervalCoverage", "INTERVAL", "<=", policy["maximumIntervalCoverage"], "预测区间覆盖率过高"),
+        ("pinballSkill", "INTERVAL", ">", policy["minimumPinballSkill"], "区间损失必须优于基线"),
     )
     data_specifications = (
-        ("walkForwardFolds", "TRAINING", ">=", 5.0, "至少需要 5 个走步验证窗口"),
+        ("walkForwardFolds", "TRAINING", ">=", policy["minimumWalkForwardFolds"], "走步验证窗口不足"),
         (
             "independentEventCount",
             "TRAINING",
             ">=",
-            _minimum_independent_events(metrics, normalized_horizon),
+            _minimum_independent_events(metrics, policy),
             "独立样本事件数量不足",
         ),
     )
@@ -131,36 +153,36 @@ def evaluate_validation(
             "netExcessVsStrongestBaseline",
             "RETURN_ENHANCER",
             ">",
-            0.0,
+            policy["minimumNetExcess"],
             "扣费后收益必须超过最强基准",
         ),
         (
             "deflatedSharpeProbability",
             "RETURN_ENHANCER",
             ">=",
-            0.95,
+            policy["minimumDeflatedSharpeProbability"],
             "DSR 置信概率必须不低于 95%",
         ),
-        ("pbo", "RETURN_ENHANCER", "<=", 0.2, "回测过拟合概率不得高于 20%"),
+        ("pbo", "RETURN_ENHANCER", "<=", policy["maximumPbo"], "回测过拟合概率过高"),
         (
             "foldPassRatio",
             "RETURN_ENHANCER",
             ">=",
-            0.6,
+            policy["minimumReturnFoldPassRatio"],
             "至少 60% 外层窗口有效",
         ),
         (
             "costStressNetExcessVsStrongestBaseline",
             "RETURN_ENHANCER",
             ">=",
-            0.0,
+            policy["minimumNetExcess"],
             "成本压力下仍须不弱于最强基准",
         ),
         (
             "crossWindowVolatility",
             "RETURN_ENHANCER",
             "<=",
-            0.25,
+            policy["maximumReturnCrossWindowVolatility"],
             "跨窗口表现波动不得过高",
         ),
     )
@@ -169,42 +191,42 @@ def evaluate_validation(
             "drawdownReduction",
             "DRAWDOWN_GUARD",
             ">=",
-            0.2,
+            policy["minimumDrawdownReduction"],
             "相对买入持有至少降低 20% 最大回撤",
         ),
         (
             "downsideCapture",
             "DRAWDOWN_GUARD",
             "<=",
-            0.8,
+            policy["maximumDownsideCapture"],
             "下跌捕获率不得高于 80%",
         ),
         (
             "annualizedNetReturn",
             "DRAWDOWN_GUARD",
             ">=",
-            _metric(metrics, "cashAnnualizedReturn", 0.015),
+            _metric(metrics, "cashAnnualizedReturn"),
             "扣费后收益不得低于现金基准",
         ),
         (
             "drawdownGuardFoldPassRatio",
             "DRAWDOWN_GUARD",
             ">=",
-            0.6,
+            policy["minimumGuardFoldPassRatio"],
             "至少 60% 外层窗口有效",
         ),
         (
             "costStressAnnualizedExcessReturn",
             "DRAWDOWN_GUARD",
             ">=",
-            _metric(metrics, "cashAnnualizedReturn", 0.015),
+            _metric(metrics, "cashAnnualizedReturn"),
             "成本压力下收益不得低于现金基准",
         ),
         (
             "crossWindowVolatility",
             "DRAWDOWN_GUARD",
             "<=",
-            0.25,
+            policy["maximumGuardCrossWindowVolatility"],
             "跨窗口表现波动不得过高",
         ),
     )
@@ -321,9 +343,9 @@ def _metric(
 
 def _minimum_independent_events(
     metrics: Mapping[str, object],
-    horizon_code: str,
+    policy: Mapping[str, float],
 ) -> float:
-    policy_minimum = _MINIMUM_EVENTS[horizon_code]
+    policy_minimum = policy["targetIndependentEvents"]
     evaluation_samples = _metric(metrics, "evaluationSampleCount")
     horizon_days = _metric(metrics, "horizonDays")
     if (
@@ -334,7 +356,7 @@ def _minimum_independent_events(
     ):
         return policy_minimum
     available_capacity = math.floor(evaluation_samples / horizon_days)
-    minimum_statistical_blocks = 8.0
+    minimum_statistical_blocks = policy["minimumStatisticalBlocks"]
     if available_capacity < minimum_statistical_blocks:
         return minimum_statistical_blocks
     return min(

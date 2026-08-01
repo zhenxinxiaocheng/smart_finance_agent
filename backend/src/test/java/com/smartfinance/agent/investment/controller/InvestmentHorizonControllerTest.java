@@ -33,4 +33,20 @@ class InvestmentHorizonControllerTest {
         verify(service).global(7L);
         verify(service).saveGlobal(7L, request);
     }
+
+    @Test
+    void assetProfileEndpointReturnsTheResolvedAssetProfile() {
+        InvestmentHorizonService service = mock(InvestmentHorizonService.class);
+        InvestmentHorizonController controller = new InvestmentHorizonController(service);
+        var resolved = mock(com.smartfinance.agent.investment.domain.ResolvedHorizonProfile.class);
+        HorizonProfileResponse expected = new HorizonProfileResponse(
+                "template:v1|global:3|asset:5", "v1", "ASSET", true,
+                2500, List.of(), List.of());
+        when(service.resolve(7L, 12L)).thenReturn(resolved);
+        when(service.describe(resolved)).thenReturn(expected);
+
+        assertThat(controller.getForAsset(7L, 12L).getData()).isSameAs(expected);
+        verify(service).resolve(7L, 12L);
+        verify(service).describe(resolved);
+    }
 }

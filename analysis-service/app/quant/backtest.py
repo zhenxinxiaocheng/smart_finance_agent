@@ -61,7 +61,7 @@ def simulate_a_share_long_only(records: Sequence[Mapping[str, Any]],
     fill_quantities: list[float] = []
     cash_curve = [cash]
     partial_fills = 0
-    open_trade_cost = 0.0
+    position_cost_basis = 0.0
     previous_equity = initial_cash
 
     for index in range(1, len(records)):
@@ -113,14 +113,24 @@ def simulate_a_share_long_only(records: Sequence[Mapping[str, Any]],
                         if side == "BUY":
                             cash -= notional + fee
                             quantity += int(filled_quantity)
-                            open_trade_cost += notional + fee
+                            position_cost_basis += notional + fee
                         else:
-                            cash += notional - fee
+                            quantity_before_sale = quantity
+                            net_proceeds = notional - fee
+                            sold_cost_basis = position_cost_basis * (
+                                filled_quantity / quantity_before_sale
+                            )
+                            cash += net_proceeds
                             quantity -= int(filled_quantity)
                             available_to_sell -= int(filled_quantity)
-                            if quantity == 0 and open_trade_cost > 0:
-                                trade_returns.append((notional - fee) / open_trade_cost - 1)
-                                open_trade_cost = 0.0
+                            if sold_cost_basis > 0:
+                                trade_returns.append(net_proceeds / sold_cost_basis - 1)
+                            position_cost_basis = max(
+                                0.0,
+                                position_cost_basis - sold_cost_basis,
+                            )
+                            if quantity == 0:
+                                position_cost_basis = 0.0
                         turnover += notional / max(equity_before_trade, minimum_price)
                         fill_dates.append(str(record["data_date"]))
                         fill_sides.append(side)

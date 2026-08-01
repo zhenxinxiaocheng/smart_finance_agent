@@ -1,6 +1,10 @@
 package com.smartfinance.agent.investment.quant;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.investment.domain.HorizonSetting;
+import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
+import com.smartfinance.agent.investment.service.InvestmentHorizonService;
+import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -34,6 +38,8 @@ class QuantResearchServiceImplTest {
         QuantResearchServiceImpl service = new QuantResearchServiceImpl(
                 benchmarkMapper, experimentMapper, reportMapper, modelMapper,
                 strategyMapper, universeMapper, membershipMapper, quantService,
+                horizonService(),
+                schemaService(),
                 objectMapper
         );
         QuantExperiment current = experiment(
@@ -112,16 +118,18 @@ class QuantResearchServiceImplTest {
                 universeMapper,
                 membershipMapper,
                 quantService,
+                horizonService(),
+                schemaService(),
                 new ObjectMapper()
         );
         when(quantService.refreshExperiment(
                 eq(7L),
                 eq(12L),
                 isNull(),
-                eq("SHORT"),
+                eq("WAVE"),
                 anyString(),
                 eq("A_SHARE_STOCK"),
-                eq("REGIME_ENSEMBLE"),
+                eq("XGBOOST"),
                 eq(Map.of("learningRate", 0.05))
         ))
                 .thenReturn(Map.of("jobId", "a".repeat(32), "status", "QUEUED"));
@@ -129,27 +137,25 @@ class QuantResearchServiceImplTest {
         Map<String, Object> result = service.createExperiment(
                 7L,
                 new QuantResearchController.ExperimentRequest(
-                        12L,
-                        "A_SHARE_STOCK",
-                        "SHORT",
-                        Map.of("learningRate", 0.05)
+                        12L, null, "A_SHARE_STOCK", "WAVE",
+                        Map.of("learningRate", 0.05), "XGBOOST"
                 )
         );
 
         assertThat(result)
                 .containsEntry("status", "QUEUED")
                 .containsEntry("modelFamily", "A_SHARE_STOCK")
-                .containsEntry("horizonDays", 20);
+                .containsEntry("horizonDays", 37);
         assertThat(result.get("experimentFingerprint").toString()).hasSize(64);
         verify(experimentMapper).insert(any(QuantExperiment.class));
         verify(quantService).refreshExperiment(
                 7L,
                 12L,
                 null,
-                "SHORT",
+                "WAVE",
                 result.get("experimentFingerprint").toString(),
                 "A_SHARE_STOCK",
-                "REGIME_ENSEMBLE",
+                "XGBOOST",
                 Map.of("learningRate", 0.05)
         );
     }
@@ -173,6 +179,8 @@ class QuantResearchServiceImplTest {
                 universeMapper,
                 membershipMapper,
                 quantService,
+                horizonService(),
+                schemaService(),
                 new ObjectMapper()
         );
         QuantExperiment existing = new QuantExperiment();
@@ -192,10 +200,8 @@ class QuantResearchServiceImplTest {
         Map<String, Object> result = service.createExperiment(
                 7L,
                 new QuantResearchController.ExperimentRequest(
-                        12L,
-                        "A_SHARE_STOCK",
-                        "SHORT",
-                        Map.of("learningRate", 0.05)
+                        12L, null, "A_SHARE_STOCK", "SHORT",
+                        Map.of("learningRate", 0.05), "XGBOOST"
                 )
         );
 
@@ -224,6 +230,8 @@ class QuantResearchServiceImplTest {
                 universeMapper,
                 membershipMapper,
                 quantService,
+                horizonService(),
+                schemaService(),
                 new ObjectMapper()
         );
         QuantExperiment experiment = new QuantExperiment();
@@ -307,5 +315,58 @@ class QuantResearchServiceImplTest {
         report.setFeatureSetVersion("features-v1");
         report.setQuantConfigVersion("quant-research-v2");
         return report;
+    }
+
+    private static InvestmentHorizonService horizonService() {
+        InvestmentHorizonService service = mock(InvestmentHorizonService.class);
+        when(service.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "template:v2|global:4|asset:7",
+                "v2",
+                List.of(
+                        new HorizonSetting("SHORT", "短线", 10, 10, 30, 20, false, "ASSET"),
+                        new HorizonSetting("WAVE", "波段观察", 20, 25, 50, 37, true, "ASSET")
+                ),
+                List.of()
+        ));
+        return service;
+    }
+
+    private static QuantResearchSchemaService schemaService() {
+        AnalysisServiceClient client = mock(AnalysisServiceClient.class);
+        when(client.quantRuntimeManifest()).thenReturn(Map.of(
+                "quantConfigVersion", "quant-research-v2",
+                "researchSchema", Map.of(
+                        "schemaVersion", "quant-research-interface-v2",
+                        "modelFamilies", List.of(Map.of(
+                                "code", "A_SHARE_STOCK",
+                                "name", "A股股票",
+                                "predictionHeads", List.of("RELATIVE_ALPHA")
+                        )),
+                        "algorithms", List.of(
+                                "ELASTIC_NET", "XGBOOST", "EXTRA_TREES",
+                                "TREND_VOLATILITY", "RISK_FILTERED_MEAN_REVERSION",
+                                "REGIME_ENSEMBLE"
+                        ),
+                        "fields", List.of(Map.of(
+                                "key", "learningRate",
+                                "label", "学习率",
+                                "type", "NUMBER",
+                                "defaultValue", 0.05,
+                                "minimum", 0.005,
+                                "maximum", 0.2,
+                                "step", 0.005,
+                                "sampling", "LOG",
+                                "algorithms", List.of("XGBOOST")
+                        )),
+                        "immutableValidation", Map.of(
+                                "minimumWalkForwardFolds", 5,
+                                "embargoHorizonMultiplier", 1.0,
+                                "maximumDmPValue", 0.05,
+                                "minimumDeflatedSharpeProbability", 0.95,
+                                "maximumPbo", 0.2
+                        )
+                )
+        ));
+        return new QuantResearchSchemaService(client);
     }
 }

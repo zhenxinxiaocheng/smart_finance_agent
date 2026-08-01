@@ -41,6 +41,7 @@ public class QuantJob {
     private String horizonProfileVersion;
     private String horizonCode;
     private Integer horizonDays;
+    private Long estimatedDurationSeconds;
     private String resultJson;
     private String userMessage;
     private LocalDateTime startedAt;

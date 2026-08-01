@@ -73,3 +73,19 @@ export function profileSavePayload(profile) {
     })),
   }
 }
+
+export function chooseHorizonCode(profile, requestedCode) {
+  const settings = normalizeHorizonProfile(profile).settings
+  const requested = String(requestedCode ?? '').trim().toUpperCase()
+  if (settings.some(item => item.code === requested)) return requested
+  return settings.find(item => item.primary)?.code || settings[0]?.code || ''
+}
+
+export function horizonDisplayName(profile, code) {
+  const normalizedCode = String(code ?? '').trim().toUpperCase()
+  if (!normalizedCode) return '未选择周期'
+  const setting = normalizeHorizonProfile(profile).settings.find(
+    item => item.code === normalizedCode
+  )
+  return setting?.displayName || normalizedCode
+}

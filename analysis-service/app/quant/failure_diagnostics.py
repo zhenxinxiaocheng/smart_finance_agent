@@ -5,20 +5,6 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 
-DEFAULT_POLICY: dict[str, float] = {
-    "maximumPbo": 0.2,
-    "minimumDeflatedSharpeProbability": 0.95,
-    "maximumTurnover": 2.0,
-    "minimumCostStressReturn": 0.0,
-    "minimumCalibrationSlope": 0.8,
-    "maximumCalibrationSlope": 1.2,
-    "maximumAbsoluteCalibrationIntercept": 0.05,
-    "minimumStableFoldRatio": 0.6,
-    "maximumCrossWindowVolatility": 0.25,
-    "minimumNetExcess": 0.0,
-}
-
-
 @dataclass(frozen=True)
 class FailureDiagnosis:
     code: str
@@ -40,15 +26,12 @@ def diagnose_failure(
     metrics: Mapping[str, Any],
     *,
     current_algorithm: str,
-    policy: Mapping[str, Any] | None = None,
+    policy: Mapping[str, Any],
 ) -> FailureDiagnosis:
     thresholds = {
-        **DEFAULT_POLICY,
-        **{
-            str(key): float(value)
-            for key, value in (policy or {}).items()
-            if _finite(value) is not None
-        },
+        str(key): float(value)
+        for key, value in policy.items()
+        if _finite(value) is not None
     }
     algorithm = str(current_algorithm).strip().upper()
     failure_codes = _failure_codes(metrics)
@@ -156,8 +139,14 @@ def diagnose_failure(
     if (
         net_excess is None
         or net_excess <= thresholds["minimumNetExcess"]
-        or (oos_r2 is not None and oos_r2 <= 0.0)
-        or (rank_ic is not None and rank_ic <= 0.0)
+        or (
+            oos_r2 is not None
+            and oos_r2 <= thresholds["minimumOosR2"]
+        )
+        or (
+            rank_ic is not None
+            and rank_ic <= thresholds["minimumMedianRankIc"]
+        )
     ):
         next_algorithm = (
             "EXTRA_TREES" if algorithm == "XGBOOST" else "XGBOOST"

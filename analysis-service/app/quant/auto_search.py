@@ -264,11 +264,7 @@ class AutoSearchEngine:
             diagnosis = diagnose_failure(
                 artifact.metrics,
                 current_algorithm=candidate.algorithm,
-                policy=(
-                    failure_policy
-                    if isinstance(failure_policy, Mapping)
-                    else None
-                ),
+                policy=failure_policy,
             )
             diagnoses[trial.number] = diagnosis
             trial.set_user_attr(

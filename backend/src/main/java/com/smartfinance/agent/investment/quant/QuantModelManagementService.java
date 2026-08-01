@@ -9,6 +9,8 @@ import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -156,7 +158,21 @@ public class QuantModelManagementService {
         result.put("userMessage", job.getUserMessage());
         result.put("horizonCode", job.getHorizonCode());
         result.put("createdAt", job.getCreatedAt());
+        result.put("startedAt", job.getStartedAt());
         result.put("finishedAt", job.getFinishedAt());
+        result.put("estimatedDurationSeconds", job.getEstimatedDurationSeconds());
+        LocalDateTime durationStart = job.getStartedAt() == null
+                ? job.getCreatedAt()
+                : job.getStartedAt();
+        if (durationStart != null && job.getFinishedAt() != null) {
+            result.put(
+                    "actualDurationSeconds",
+                    Math.max(0L, Duration.between(
+                            durationStart,
+                            job.getFinishedAt()
+                    ).getSeconds())
+            );
+        }
         result.put("baselineComparison", storedResult.getOrDefault(
                 "baselineComparison",
                 readResult(job.getBaselineComparisonJson())

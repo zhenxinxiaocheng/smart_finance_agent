@@ -25,11 +25,6 @@ public class QuantResearchController {
         this.service = service;
     }
 
-    @GetMapping("/model-families")
-    public Result<List<Map<String, Object>>> modelFamilies() {
-        return Result.success(service.modelFamilies());
-    }
-
     @GetMapping("/parameter-schema")
     public Result<Map<String, Object>> parameterSchema() {
         return Result.success(service.parameterSchema());
@@ -85,14 +80,6 @@ public class QuantResearchController {
     @GetMapping("/data-quality")
     public Result<Map<String, Object>> dataQuality(@RequestAttribute Long userId) {
         return Result.success(service.dataQuality(userId));
-    }
-
-    @GetMapping("/paper-strategies/{id}")
-    public Result<Map<String, Object>> paperStrategy(
-            @RequestAttribute Long userId,
-            @PathVariable Long id
-    ) {
-        return Result.success(service.paperStrategy(userId, id));
     }
 
     public record ExperimentRequest(

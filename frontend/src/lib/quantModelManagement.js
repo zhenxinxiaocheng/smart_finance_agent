@@ -58,3 +58,64 @@ export function shouldShowExecutionPlan(plan, technicalSignal) {
 export function modelCanBeRestored(model) {
   return model?.modelLifecycle === 'PAPER_VERIFIED'
 }
+
+export function formatDuration(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) return '-'
+  const totalSeconds = Math.floor(numeric)
+  if (totalSeconds < 60) return `${totalSeconds}秒`
+
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  if (totalMinutes < 60) {
+    const seconds = totalSeconds % 60
+    return seconds ? `${totalMinutes}分${seconds}秒` : `${totalMinutes}分钟`
+  }
+
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return minutes ? `${hours}小时${minutes}分` : `${hours}小时`
+}
+
+export function trainingDurationView(training, nowMillis = Date.now()) {
+  const estimateSeconds = positiveSeconds(training?.estimatedDurationSeconds)
+  const estimate = estimateSeconds == null
+    ? '预计时长 计算中'
+    : `预计时长 约${formatDuration(estimateSeconds)}`
+  const actualSeconds = positiveSeconds(training?.actualDurationSeconds, true)
+  if (actualSeconds != null) {
+    return {
+      elapsed: `实际耗时 ${formatDuration(actualSeconds)}`,
+      estimate,
+      overdue: null,
+    }
+  }
+
+  const active = training?.executionStatus === 'RUNNING'
+    || ['RUNNING', 'PREPARING_DATA', 'OPTIMIZING'].includes(training?.status)
+  if (!active) return { elapsed: null, estimate, overdue: null }
+
+  const startedAt = training?.startedAt || training?.createdAt
+  const startedMillis = Date.parse(startedAt)
+  if (!Number.isFinite(startedMillis)) {
+    return { elapsed: null, estimate, overdue: null }
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((nowMillis - startedMillis) / 1000))
+  const overdueSeconds = estimateSeconds == null
+    ? null
+    : Math.max(0, elapsedSeconds - estimateSeconds)
+  return {
+    elapsed: `已运行 ${formatDuration(elapsedSeconds)}`,
+    estimate,
+    overdue: overdueSeconds > 0
+      ? `已超过预计时长 ${formatDuration(overdueSeconds)}`
+      : null,
+  }
+}
+
+function positiveSeconds(value, allowZero = false) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return null
+  if (allowZero ? numeric < 0 : numeric <= 0) return null
+  return Math.floor(numeric)
+}

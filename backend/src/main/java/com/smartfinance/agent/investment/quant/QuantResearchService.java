@@ -4,8 +4,6 @@ import java.util.List;
 import java.util.Map;
 
 public interface QuantResearchService {
-    List<Map<String, Object>> modelFamilies();
-
     Map<String, Object> parameterSchema();
 
     List<Map<String, Object>> benchmarks();
@@ -27,5 +25,4 @@ public interface QuantResearchService {
 
     Map<String, Object> dataQuality(Long userId);
 
-    Map<String, Object> paperStrategy(Long userId, Long strategyId);
 }

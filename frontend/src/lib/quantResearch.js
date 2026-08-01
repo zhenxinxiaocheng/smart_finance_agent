@@ -1,8 +1,16 @@
 const TRADABLE_LIFECYCLES = new Set(['VALIDATED', 'PAPER_VERIFIED'])
 
-export function buildDefaultParameters(schema) {
+export function fieldsForAlgorithm(schema, algorithm) {
+  const fields = schema?.fields || []
+  if (!algorithm) return fields
+  return fields.filter(field => !Array.isArray(field.algorithms)
+    || field.algorithms.includes(algorithm))
+}
+
+export function buildDefaultParameters(schema, algorithm) {
   return Object.fromEntries(
-    (schema?.fields || []).map(field => [field.key, field.defaultValue])
+    fieldsForAlgorithm(schema, algorithm)
+      .map(field => [field.key, field.defaultValue])
   )
 }
 

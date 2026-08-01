@@ -57,7 +57,7 @@
             </label>
             <label class="space-y-1.5 text-sm">
               <span class="font-medium">研究资产</span>
-              <select v-model="form.assetId" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring" @change="selectAssetFamily">
+              <select v-model="form.assetId" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring" @change="onAssetChange">
                 <option disabled value="">请选择资产</option>
                 <option v-for="asset in assets" :key="asset.id" :value="String(asset.id)">
                   {{ asset.name }} · {{ asset.code }}
@@ -75,14 +75,14 @@
             <label class="space-y-1.5 text-sm">
               <span class="font-medium">预测周期</span>
               <select v-model="form.horizonCode" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring">
-                <option v-for="horizon in schema.horizons || []" :key="horizon" :value="horizon">
-                  {{ horizonLabel(horizon) }}
+                <option v-for="horizon in horizonOptions" :key="horizon.code" :value="horizon.code">
+                  {{ horizon.displayName }} · {{ horizon.targetHoldingDays }}日
                 </option>
               </select>
             </label>
             <label class="space-y-1.5 text-sm">
               <span class="font-medium">算法</span>
-              <select v-model="form.algorithm" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring">
+              <select v-model="form.algorithm" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-ring" @change="resetParameters">
                 <option v-for="algorithm in schema.algorithms || []" :key="algorithm" :value="algorithm">
                   {{ algorithmLabel(algorithm) }}
                 </option>
@@ -99,7 +99,7 @@
               <Button size="sm" variant="ghost" @click="resetParameters">恢复默认</Button>
             </div>
             <div class="grid gap-3 sm:grid-cols-2">
-              <label v-for="field in schema.fields || []" :key="field.key" class="space-y-1.5 text-sm">
+              <label v-for="field in visibleParameterFields" :key="field.key" class="space-y-1.5 text-sm">
                 <span class="flex items-center justify-between gap-2">
                   <span class="font-medium">{{ field.label }}</span>
                   <span class="text-xs text-muted-foreground">{{ field.minimum }}～{{ field.maximum }}</span>
@@ -302,10 +302,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '@/components/ui/table'
 import { feedback } from '@/lib/feedback'
+import { chooseHorizonCode, horizonDisplayName, normalizeHorizonProfile } from '@/lib/horizonProfile'
 import {
   buildDefaultParameters,
   canPromoteExperiment,
   experimentStatusLabel,
+  fieldsForAlgorithm,
   formatComparison,
   isExperimentTerminal,
   validationCheckRows
@@ -315,7 +317,7 @@ import {
   createQuantExperimentAPI,
   getQuantDataQualityAPI,
   getQuantExperimentAPI,
-  getQuantModelFamiliesAPI,
+  getInvestmentAssetHorizonProfileAPI,
   getQuantParameterSchemaAPI,
   listInvestmentAssetsAPI,
   listQuantBenchmarksAPI,
@@ -332,7 +334,8 @@ const benchmarks = ref([])
 const universes = ref([])
 const experiments = ref([])
 const selected = ref(null)
-const schema = ref({ fields: [], horizons: [], algorithms: [], immutableValidation: {} })
+const schema = ref({ fields: [], algorithms: [], immutableValidation: {} })
+const horizonProfile = ref({ settings: [] })
 const quality = ref({})
 const loading = ref(false)
 const creating = ref(false)
@@ -351,6 +354,11 @@ const runningCount = computed(() => experiments.value.filter(item => !isExperime
 const filteredUniverses = computed(() => universes.value.filter(
   item => item.modelFamily === form.modelFamily
 ))
+const horizonOptions = computed(() => horizonProfile.value.settings || [])
+const visibleParameterFields = computed(() => fieldsForAlgorithm(
+  schema.value,
+  form.algorithm,
+))
 const checkRows = computed(() => validationCheckRows(selected.value?.validationReport))
 const detailMetrics = computed(() => [
   { label: '模型生命周期', value: selected.value?.validationReport?.lifecycle || 'DRAFT' },
@@ -365,9 +373,8 @@ onUnmounted(() => clearTimeout(pollTimer))
 async function loadAll() {
   loading.value = true
   try {
-    const [assetRes, familyRes, schemaRes, benchmarkRes, universeRes, experimentRes, qualityRes] = await Promise.all([
+    const [assetRes, schemaRes, benchmarkRes, universeRes, experimentRes, qualityRes] = await Promise.all([
       listInvestmentAssetsAPI(),
-      getQuantModelFamiliesAPI(),
       getQuantParameterSchemaAPI(),
       listQuantBenchmarksAPI(),
       listQuantResearchUniversesAPI(),
@@ -375,13 +382,14 @@ async function loadAll() {
       getQuantDataQualityAPI()
     ])
     assets.value = assetRes.data || []
-    families.value = familyRes.data || []
     schema.value = schemaRes.data || schema.value
+    families.value = schema.value.modelFamilies || []
     benchmarks.value = benchmarkRes.data || []
     universes.value = universeRes.data || []
     experiments.value = experimentRes.data || []
     quality.value = qualityRes.data || {}
     initializeForm()
+    await loadAssetHorizonProfile(form.horizonCode)
     if (selected.value) {
       selected.value = experiments.value.find(item => item.id === selected.value.id) || selected.value
     } else if (experiments.value.length) {
@@ -395,7 +403,6 @@ async function loadAll() {
 function initializeForm() {
   if (!form.assetId && assets.value.length) form.assetId = String(assets.value[0].id)
   selectAssetFamily()
-  if (!form.horizonCode) form.horizonCode = schema.value.horizons?.[0] || 'SHORT'
   if (!form.algorithm) form.algorithm = schema.value.algorithms?.[2] || schema.value.algorithms?.[0] || 'VALIDATED_ENSEMBLE'
   if (!Object.keys(form.parameters).length) resetParameters()
 }
@@ -406,7 +413,7 @@ async function backToManagement() {
     name: 'QuantModelManagement',
     query: {
       assetId: form.assetId || route.query.assetId,
-      horizonCode: form.horizonCode || route.query.horizonCode || 'MEDIUM',
+      horizonCode: form.horizonCode || route.query.horizonCode,
       historyOpen: route.query.historyOpen || '0',
     },
   })
@@ -415,6 +422,22 @@ async function backToManagement() {
     top: Number.isFinite(returnScroll) ? returnScroll : 0,
     behavior: 'instant',
   }))
+}
+
+async function onAssetChange() {
+  selectAssetFamily()
+  await loadAssetHorizonProfile(form.horizonCode)
+}
+
+async function loadAssetHorizonProfile(requestedCode) {
+  if (!form.assetId) {
+    horizonProfile.value = { settings: [] }
+    form.horizonCode = ''
+    return
+  }
+  const response = await getInvestmentAssetHorizonProfileAPI(form.assetId)
+  horizonProfile.value = normalizeHorizonProfile(response.data)
+  form.horizonCode = chooseHorizonCode(horizonProfile.value, requestedCode)
 }
 
 function selectAssetFamily() {
@@ -444,7 +467,7 @@ function selectDefaultUniverse() {
 }
 
 function resetParameters() {
-  form.parameters = buildDefaultParameters(schema.value)
+  form.parameters = buildDefaultParameters(schema.value, form.algorithm)
 }
 
 async function createExperiment() {
@@ -542,7 +565,7 @@ const assetName = id => {
   const asset = assets.value.find(item => item.id === id)
   return asset ? `${asset.name} · ${asset.code}` : `资产 #${id}`
 }
-const horizonLabel = value => ({ SHORT: '短期', MEDIUM: '中期', LONG: '长期' }[value] || value)
+const horizonLabel = value => horizonDisplayName(horizonProfile.value, value)
 const algorithmLabel = value => ({
   ELASTIC_NET: 'ElasticNet / Logistic',
   XGBOOST: 'XGBoost',

@@ -42,9 +42,13 @@
             v-model="horizonCode"
             class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
           >
-            <option value="SHORT">短期</option>
-            <option value="MEDIUM">中期</option>
-            <option value="LONG">长期</option>
+            <option
+              v-for="horizon in horizonOptions"
+              :key="horizon.code"
+              :value="horizon.code"
+            >
+              {{ horizon.displayName }} · {{ horizon.targetHoldingDays }}日
+            </option>
           </select>
         </label>
       </CardContent>
@@ -57,7 +61,24 @@
             <CardDescription>自动训练状态</CardDescription>
             <CardTitle class="text-base">{{ trainingStatus }}</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent class="space-y-2">
+            <div v-if="management.training?.createdAt" class="flex flex-wrap gap-2 text-xs">
+              <span class="rounded-full border border-border bg-muted/30 px-2.5 py-1 text-muted-foreground">
+                {{ trainingDuration.estimate }}
+              </span>
+              <span
+                v-if="trainingDuration.elapsed"
+                class="rounded-full border border-border bg-muted/30 px-2.5 py-1 font-medium"
+              >
+                {{ trainingDuration.elapsed }}
+              </span>
+              <span
+                v-if="trainingDuration.overdue"
+                class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-amber-500"
+              >
+                {{ trainingDuration.overdue }}
+              </span>
+            </div>
             <p class="text-sm text-muted-foreground">{{ trainingTime }}</p>
           </CardContent>
         </Card>
@@ -211,7 +232,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BrainCircuit,
@@ -226,8 +247,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { feedback } from '@/lib/feedback'
+import { chooseHorizonCode, horizonDisplayName, normalizeHorizonProfile } from '@/lib/horizonProfile'
 import {
   actionLabel,
+  trainingDurationView,
   formatModelStatus,
   formatTrainingStatus,
   modelCanBeRestored,
@@ -236,6 +259,7 @@ import {
 } from '@/lib/quantModelManagement'
 import {
   activateQuantAssetModelAPI,
+  getInvestmentAssetHorizonProfileAPI,
   getQuantActionPlanAPI,
   getQuantModelManagementAPI,
   listInvestmentAssetsAPI,
@@ -247,7 +271,8 @@ const route = useRoute()
 const router = useRouter()
 const assets = ref([])
 const assetId = ref(route.query.assetId ? String(route.query.assetId) : '')
-const horizonCode = ref(String(route.query.horizonCode || 'MEDIUM').toUpperCase())
+const horizonCode = ref(String(route.query.horizonCode || '').toUpperCase())
+const horizonProfile = ref({ settings: [] })
 const management = ref({})
 const actionPlan = ref({ status: 'PAUSED', action: 'PAUSE', stopConditions: [] })
 const models = ref([])
@@ -255,10 +280,18 @@ const loading = ref(false)
 const training = ref(false)
 const restoring = ref('')
 const historyOpen = ref(route.query.historyOpen === '1')
+const durationNow = ref(Date.now())
 let trainingPollTimer = null
+let durationTimer = null
+let initialized = false
+let suppressHorizonWatch = false
 
 const trainingStatus = computed(() => formatTrainingStatus(management.value.training))
 const trainingSessionActive = computed(() => isTrainingActive(management.value.training))
+const trainingDuration = computed(() => trainingDurationView(
+  management.value.training,
+  durationNow.value,
+))
 const trainingTime = computed(() => {
   const trainingItem = management.value.training
   if (!trainingItem?.createdAt) return '数据更新后会自动检查是否需要训练'
@@ -268,6 +301,7 @@ const predictionMetrics = computed(() => visiblePredictionMetrics(actionPlan.val
 const visibleModels = computed(() => models.value.filter(
   model => model.modelLifecycle !== 'DRAFT'
 ))
+const horizonOptions = computed(() => horizonProfile.value.settings || [])
 
 const PlanMetric = defineComponent({
   props: { label: String, value: String },
@@ -279,17 +313,26 @@ const PlanMetric = defineComponent({
   },
 })
 
-onMounted(loadAll)
-onBeforeUnmount(stopTrainingPolling)
+onMounted(() => {
+  durationTimer = window.setInterval(() => {
+    durationNow.value = Date.now()
+  }, 1000)
+  loadAll()
+})
+onBeforeUnmount(() => {
+  stopTrainingPolling()
+  if (durationTimer) window.clearInterval(durationTimer)
+})
 
 watch(assetId, async value => {
-  if (!value) return
+  if (!initialized || !value) return
+  await loadAssetHorizonProfile(horizonCode.value)
   await router.replace({ query: { ...route.query, assetId: value, horizonCode: horizonCode.value } })
   await loadManagement()
 })
 
 watch(horizonCode, async value => {
-  if (!assetId.value) return
+  if (!initialized || suppressHorizonWatch || !assetId.value || !value) return
   await router.replace({ query: { ...route.query, assetId: assetId.value, horizonCode: value } })
   await loadManagement()
 })
@@ -302,10 +345,26 @@ async function loadAll() {
     if (!assets.value.some(item => String(item.id) === assetId.value)) {
       assetId.value = assets.value.length ? String(assets.value[0].id) : ''
     }
-    if (assetId.value) await loadManagement()
+    if (assetId.value) {
+      await loadAssetHorizonProfile(horizonCode.value)
+      initialized = true
+      await router.replace({ query: { ...route.query, assetId: assetId.value, horizonCode: horizonCode.value } })
+      await loadManagement()
+    } else {
+      initialized = true
+    }
   } finally {
     loading.value = false
   }
+}
+
+async function loadAssetHorizonProfile(requestedCode) {
+  const response = await getInvestmentAssetHorizonProfileAPI(assetId.value)
+  horizonProfile.value = normalizeHorizonProfile(response.data)
+  suppressHorizonWatch = true
+  horizonCode.value = chooseHorizonCode(horizonProfile.value, requestedCode)
+  await nextTick()
+  suppressHorizonWatch = false
 }
 
 async function loadManagement(silent = false) {
@@ -407,7 +466,7 @@ function roleLabel(role) {
 }
 
 function horizonLabel(code) {
-  return { SHORT: '短期', MEDIUM: '中期', LONG: '长期' }[code] || '未知周期'
+  return horizonDisplayName(horizonProfile.value, code)
 }
 
 function technicalSignalLabel(signal) {

@@ -16,7 +16,6 @@ class QuantResearchControllerTest {
     void exposesCatalogAndAuthenticatedExperimentOperations() {
         QuantResearchService service = mock(QuantResearchService.class);
         QuantResearchController controller = new QuantResearchController(service);
-        List<Map<String, Object>> families = List.of(Map.of("code", "A_SHARE_STOCK"));
         List<Map<String, Object>> universes = List.of(Map.of(
                 "id", 3L,
                 "modelFamily", "A_SHARE_STOCK"
@@ -30,14 +29,12 @@ class QuantResearchControllerTest {
                         "SHORT",
                         Map.of("learningRate", 0.05)
                 );
-        when(service.modelFamilies()).thenReturn(families);
         when(service.researchUniverses()).thenReturn(universes);
         when(service.parameterSchema()).thenReturn(schema);
         when(service.createExperiment(7L, request)).thenReturn(created);
         when(service.experiments(7L)).thenReturn(List.of(created));
         when(service.experiment(7L, 99L)).thenReturn(created);
 
-        assertThat(controller.modelFamilies().getData()).isSameAs(families);
         assertThat(controller.researchUniverses().getData()).isSameAs(universes);
         assertThat(controller.parameterSchema().getData()).isSameAs(schema);
         assertThat(controller.createExperiment(7L, request).getData()).isSameAs(created);

@@ -88,16 +88,6 @@ public class InvestmentController {
         return Result.success(investmentService.commitImport(userId, request));
     }
 
-    @GetMapping("/analysis")
-    public Result<Map<String, Object>> analysis(@RequestAttribute Long userId) {
-        return Result.success(investmentService.analysis(userId));
-    }
-
-    @GetMapping("/recommendations")
-    public Result<List<Map<String, Object>>> recommendations(@RequestAttribute Long userId) {
-        return Result.success(investmentService.recommendations(userId));
-    }
-
     @PostMapping("/sync")
     public Result<Map<String, Object>> sync(@RequestAttribute Long userId) {
         return Result.success(investmentService.requestSync(userId));

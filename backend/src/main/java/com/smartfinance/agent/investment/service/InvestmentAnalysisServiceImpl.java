@@ -99,11 +99,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     @Override
-    public InvestmentAssetDetailResponse analysis(Long userId, Long assetId) {
-        return readOnlyDetail(userId, assetId);
-    }
-
-    @Override
     @Transactional
     public InvestmentAssetDetailResponse updatePreference(Long userId, Long assetId,
                                                            HorizonProfileRequest request) {
