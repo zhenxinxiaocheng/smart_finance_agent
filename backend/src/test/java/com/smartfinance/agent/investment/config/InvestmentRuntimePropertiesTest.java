@@ -17,11 +17,6 @@ class InvestmentRuntimePropertiesTest {
     void runtimeBusinessRulesShouldBeRepresentedByOneVersionedConfiguration() {
         InvestmentRuntimeProperties properties = new InvestmentRuntimeProperties();
         properties.setParameterVersion("investment-runtime-test");
-        properties.getAction().setScoreCenter(new BigDecimal("60"));
-        properties.getAction().setScoreDistance(new BigDecimal("20"));
-        properties.getAction().setBatchCount(2);
-        properties.getAction().setStockBoardLotSize(new BigDecimal("50"));
-        properties.getAction().setFundQuantityScale(4);
         properties.getRisk().setEmergencyReserveMonths(new BigDecimal("4"));
         properties.getRisk().setAssetConcentrationWarningPercent(new BigDecimal("25"));
         properties.getRisk().setPortfolioConcentrationWarningRatio(new BigDecimal("0.25"));
@@ -74,7 +69,6 @@ class InvestmentRuntimePropertiesTest {
         properties.validate();
 
         assertThat(properties.getParameterVersion()).isEqualTo("investment-runtime-test");
-        assertThat(properties.getAction().getBatchCount()).isEqualTo(2);
         assertThat(properties.getRisk().getAssetConcentrationWarningPercent())
                 .isEqualByComparingTo("25");
         assertThat(properties.getSync().getFxLookbackCalendarDays()).isEqualTo(21);

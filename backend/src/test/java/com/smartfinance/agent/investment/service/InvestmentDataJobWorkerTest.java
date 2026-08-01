@@ -437,6 +437,7 @@ class InvestmentDataJobWorkerTest {
         InvestmentAssetDetailResponse detail = fixture.service().detail(7L, 11L);
 
         assertThat(detail.getSourceStatus()).containsEntry("historyJob", Map.of());
+        assertThat(detail.getPersonalizedAction()).isEmpty();
         verify(fixture.jobService(), never())
                 .ensureQueued(any(), any(), any(), anyString(), anyBoolean());
         verifyNoInteractions(fixture.analysisClient(), fixture.syncWorker());
@@ -480,7 +481,6 @@ class InvestmentDataJobWorkerTest {
         WealthService wealthService = mock(WealthService.class);
         FinancialProfileMapper financialProfileMapper = mock(FinancialProfileMapper.class);
         InvestmentAiExplanationService aiExplanationService = mock(InvestmentAiExplanationService.class);
-        PersonalizedActionCalculator actionCalculator = mock(PersonalizedActionCalculator.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
         QuantStrategyVersionMapper strategyMapper = mock(QuantStrategyVersionMapper.class);
         QuantModelMonitorMapper monitorMapper = mock(QuantModelMonitorMapper.class);
@@ -516,7 +516,7 @@ class InvestmentDataJobWorkerTest {
         InvestmentAnalysisServiceImpl service = new InvestmentAnalysisServiceImpl(
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
                 runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
-                wealthService, financialProfileMapper, aiExplanationService, actionCalculator,
+                wealthService, financialProfileMapper, aiExplanationService,
                 new ObjectMapper(), jobService,
                 new InvestmentFinancialWarningEngine(runtimeProperties),
                 strategyMapper, monitorMapper);

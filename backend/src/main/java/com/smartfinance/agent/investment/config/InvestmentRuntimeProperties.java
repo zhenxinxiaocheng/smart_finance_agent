@@ -22,7 +22,6 @@ import java.util.Map;
 public class InvestmentRuntimeProperties {
 
     private String parameterVersion;
-    private Action action = new Action();
     private Risk risk = new Risk();
     private Sync sync = new Sync();
     private Market market = new Market();
@@ -35,11 +34,6 @@ public class InvestmentRuntimeProperties {
     @PostConstruct
     public void validate() {
         requireText(parameterVersion, "parameter-version");
-        requirePositive(action.scoreDistance, "action.score-distance");
-        requirePositive(action.scoreCenter, "action.score-center");
-        requirePositive(action.stockBoardLotSize, "action.stock-board-lot-size");
-        requirePositive(action.batchCount, "action.batch-count");
-        requireNonNegative(action.fundQuantityScale, "action.fund-quantity-scale");
         requirePositive(risk.emergencyReserveMonths, "risk.emergency-reserve-months");
         requirePercent(risk.assetConcentrationWarningPercent, "risk.asset-concentration-warning-percent");
         requireRatio(risk.portfolioConcentrationWarningRatio, "risk.portfolio-concentration-warning-ratio");
@@ -109,10 +103,6 @@ public class InvestmentRuntimeProperties {
         if (value <= 0) throw invalid(field + " 必须大于 0");
     }
 
-    private static void requireNonNegative(int value, String field) {
-        if (value < 0) throw invalid(field + " 不能小于 0");
-    }
-
     private static void requirePercent(BigDecimal value, String field) {
         if (value == null || value.signum() < 0 || value.compareTo(new BigDecimal("100")) > 0) {
             throw invalid(field + " 必须在 0 到 100 之间");
@@ -127,15 +117,6 @@ public class InvestmentRuntimeProperties {
 
     private static IllegalStateException invalid(String message) {
         return new IllegalStateException("investment.runtime." + message);
-    }
-
-    @Data
-    public static class Action {
-        private BigDecimal scoreCenter;
-        private BigDecimal scoreDistance;
-        private int batchCount;
-        private BigDecimal stockBoardLotSize;
-        private int fundQuantityScale;
     }
 
     @Data

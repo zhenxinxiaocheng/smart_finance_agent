@@ -6,6 +6,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.util.List;
@@ -138,7 +139,8 @@ class AnalysisServiceClientTest {
                 .andExpect(content().json("""
                         {"records":[{"data_date":"2026-07-14","close":"10.50"}],
                          "horizons":{"WAVE":[7,33],"POSITION":[55,233]},
-                         "primaryHorizon":"WAVE"}
+                         "primaryHorizon":"WAVE",
+                         "marketSnapshot":{"turnoverRate":3.79,"volumeRatio":2.61,"amplitude":6.63}}
                         """))
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("riskPreference"))))
@@ -148,7 +150,10 @@ class AnalysisServiceClientTest {
         Map<String, Object> result = client.technicalAnalysis(
                 List.of(Map.of("data_date", "2026-07-14", "close", "10.50")),
                 Map.of("WAVE", List.of(7, 33), "POSITION", List.of(55, 233)),
-                "WAVE");
+                "WAVE",
+                Map.of("turnoverRate", new BigDecimal("3.79"),
+                        "volumeRatio", new BigDecimal("2.61"),
+                        "amplitude", new BigDecimal("6.63")));
 
         assertThat(result.get("score")).isEqualTo(72);
         server.verify();

@@ -145,11 +145,13 @@ public class AnalysisServiceClient {
 
     public Map<String, Object> technicalAnalysis(List<? extends Map<String, ?>> records,
                                                  Map<String, ? extends List<Integer>> horizons,
-                                                 String primaryHorizon) {
+                                                 String primaryHorizon,
+                                                 Map<String, ?> marketSnapshot) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("records", records);
         body.put("horizons", horizons);
         body.put("primaryHorizon", primaryHorizon);
+        body.put("marketSnapshot", marketSnapshot == null ? Map.of() : marketSnapshot);
         return postAnalysis("/internal/v1/analysis/technical", body);
     }
 

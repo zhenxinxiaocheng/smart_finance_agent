@@ -47,7 +47,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final FinancialProfileMapper financialProfileMapper;
     private final InvestmentAiExplanationService aiExplanationService;
     private final ObjectMapper objectMapper;
-    private final PersonalizedActionCalculator actionCalculator;
     private final InvestmentDataJobService dataJobService;
     private final InvestmentFinancialWarningEngine warningEngine;
     private final QuantStrategyVersionMapper quantStrategyMapper;
@@ -66,7 +65,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          WealthService wealthService,
                                          FinancialProfileMapper financialProfileMapper,
                                          InvestmentAiExplanationService aiExplanationService,
-                                         PersonalizedActionCalculator actionCalculator,
                                          ObjectMapper objectMapper,
                                          InvestmentDataJobService dataJobService,
                                          InvestmentFinancialWarningEngine warningEngine,
@@ -85,7 +83,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.wealthService = wealthService;
         this.financialProfileMapper = financialProfileMapper;
         this.aiExplanationService = aiExplanationService;
-        this.actionCalculator = actionCalculator;
         this.objectMapper = objectMapper;
         this.dataJobService = dataJobService;
         this.warningEngine = warningEngine;
@@ -155,19 +152,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 : readMap(snapshot.getBacktestJson());
         WealthOverviewResponse wealth = wealthService.overview(userId);
         BigDecimal technicalScore = score(technical);
-        Map<String, Object> actionMap = new LinkedHashMap<>();
-        if (blocked || technicalScore == null) {
-            actionMap.put("status", "INSUFFICIENT");
-            actionMap.put("reason", blocked ? "可靠数据正在准备中，暂不生成数量建议"
-                    : "当前没有有效分析结果，因此不生成数量建议");
-            actionMap.put("batches", List.of());
-        } else {
-            PersonalizedActionCalculator.Result action = actionCalculator.calculate(
-                    product.getProductType(), technicalScore, asset.getLatestPrice(),
-                    wealth.getInvestmentCash(), asset.getQuantity());
-            actionMap.putAll(objectMapper.convertValue(action, new TypeReference<>() { }));
-        }
-        if (technical.get("actionZones") instanceof Map<?, ?> zones) actionMap.put("priceZones", zones);
         Map<String, Object> sourceStatus = new LinkedHashMap<>();
         sourceStatus.put("dataState", historicalCache ? "STABLE_CACHE" : snapshot == null ? "PREPARING" : "READY");
         sourceStatus.put("quoteStatus", quotes.size() >= horizonProperties.getMinimumHistoryTradingDays()
@@ -199,15 +183,11 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 datasetVersion, analysisVersion, calculatedAt,
                 "DETERMINISTIC_ANALYSIS"
         );
-        actionMap.put("provenance", provenance(
-                asset, horizonProfile.primaryCode(), datasetVersion,
-                analysisVersion, calculatedAt, "RULE_CALCULATION"
-        ));
         InvestmentAssetDetailResponse response = new InvestmentAssetDetailResponse();
         response.setAsset(asset);
         response.setTechnicalAnalysis(technical);
         response.setFundamentalAnalysis(fundamental);
-        response.setPersonalizedAction(actionMap);
+        response.setPersonalizedAction(Map.of());
         Map<String, Object> warningSource = new LinkedHashMap<>(quality);
         if (blocked) {
             warningSource.put("decision", "BLOCK");
@@ -378,7 +358,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                     fundamental = Map.of("status", "NOT_APPLICABLE", "verdict", "NOT_APPLICABLE");
                 } else {
                     technical = analysisClient.technicalAnalysis(
-                            records, horizons, horizonProfile.primaryCode());
+                            records, horizons, horizonProfile.primaryCode(), marketSnapshot(asset));
                     fundamental = analysisClient.fundamentalAnalysis(product.getCode(), product.getMarket());
                     fund = Map.of();
                 }
@@ -416,33 +396,13 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         WealthOverviewResponse wealth = wealthService.overview(userId);
         asset = assetService.get(userId, assetId);
         BigDecimal score = score(technical);
-        Map<String, Object> actionMap = new LinkedHashMap<>();
-        if (qualityBlocked) {
-            actionMap.put("status", "INSUFFICIENT");
-            actionMap.put("reason", "可靠数据正在准备中，暂不生成数量建议");
-            actionMap.put("batches", List.of());
-        } else if (score == null) {
-            actionMap.put("status", "INSUFFICIENT");
-            actionMap.put("reason", technical.getOrDefault(
-                    "reason", "当前策略没有生成有效评分，因此不生成数量建议"));
-            actionMap.put("batches", List.of());
-        } else {
-            PersonalizedActionCalculator.Result action = actionCalculator.calculate(
-                    product.getProductType(), score, asset.getLatestPrice(),
-                    wealth.getInvestmentCash(), asset.getQuantity());
-            actionMap.putAll(objectMapper.convertValue(action, new TypeReference<>() { }));
-        }
-        if (technical.get("actionZones") instanceof Map<?, ?> zones) {
-            actionMap.put("priceZones", zones);
-        }
         if (!qualityBlocked && !historicalCacheUsed && snapshot != null && snapshot.getId() != null) {
             Map<String, Object> technicalSignal = new LinkedHashMap<>();
             technicalSignal.put("score", technical.get("score"));
             technicalSignal.put("verdict", technical.getOrDefault(
                     "verdict", technical.getOrDefault("action", "INSUFFICIENT")));
             technicalSignal.put("zones", technical.getOrDefault("actionZones", Map.of()));
-            String combinedSignalHash = hash(writeJson(Map.of(
-                    "technical", technicalSignal, "personalizedAction", actionMap)));
+            String combinedSignalHash = hash(writeJson(Map.of("technical", technicalSignal)));
             boolean signalChanged = invalidateStaleExplanation(snapshot, combinedSignalHash);
             boolean explanationNeedsRefresh = signalChanged
                     || snapshot.getAiExplanation() == null || snapshot.getAiExplanation().isBlank();
@@ -451,7 +411,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             }
             if (explanationNeedsRefresh) {
                 aiExplanationService.refreshIfAllowed(snapshot.getId(), combinedSignalHash, product.getName(),
-                        writeJson(technical), writeJson(fundamental), writeJson(actionMap));
+                        writeJson(technical), writeJson(fundamental));
             }
         }
         List<Map<String, Object>> warnings = financialWarnings(
@@ -492,15 +452,11 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 datasetVersion, analysisVersion, calculatedAt,
                 "DETERMINISTIC_ANALYSIS"
         );
-        actionMap.put("provenance", provenance(
-                asset, horizonProfile.primaryCode(), datasetVersion,
-                analysisVersion, calculatedAt, "RULE_CALCULATION"
-        ));
         InvestmentAssetDetailResponse response = new InvestmentAssetDetailResponse();
         response.setAsset(asset);
         response.setTechnicalAnalysis(technical);
         response.setFundamentalAnalysis(fundamental);
-        response.setPersonalizedAction(actionMap);
+        response.setPersonalizedAction(Map.of());
         response.setFinancialWarnings(warnings);
         response.setDisclaimer(disclaimer(
                 asset,
@@ -609,6 +565,14 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             item.put("volume", quote.getVolume());
             return item;
         }).toList();
+    }
+
+    private static Map<String, Object> marketSnapshot(InvestmentAssetView asset) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        if (asset.getTurnoverRate() != null) snapshot.put("turnoverRate", asset.getTurnoverRate());
+        if (asset.getVolumeRatio() != null) snapshot.put("volumeRatio", asset.getVolumeRatio());
+        if (asset.getAmplitude() != null) snapshot.put("amplitude", asset.getAmplitude());
+        return snapshot;
     }
 
     private String configuredAdjustType(InvestmentProduct product) {

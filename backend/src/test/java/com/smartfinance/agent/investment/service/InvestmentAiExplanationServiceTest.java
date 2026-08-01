@@ -4,11 +4,14 @@ import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.InvestmentAnalysisSnapshot;
 import com.smartfinance.agent.investment.mapper.InvestmentAnalysisSnapshotMapper;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,7 +31,7 @@ class InvestmentAiExplanationServiceTest {
         when(mapper.selectById(9L)).thenReturn(snapshot);
         InvestmentAiExplanationService service = new InvestmentAiExplanationService(mapper, model, runtimeProperties(30));
 
-        service.refreshIfAllowed(9L, "same", "贵州茅台", "{}", "{}", "{}");
+        service.refreshIfAllowed(9L, "same", "贵州茅台", "{}", "{}");
 
         verifyNoInteractions(model);
         verify(mapper, never()).updateById(any());
@@ -48,7 +51,7 @@ class InvestmentAiExplanationServiceTest {
         when(model.generate(anyList())).thenReturn(Response.from(AiMessage.from("过时解释")));
         InvestmentAiExplanationService service = new InvestmentAiExplanationService(mapper, model, runtimeProperties(30));
 
-        service.refreshIfAllowed(9L, "expected", "贵州茅台", "{}", "{}", "{}");
+        service.refreshIfAllowed(9L, "expected", "贵州茅台", "{}", "{}");
 
         verify(mapper, never()).updateById(any());
     }
@@ -64,7 +67,7 @@ class InvestmentAiExplanationServiceTest {
         when(mapper.selectById(9L)).thenReturn(snapshot);
         InvestmentAiExplanationService service = new InvestmentAiExplanationService(mapper, model, runtimeProperties(45));
 
-        service.refreshIfAllowed(9L, "same", "资产", "{}", "{}", "{}");
+        service.refreshIfAllowed(9L, "same", "资产", "{}", "{}");
 
         verifyNoInteractions(model);
     }
@@ -112,7 +115,7 @@ class InvestmentAiExplanationServiceTest {
         InvestmentAiExplanationService service =
                 new InvestmentAiExplanationService(mapper, model, runtimeProperties(30));
 
-        service.refreshIfAllowed(9L, "same", "测试资产", "{}", "{}", "{}");
+        service.refreshIfAllowed(9L, "same", "测试资产", "{}", "{}");
 
         verify(mapper).updateById(snapshot);
         @SuppressWarnings("unchecked")
@@ -121,6 +124,12 @@ class InvestmentAiExplanationServiceTest {
         assertThat(saved).containsEntry("summary", "短期偏弱，先观察");
         assertThat((java.util.List<?>) saved.get("reasons")).hasSize(3);
         assertThat((java.util.List<?>) saved.get("risks")).hasSize(3);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> messages = ArgumentCaptor.forClass(List.class);
+        verify(model).generate(messages.capture());
+        assertThat(messages.getValue())
+                .allSatisfy(message -> assertThat(message.toString())
+                        .doesNotContain("个性化数量参考"));
     }
 
     private static InvestmentRuntimeProperties runtimeProperties(int cooldownMinutes) {

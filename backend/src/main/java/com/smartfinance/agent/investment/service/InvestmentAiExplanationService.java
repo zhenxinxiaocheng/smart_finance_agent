@@ -42,7 +42,7 @@ public class InvestmentAiExplanationService {
 
     @Async
     public void refreshIfAllowed(Long snapshotId, String expectedSignalHash, String assetName,
-                                 String technicalJson, String fundamentalJson, String personalizedJson) {
+                                 String technicalJson, String fundamentalJson) {
         InvestmentAnalysisSnapshot snapshot = snapshotMapper.selectById(snapshotId);
         if (snapshot == null || !Objects.equals(snapshot.getSignalHash(), expectedSignalHash)) return;
         if (snapshot.getAiUpdatedAt() != null
@@ -51,7 +51,7 @@ public class InvestmentAiExplanationService {
         try {
             String response = chatModel.generate(List.of(
                     SystemMessage.from("""
-                            你是投资分析解释助手。只解释给定的确定性分析结果，不修改评分、支撑压力、价位或数量。
+                            你是投资分析解释助手。只解释给定的确定性分析结果，不修改评分、走势方向或支撑压力。
                             面向没有金融和算法知识的普通用户，使用短句，不承诺收益。
                             只返回 JSON，不要 Markdown：
                             {"summary":"一句结论","reasons":["最多3条原因"],"risks":["最多3条风险"],"technicalDetails":"可展开的技术详情"}
@@ -61,12 +61,10 @@ public class InvestmentAiExplanationService {
                             资产：%s
                             技术分析：%s
                             基本面分析：%s
-                            个性化数量参考：%s
                             """.formatted(
                                     assetName,
                                     sanitizeJson(technicalJson),
-                                    sanitizeJson(fundamentalJson),
-                                    sanitizeJson(personalizedJson)
+                                    sanitizeJson(fundamentalJson)
                             ))
             )).content().text();
             Map<String, Object> explanation = structuredExplanation(response);
