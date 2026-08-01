@@ -18,6 +18,11 @@ public class QuantModelVersion {
     private String productType;
     private Integer horizonDays;
     private String status;
+    private String deploymentStatus;
+    private String economicRole;
+    private String optimizationStudyId;
+    private Integer optimizationGeneration;
+    private String baselineComparisonJson;
     private String artifactUri;
     private String artifactHash;
     private String metricsJson;

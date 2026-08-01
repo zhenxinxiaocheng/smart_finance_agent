@@ -80,6 +80,8 @@ agent:
 analysis-service:
   base-url: ${ANALYSIS_SERVICE_URL:http://127.0.0.1:8090}
   internal-token: ${ANALYSIS_INTERNAL_TOKEN:dev-analysis-token}
+  benchmark-connect-timeout: ${ANALYSIS_BENCHMARK_CONNECT_TIMEOUT:10s}
+  benchmark-read-timeout: ${ANALYSIS_BENCHMARK_READ_TIMEOUT:90s}
 
 investment:
   plan:

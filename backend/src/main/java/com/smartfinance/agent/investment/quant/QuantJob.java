@@ -19,6 +19,14 @@ public class QuantJob {
     private String externalJobId;
     private String jobType;
     private String status;
+    private String executionStatus;
+    private String trainingOutcome;
+    private String deploymentStatus;
+    private String economicRole;
+    private String optimizationStudyId;
+    private Integer optimizationGeneration;
+    private String baselineComparisonJson;
+    private String diagnosticsJson;
     private String experimentFingerprint;
     private String requestFingerprint;
     private String errorCode;

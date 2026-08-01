@@ -22,6 +22,37 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_quant_training_contract_accepts_all_supported_strategy_families(self):
+        supported = {
+            "ELASTIC_NET",
+            "XGBOOST",
+            "EXTRA_TREES",
+            "TREND_VOLATILITY",
+            "RISK_FILTERED_MEAN_REVERSION",
+            "REGIME_ENSEMBLE",
+        }
+
+        for algorithm in supported:
+            request = QuantJobRequest.model_validate({
+                "type": "AUTO_SEARCH",
+                "datasetVersion": "d" * 64,
+                "productType": "MUTUAL_FUND",
+                "horizonDays": 60,
+                "algorithm": algorithm,
+                "records": price_records(2),
+            })
+            self.assertEqual(algorithm, request.algorithm)
+
+        with self.assertRaises(ValidationError):
+            QuantJobRequest.model_validate({
+                "type": "AUTO_SEARCH",
+                "datasetVersion": "d" * 64,
+                "productType": "MUTUAL_FUND",
+                "horizonDays": 60,
+                "algorithm": "LSTM",
+                "records": price_records(2),
+            })
+
     def test_quant_training_contract_accepts_backend_portfolio_context(self):
         request = QuantJobRequest.model_validate({
             "type": "TRAIN_PREDICT",

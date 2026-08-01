@@ -38,28 +38,31 @@ public class QuantBenchmarkProfileService {
         this.objectMapper = objectMapper;
     }
 
+    public ResolvedBenchmark resolveCached(String productType,
+                                           String productCode,
+                                           LocalDate asOfDate,
+                                           LocalDate startDate,
+                                           LocalDate endDate) {
+        BenchmarkProfile profile = configuration(productType, productCode, asOfDate);
+        if (profile == null) {
+            return ResolvedBenchmark.unavailable("未配置当前资产的版本化官方基准");
+        }
+        QuantBenchmarkSnapshot cached = cachedSnapshot(profile.getId(), startDate, endDate);
+        if (cached == null) {
+            return ResolvedBenchmark.unavailable(
+                    profile,
+                    "官方基准历史行情尚未准备完成"
+            );
+        }
+        return resolved(profile, cached, readRecords(cached.getRecordsJson()), startDate, endDate);
+    }
+
     public ResolvedBenchmark resolve(String productType,
                                      String productCode,
                                      LocalDate asOfDate,
                                      LocalDate startDate,
                                      LocalDate endDate) {
-        List<BenchmarkProfile> profiles = benchmarkMapper.selectList(
-                new LambdaQueryWrapper<BenchmarkProfile>()
-                        .eq(BenchmarkProfile::getProductType, productType)
-                        .eq(BenchmarkProfile::getActive, true)
-                        .le(BenchmarkProfile::getEffectiveFrom, asOfDate)
-                        .and(query -> query.isNull(BenchmarkProfile::getEffectiveTo)
-                                .or()
-                                .ge(BenchmarkProfile::getEffectiveTo, asOfDate))
-                        .orderByDesc(BenchmarkProfile::getEffectiveFrom)
-        );
-        BenchmarkProfile profile = profiles.stream()
-                .filter(item -> productCode.equals(item.getProductCode()))
-                .findFirst()
-                .orElseGet(() -> profiles.stream()
-                        .filter(item -> item.getProductCode() == null || item.getProductCode().isBlank())
-                        .findFirst()
-                        .orElse(null));
+        BenchmarkProfile profile = configuration(productType, productCode, asOfDate);
         if (profile == null) {
             return ResolvedBenchmark.unavailable("未配置当前资产的版本化官方基准");
         }
@@ -82,6 +85,28 @@ public class QuantBenchmarkProfileService {
         } catch (RuntimeException exception) {
             return ResolvedBenchmark.unavailable("官方基准数据获取失败：" + concise(exception.getMessage()));
         }
+    }
+
+    public BenchmarkProfile configuration(String productType,
+                                          String productCode,
+                                          LocalDate asOfDate) {
+        List<BenchmarkProfile> profiles = benchmarkMapper.selectList(
+                new LambdaQueryWrapper<BenchmarkProfile>()
+                        .eq(BenchmarkProfile::getProductType, productType)
+                        .eq(BenchmarkProfile::getActive, true)
+                        .le(BenchmarkProfile::getEffectiveFrom, asOfDate)
+                        .and(query -> query.isNull(BenchmarkProfile::getEffectiveTo)
+                                .or()
+                                .ge(BenchmarkProfile::getEffectiveTo, asOfDate))
+                        .orderByDesc(BenchmarkProfile::getEffectiveFrom)
+        );
+        return profiles.stream()
+                .filter(item -> productCode.equals(item.getProductCode()))
+                .findFirst()
+                .orElseGet(() -> profiles.stream()
+                        .filter(item -> item.getProductCode() == null || item.getProductCode().isBlank())
+                        .findFirst()
+                        .orElse(null));
     }
 
     private QuantBenchmarkSnapshot cachedSnapshot(Long profileId,
@@ -239,6 +264,19 @@ public class QuantBenchmarkProfileService {
                     false,
                     null,
                     null,
+                    null,
+                    List.of(),
+                    "BENCHMARK_UNAVAILABLE",
+                    summary
+            );
+        }
+
+        private static ResolvedBenchmark unavailable(BenchmarkProfile profile,
+                                                     String summary) {
+            return new ResolvedBenchmark(
+                    false,
+                    profile.getBenchmarkCode(),
+                    profile.getModelFamily(),
                     null,
                     List.of(),
                     "BENCHMARK_UNAVAILABLE",

@@ -48,14 +48,30 @@
       "columnSample": 0.8,
       "l1Regularization": 0.1,
       "l2Regularization": 2.0
+    },
+    "extraTrees": {
+      "estimators": 192,
+      "maximumDepth": 4,
+      "minimumLeaf": 3,
+      "maximumFeatures": 0.7
     }
   },
   "autoSearch": {
-    "maximumCandidates": 6,
-    "timeBudgetSeconds": 900,
-    "noImprovementLimit": 3,
+    "timeBudgetSeconds": 1800,
     "finalHoldoutFraction": 0.2,
     "minimumFinalHoldoutSamples": 40,
+    "failureRouting": {
+      "maximumPbo": 0.2,
+      "minimumDeflatedSharpeProbability": 0.95,
+      "maximumTurnover": 2.0,
+      "minimumCostStressReturn": 0.0,
+      "minimumCalibrationSlope": 0.8,
+      "maximumCalibrationSlope": 1.2,
+      "maximumAbsoluteCalibrationIntercept": 0.05,
+      "minimumStableFoldRatio": 0.6,
+      "maximumCrossWindowVolatility": 0.25,
+      "minimumNetExcess": 0.0
+    },
     "finalHoldoutValidation": {
       "minimumSamples": 40,
       "minimumOosR2": 0.0,
@@ -65,49 +81,256 @@
       "minimumIntervalCoverage": 0.75,
       "maximumIntervalCoverage": 0.85
     },
-    "candidates": [
+    "strategies": [
       {
         "algorithm": "ELASTIC_NET",
-        "parameters": {
-          "classificationC": 0.5,
-          "regressionAlpha": 0.001
-        }
+        "parameters": [
+          {
+            "name": "classificationC",
+            "configPath": "training.elasticNet.classificationC",
+            "type": "float",
+            "low": 0.01,
+            "high": 10.0,
+            "log": true
+          },
+          {
+            "name": "regressionAlpha",
+            "configPath": "training.elasticNet.regressionAlpha",
+            "type": "float",
+            "low": 0.00001,
+            "high": 0.1,
+            "log": true
+          },
+          {
+            "name": "elasticNetL1Ratio",
+            "configPath": "training.elasticNet.l1Ratio",
+            "type": "float",
+            "low": 0.05,
+            "high": 0.95
+          }
+        ]
       },
       {
-        "algorithm": "GRADIENT_BOOSTING",
-        "parameters": {
-          "estimators": 48,
-          "maximumDepth": 3,
-          "learningRate": 0.05
-        }
+        "algorithm": "XGBOOST",
+        "parameters": [
+          {
+            "name": "estimators",
+            "configPath": "training.xgboost.estimators",
+            "type": "int",
+            "low": 32,
+            "high": 512,
+            "step": 32
+          },
+          {
+            "name": "maximumDepth",
+            "configPath": "training.xgboost.maximumDepth",
+            "type": "int",
+            "low": 1,
+            "high": 6
+          },
+          {
+            "name": "learningRate",
+            "configPath": "training.xgboost.learningRate",
+            "type": "float",
+            "low": 0.005,
+            "high": 0.2,
+            "log": true
+          },
+          {
+            "name": "xgbSubsample",
+            "configPath": "training.xgboost.subsample",
+            "type": "float",
+            "low": 0.6,
+            "high": 1.0
+          },
+          {
+            "name": "xgbColumnSample",
+            "configPath": "training.xgboost.columnSample",
+            "type": "float",
+            "low": 0.6,
+            "high": 1.0
+          },
+          {
+            "name": "xgbL1Regularization",
+            "configPath": "training.xgboost.l1Regularization",
+            "type": "float",
+            "low": 0.00001,
+            "high": 10.0,
+            "log": true
+          },
+          {
+            "name": "xgbL2Regularization",
+            "configPath": "training.xgboost.l2Regularization",
+            "type": "float",
+            "low": 0.0001,
+            "high": 100.0,
+            "log": true
+          }
+        ]
       },
       {
-        "algorithm": "GRADIENT_BOOSTING",
-        "parameters": {
-          "estimators": 96,
-          "maximumDepth": 3,
-          "learningRate": 0.03
-        }
+        "algorithm": "EXTRA_TREES",
+        "parameters": [
+          {
+            "name": "extraTreesEstimators",
+            "configPath": "training.extraTrees.estimators",
+            "type": "int",
+            "low": 32,
+            "high": 512,
+            "step": 32
+          },
+          {
+            "name": "extraTreesMaximumDepth",
+            "configPath": "training.extraTrees.maximumDepth",
+            "type": "int",
+            "low": 1,
+            "high": 6
+          },
+          {
+            "name": "extraTreesMinimumLeaf",
+            "configPath": "training.extraTrees.minimumLeaf",
+            "type": "int",
+            "low": 1,
+            "high": 20
+          },
+          {
+            "name": "extraTreesMaximumFeatures",
+            "configPath": "training.extraTrees.maximumFeatures",
+            "type": "float",
+            "low": 0.3,
+            "high": 1.0
+          }
+        ]
       },
       {
-        "algorithm": "VALIDATED_ENSEMBLE",
-        "parameters": {
-          "linearWeight": 0.35
-        }
+        "algorithm": "TREND_VOLATILITY",
+        "parameters": [
+          {
+            "name": "trendFastWindow",
+            "configPath": "strategy.trendVolatility.fastWindow",
+            "type": "horizon_window",
+            "multipleLow": 0.5,
+            "multipleHigh": 2.0,
+            "minimum": 10,
+            "maximum": 252
+          },
+          {
+            "name": "trendSlowWindow",
+            "configPath": "strategy.trendVolatility.slowWindow",
+            "type": "horizon_window",
+            "multipleLow": 1.0,
+            "multipleHigh": 4.0,
+            "minimum": 10,
+            "maximum": 252
+          },
+          {
+            "name": "trendVolatilityWindow",
+            "configPath": "strategy.trendVolatility.volatilityWindow",
+            "type": "horizon_window",
+            "multipleLow": 0.5,
+            "multipleHigh": 2.0,
+            "minimum": 10,
+            "maximum": 252
+          },
+          {
+            "name": "targetAnnualizedVolatility",
+            "configPath": "risk.targetAnnualizedVolatility",
+            "type": "float",
+            "low": 0.06,
+            "high": 0.18
+          }
+        ]
       },
       {
-        "algorithm": "VALIDATED_ENSEMBLE",
-        "parameters": {
-          "linearWeight": 0.5
-        }
+        "algorithm": "RISK_FILTERED_MEAN_REVERSION",
+        "parameters": [
+          {
+            "name": "meanReversionWindow",
+            "configPath": "strategy.meanReversion.window",
+            "type": "horizon_window",
+            "multipleLow": 0.5,
+            "multipleHigh": 4.0,
+            "minimum": 10,
+            "maximum": 252
+          },
+          {
+            "name": "meanReversionEntryZ",
+            "configPath": "strategy.meanReversion.entryZ",
+            "type": "float",
+            "low": 0.5,
+            "high": 2.5
+          },
+          {
+            "name": "meanReversionExitZ",
+            "configPath": "strategy.meanReversion.exitZ",
+            "type": "float",
+            "low": 0.0,
+            "high": 0.75
+          },
+          {
+            "name": "targetAnnualizedVolatility",
+            "configPath": "risk.targetAnnualizedVolatility",
+            "type": "float",
+            "low": 0.06,
+            "high": 0.18
+          }
+        ]
       },
       {
-        "algorithm": "VALIDATED_ENSEMBLE",
-        "parameters": {
-          "linearWeight": 0.65
-        }
+        "algorithm": "REGIME_ENSEMBLE",
+        "parameters": [
+          {
+            "name": "linearWeight",
+            "configPath": "prediction.ensemble.linearWeight",
+            "type": "float",
+            "low": 0.1,
+            "high": 0.9
+          },
+          {
+            "name": "regimeWindow",
+            "configPath": "strategy.regimeEnsemble.window",
+            "type": "horizon_window",
+            "multipleLow": 0.5,
+            "multipleHigh": 4.0,
+            "minimum": 10,
+            "maximum": 252
+          },
+          {
+            "name": "regimeHighVolatility",
+            "configPath": "strategy.regimeEnsemble.highVolatility",
+            "type": "float",
+            "low": 0.18,
+            "high": 0.6
+          },
+          {
+            "name": "targetAnnualizedVolatility",
+            "configPath": "risk.targetAnnualizedVolatility",
+            "type": "float",
+            "low": 0.06,
+            "high": 0.18
+          }
+        ]
       }
     ]
+  },
+  "strategy": {
+    "trendVolatility": {
+      "fastWindow": 20,
+      "slowWindow": 120,
+      "volatilityWindow": 60
+    },
+    "meanReversion": {
+      "window": 60,
+      "entryZ": 1.25,
+      "exitZ": 0.25
+    },
+    "regimeEnsemble": {
+      "window": 120,
+      "highVolatility": 0.35
+    }
+  },
+  "baselines": {
+    "cashAnnualizedReturn": 0.015
   },
   "promotion": {
     "minimumAnnualizedExcessReturn": 0.0,
@@ -116,7 +339,20 @@
     "minimumBrierSkill": 0.0,
     "minimumFoldPassRatio": 0.6,
     "costStressAnnualizedPenalty": 0.005,
-    "minimumPaperTradingDays": 60
+    "minimumPaperTradingDays": 60,
+    "returnEnhancer": {
+      "minimumNetExcessVsStrongestBaseline": 0.0,
+      "minimumDeflatedSharpeProbability": 0.95,
+      "maximumPbo": 0.2,
+      "minimumFoldPassRatio": 0.6,
+      "maximumCrossWindowVolatility": 0.25
+    },
+    "drawdownGuard": {
+      "minimumDrawdownReduction": 0.2,
+      "maximumDownsideCapture": 0.8,
+      "minimumFoldPassRatio": 0.6,
+      "maximumCrossWindowVolatility": 0.25
+    }
   },
   "monitoring": {
     "maximumBrierScore": 0.25,

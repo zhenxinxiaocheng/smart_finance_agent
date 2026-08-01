@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -10,6 +11,7 @@ from decimal import Decimal
 from functools import lru_cache
 from time import monotonic
 from typing import Any, Iterable, Sequence
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
@@ -370,6 +372,7 @@ def normalize_resolved_product(
     provider: str,
     latest_price: Any = None,
     data_date: str | date | None = None,
+    inception_date: str | date | None = None,
     warnings: list[str] | None = None,
     previous_close: Any = None,
     change_amount: Any = None,
@@ -392,6 +395,7 @@ def normalize_resolved_product(
         "currency": currency.strip().upper(),
         "provider": provider.strip().upper(),
         "dataDate": None if data_date is None else str(data_date)[:10],
+        "inceptionDate": None if inception_date is None else str(inception_date)[:10],
         "latestPrice": None if price is None else str(price),
         "previousClose": _decimal_string(_decimal(previous_close)),
         "changeAmount": _decimal_string(_decimal(change_amount)),
@@ -406,6 +410,39 @@ def normalize_resolved_product(
         "amplitude": _decimal_string(_decimal(amplitude)),
         "warnings": list(warnings or []),
     }
+
+
+def _provider_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    digits = "".join(character for character in text if character.isdigit())
+    if len(digits) >= 8:
+        try:
+            return date.fromisoformat(f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}")
+        except ValueError:
+            return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _stock_inception_date(ak_module: Any, code: str) -> date | None:
+    provider = getattr(ak_module, "stock_individual_info_em", None)
+    if provider is None:
+        return None
+    try:
+        records = provider(symbol=code).to_dict("records")
+    except Exception:
+        return None
+    for record in records:
+        key = str(record.get("item", record.get("项目", ""))).strip()
+        if key in {"上市时间", "上市日期", "list_date", "listing_date"}:
+            return _provider_date(record.get("value", record.get("值")))
+    return None
 
 
 def resolve_product_metadata(
@@ -428,6 +465,7 @@ def resolve_product_metadata(
 
     warnings: list[str] = []
     fund_records: list[dict[str, Any]] = []
+    inception_date: date | None = None
     if normalized_type == "STOCK":
         records = ak_module.stock_info_a_code_name().to_dict("records")
         match = next((item for item in records if str(item.get("code", "")).zfill(6) == normalized_code), None)
@@ -435,6 +473,7 @@ def resolve_product_metadata(
             raise ProviderUnavailable(f"AKSHARE: 未找到股票代码 {normalized_code}")
         name = str(match.get("name", "")).strip()
         market = infer_a_share_market(normalized_code)
+        inception_date = _stock_inception_date(ak_module, normalized_code)
         try:
             frame = ak_module.stock_zh_a_hist(
                 symbol=normalized_code,
@@ -476,6 +515,8 @@ def resolve_product_metadata(
             frame = ak_module.fund_open_fund_info_em(symbol=normalized_code, indicator="单位净值走势")
             fund_records = frame.to_dict("records")
             quotes = _frame_to_quotes(frame, normalized_code, market, "AKSHARE")
+            if quotes:
+                inception_date = min(item.data_date for item in quotes)
         except Exception as exc:
             quotes = []
             warnings.append(f"AKSHARE 净值获取失败: {exc}")
@@ -504,6 +545,7 @@ def resolve_product_metadata(
         provider="AKSHARE",
         latest_price=None if latest is None else latest.close,
         data_date=None if latest is None else latest.data_date,
+        inception_date=inception_date,
         previous_close=None if previous is None else previous.close,
         change_amount=None if latest is None or previous is None else latest.close - previous.close,
         change_percent=daily_growth if daily_growth is not None else (
@@ -516,6 +558,124 @@ def resolve_product_metadata(
         volume=None if latest is None else latest.volume,
         warnings=warnings,
     )
+
+
+def discover_fund_research_universe(
+    *,
+    model_family: str,
+    benchmark_code: str,
+    target_code: str,
+    start_date: date,
+    end_date: date,
+    limit: int,
+    minimum_records: int,
+    selection_rule: dict[str, Any],
+    ak_module: Any = None,
+) -> dict[str, Any]:
+    """Discover a reusable peer universe from a caller-supplied selection rule."""
+    if start_date > end_date:
+        raise ValueError("start_date cannot be after end_date")
+    if limit < 1 or minimum_records < 2:
+        raise ValueError("limit and minimum_records must be positive")
+    catalog_symbol = str(selection_rule.get("catalogSymbol", "")).strip()
+    aliases = _normalized_text_list(selection_rule.get("nameAliases"))
+    exclusions = _normalized_text_list(selection_rule.get("excludedNamePatterns"))
+    if not catalog_symbol or not aliases:
+        raise ValueError("selectionRule requires catalogSymbol and nameAliases")
+    if ak_module is None:
+        try:
+            import akshare as ak_module
+        except ImportError as exc:
+            raise ProviderUnavailable("AKShare is not installed") from exc
+
+    fetched_at = datetime.now(timezone.utc)
+    try:
+        catalog_rows = ak_module.fund_open_fund_rank_em(
+            symbol=catalog_symbol
+        ).to_dict("records")
+    except Exception as exc:
+        raise ProviderUnavailable(f"AKSHARE fund catalog unavailable: {exc}") from exc
+
+    candidates: list[tuple[str, str]] = []
+    for raw in catalog_rows:
+        code = _first_text(raw, "基金代码", "fund_code", "code").zfill(6)
+        name = _first_text(raw, "基金简称", "基金名称", "fund_name", "name")
+        if len(code) != 6 or not code.isdigit() or not name:
+            continue
+        if not any(alias.casefold() in name.casefold() for alias in aliases):
+            continue
+        if any(_matches_fund_name_exclusion(name, pattern) for pattern in exclusions):
+            continue
+        candidates.append((code, name))
+
+    target = target_code.strip().zfill(6)
+    candidates.sort(key=lambda item: (item[0] != target, item[0]))
+    members: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for code, name in candidates:
+        if len(members) >= limit:
+            break
+        try:
+            frame = ak_module.fund_open_fund_info_em(
+                symbol=code,
+                indicator="单位净值走势",
+            )
+            quotes = [
+                quote
+                for quote in _frame_to_quotes(frame, code, "FUND_CN", "AKSHARE", fetched_at)
+                if start_date <= quote.data_date <= end_date
+            ]
+        except Exception as exc:
+            warnings.append(f"{code}: {type(exc).__name__}")
+            continue
+        if len(quotes) < minimum_records:
+            continue
+        members.append({
+            "code": code,
+            "name": name,
+            "productType": "MUTUAL_FUND",
+            "market": "FUND_CN",
+            "records": [quote.json_dict() for quote in quotes],
+        })
+
+    canonical = {
+        "modelFamily": model_family.strip().upper(),
+        "benchmarkCode": benchmark_code.strip().upper(),
+        "selectionRule": selection_rule,
+        "members": members,
+    }
+    dataset_version = hashlib.sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        **canonical,
+        "datasetVersion": dataset_version,
+        "provider": "AKSHARE",
+        "adapterVersion": "1",
+        "fetchedAt": fetched_at.isoformat(),
+        "warnings": warnings,
+    }
+
+
+def _normalized_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _first_text(row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _matches_fund_name_exclusion(name: str, pattern: str) -> bool:
+    normalized = pattern.strip()
+    if len(normalized) == 1 and normalized.isascii() and normalized.isalpha():
+        return re.search(rf"{re.escape(normalized)}(?:类|份额)?$", name, re.IGNORECASE) is not None
+    return normalized.casefold() in name.casefold()
 
 
 def _resolved_fund_snapshot(row: dict[str, Any], code: str) -> dict[str, Any] | None:
@@ -1063,13 +1223,32 @@ def fetch_benchmark_history(
             frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
             rows = _benchmark_rows(frame, start_date, end_date)
             return _weighted_benchmark(rows, Decimal("0.95"))
-        except Exception:
-            rows = _baostock_benchmark_rows(
-                start_date,
-                end_date,
-                baostock_module=baostock_module,
-            )
-            return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
+        except Exception as akshare_error:
+            if baostock_module is not None:
+                rows = _baostock_benchmark_rows(
+                    start_date,
+                    end_date,
+                    baostock_module=baostock_module,
+                )
+                return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
+            try:
+                rows = _eastmoney_csi300_rows(start_date, end_date)
+                return _weighted_benchmark(rows, Decimal("0.95"), provider="EASTMONEY")
+            except Exception:
+                try:
+                    rows = _tencent_csi300_rows(start_date, end_date)
+                    return _weighted_benchmark(rows, Decimal("0.95"), provider="TENCENT")
+                except Exception:
+                    pass
+                try:
+                    rows = _baostock_benchmark_rows(start_date, end_date)
+                    return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
+                except Exception as baostock_error:
+                    raise ProviderUnavailable(
+                        f"沪深300基准数据源暂不可用："
+                        f"AKShare={type(akshare_error).__name__}, "
+                        f"BaoStock={type(baostock_error).__name__}"
+                    ) from baostock_error
     if normalized == "AU9999_95_CASH_5":
         frame = ak_module.spot_hist_sge(symbol="Au99.99")
         rows = _benchmark_rows(frame, start_date, end_date)
@@ -1173,6 +1352,76 @@ def _baostock_benchmark_rows(
         baostock_module.logout()
 
 
+def _tencent_csi300_rows(
+    start_date: date,
+    end_date: date,
+    *,
+    opener=urlopen,
+) -> list[tuple[date, Decimal]]:
+    provider = TencentHistoryProvider(opener=opener)
+    raw_rows = provider._history_rows(
+        "sh000300",
+        start_date,
+        end_date,
+        "none",
+        "day",
+    )
+    rows: list[tuple[date, Decimal]] = []
+    for row in raw_rows:
+        if len(row) < 3:
+            continue
+        data_date = date.fromisoformat(str(row[0])[:10])
+        close = _decimal(row[2])
+        if start_date <= data_date <= end_date and close is not None and close > 0:
+            rows.append((data_date, close))
+    normalized = sorted(dict(rows).items())
+    if len(normalized) < 2:
+        raise ProviderUnavailable("Tencent 未返回足够的沪深300基准历史数据")
+    return normalized
+
+
+def _eastmoney_csi300_rows(
+    start_date: date,
+    end_date: date,
+    *,
+    opener=urlopen,
+) -> list[tuple[date, Decimal]]:
+    query = urlencode({
+        "secid": "1.000300",
+        "klt": "101",
+        "fqt": "1",
+        "lmt": "1000000",
+        "beg": start_date.strftime("%Y%m%d"),
+        "end": end_date.strftime("%Y%m%d"),
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56",
+    })
+    request = Request(
+        f"https://push2his.eastmoney.com/api/qt/stock/kline/get?{query}",
+        headers={
+            "Accept": "application/json",
+            "Referer": "https://quote.eastmoney.com/",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+    with opener(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    klines = ((payload.get("data") or {}).get("klines") or [])
+    rows: list[tuple[date, Decimal]] = []
+    for raw in klines:
+        parts = str(raw).split(",")
+        if len(parts) < 3:
+            continue
+        data_date = date.fromisoformat(parts[0])
+        close = _decimal(parts[2])
+        if start_date <= data_date <= end_date and close is not None and close > 0:
+            rows.append((data_date, close))
+    normalized = sorted(dict(rows).items())
+    if len(normalized) < 2:
+        raise ProviderUnavailable("东方财富未返回足够的沪深300基准历史数据")
+    return normalized
+
+
 def _weighted_benchmark(
     rows: list[tuple[date, Decimal]],
     risky_weight: Decimal,
@@ -1267,7 +1516,7 @@ def _frame_to_quotes(frame: Any, code: str, market: str, provider: str,
     aliases = {
         "日期": "date", "净值日期": "date", "trade_date": "date",
         "开盘": "open", "最高": "high", "最低": "low", "收盘": "close",
-        "单位净值": "close", "成交量": "volume", "vol": "volume",
+        "单位净值": "close", "nav": "close", "成交量": "volume", "vol": "volume",
     }
     records: list[NormalizedQuote] = []
     for original in frame.to_dict("records"):

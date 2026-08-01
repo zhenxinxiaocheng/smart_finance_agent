@@ -364,6 +364,12 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
         product.setName(resolved.name());
         product.setCurrency(resolved.currency());
+        if (resolved.inceptionDate() != null) {
+            product.setInceptionDate(resolved.inceptionDate());
+        }
+        if (product.getHistoryCoverageComplete() == null) {
+            product.setHistoryCoverageComplete(false);
+        }
         if (product.getId() == null) productMapper.insert(product); else productMapper.updateById(product);
         return product;
     }

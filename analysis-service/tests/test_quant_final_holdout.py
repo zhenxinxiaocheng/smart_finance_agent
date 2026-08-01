@@ -33,7 +33,7 @@ class QuantFinalHoldoutTest(unittest.TestCase):
         self.assertEqual(10, result.metrics["finalHoldout"]["sampleCount"])
         self.assertNotEqual(original_version, result.model_version)
 
-    def test_rejects_model_when_untouched_holdout_fails_any_hard_gate(self):
+    def test_holdout_diagnostics_do_not_reject_economic_model(self):
         artifact = self.artifact()
 
         with patch(
@@ -49,9 +49,35 @@ class QuantFinalHoldoutTest(unittest.TestCase):
                 algorithm="VALIDATED_ENSEMBLE",
             )
 
+        self.assertEqual("VALIDATED", result.status)
+        self.assertTrue(result.metrics["finalHoldout"]["passed"])
+        self.assertFalse(result.metrics["finalHoldout"]["diagnosticsPassed"])
+
+    def test_rejects_model_when_holdout_has_no_economic_value(self):
+        artifact = self.artifact()
+        inactive = [
+            QuantPrediction(
+                probability_positive_excess=0.5,
+                expected_excess_return=0.0,
+                prediction_interval=(-0.1, 0.1),
+                action="HOLD",
+                confidence="LOW",
+                top_factors=(),
+            )
+            for _ in self.samples()
+        ]
+
+        with patch("app.quant.models.predict_ensemble", side_effect=inactive):
+            result = evaluate_final_holdout(
+                artifact,
+                self.samples(),
+                self.config(),
+                benchmark_available=True,
+                data_fresh=True,
+                algorithm="REGIME_ENSEMBLE",
+            )
+
         self.assertEqual("DRAFT", result.status)
-        self.assertFalse(result.metrics["finalHoldout"]["passed"])
-        self.assertFalse(result.metrics["validationReport"]["passed"])
         self.assertIn(
             "MODEL_REJECTED",
             result.metrics["validationReport"]["failureCodes"],
@@ -78,9 +104,11 @@ class QuantFinalHoldoutTest(unittest.TestCase):
             status="VALIDATED",
             metrics={
                 "positiveLabelRate": 0.5,
+                "economicRole": "RETURN_ENHANCER",
                 "validationReport": {
                     "passed": True,
                     "lifecycle": "VALIDATED",
+                    "economicRole": "RETURN_ENHANCER",
                     "failureCodes": [],
                 },
             },

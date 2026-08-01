@@ -14,7 +14,9 @@ import app.providers as providers
 
 from app.providers import (
     TencentHistoryProvider,
+    _tencent_csi300_rows,
     akshare_us_symbol,
+    discover_fund_research_universe,
     fetch_benchmark_history,
     fetch_realtime_stock_quote,
     infer_a_share_market,
@@ -58,6 +60,13 @@ class FakeAkshare:
 
     def stock_info_a_code_name(self):
         return FakeFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    def stock_individual_info_em(self, symbol):
+        assert symbol == "600519"
+        return FakeFrame([
+            {"item": "股票代码", "value": "600519"},
+            {"item": "上市时间", "value": "20010827"},
+        ])
 
     def stock_zh_a_hist(self, **kwargs):
         self.last_hist_kwargs = kwargs
@@ -216,6 +225,72 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("109.5000", result[1]["close"])
         self.assertEqual("BAOSTOCK", result[0]["provider"])
 
+    def test_tencent_can_supply_long_csi300_benchmark_history(self):
+        payload = json.dumps({
+            "data": {
+                "sh000300": {
+                    "day": [
+                        ["2005-04-08", "1000", "1010", "1020", "990", "1"],
+                        ["2005-04-11", "1010", "1020", "1030", "1000", "1"],
+                    ]
+                }
+            }
+        })
+
+        rows = _tencent_csi300_rows(
+            date(2005, 4, 8),
+            date(2005, 4, 11),
+            opener=lambda *_args, **_kwargs: FakeJsonResponse(payload),
+        )
+
+        self.assertEqual(
+            [(date(2005, 4, 8), Decimal("1010")),
+             (date(2005, 4, 11), Decimal("1020"))],
+            rows,
+        )
+
+    def test_index_fund_research_universe_is_discovered_without_hardcoded_codes(self):
+        class FundCatalogAkshare:
+            @staticmethod
+            def fund_open_fund_rank_em(symbol):
+                self.assertEqual("指数型", symbol)
+                return FakeFrame([
+                    {"fund_code": "000001", "fund_name": "Alpha 沪深300增强A"},
+                    {"fund_code": "000002", "fund_name": "Alpha 沪深300增强C"},
+                    {"fund_code": "000003", "fund_name": "Beta 中证500增强A"},
+                    {"fund_code": "000004", "fund_name": "Gamma 沪深300联接A"},
+                ])
+
+            @staticmethod
+            def fund_open_fund_info_em(symbol, indicator):
+                self.assertEqual("单位净值走势", indicator)
+                base = 1.0 if symbol == "000001" else 2.0
+                return FakeFrame([
+                    {"date": "2026-07-08", "nav": base},
+                    {"date": "2026-07-09", "nav": base + 0.01},
+                    {"date": "2026-07-10", "nav": base + 0.02},
+                ])
+
+        result = discover_fund_research_universe(
+            model_family="INDEX_FUND",
+            benchmark_code="CSI300_95_CASH_5",
+            target_code="010736",
+            start_date=date(2026, 7, 8),
+            end_date=date(2026, 7, 10),
+            limit=5,
+            minimum_records=2,
+            selection_rule={
+                "catalogSymbol": "指数型",
+                "nameAliases": ["沪深300"],
+                "excludedNamePatterns": ["C"],
+            },
+            ak_module=FundCatalogAkshare(),
+        )
+
+        self.assertEqual(["000001", "000004"], [item["code"] for item in result["members"]])
+        self.assertEqual(3, len(result["members"][0]["records"]))
+        self.assertEqual(64, len(result["datasetVersion"]))
+
     def test_benchmark_provider_rejects_unknown_profile_code(self):
         with self.assertRaisesRegex(ValueError, "unsupported benchmark code"):
             fetch_benchmark_history(
@@ -287,12 +362,14 @@ class ProviderNormalizationTest(unittest.TestCase):
             provider="akshare",
             latest_price="1204.98",
             data_date="2026-07-10",
+            inception_date="2001-08-27",
         )
 
         self.assertEqual("STOCK", result["productType"])
         self.assertEqual("600519", result["code"])
         self.assertEqual("贵州茅台", result["name"])
         self.assertEqual("1204.98", result["latestPrice"])
+        self.assertEqual("2001-08-27", result["inceptionDate"])
 
     def test_resolve_a_share_uses_code_list_and_latest_daily_price(self):
         provider = FakeAkshare()
@@ -303,6 +380,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("1204.98", result["latestPrice"])
         self.assertEqual("14.98", result["changeAmount"])
         self.assertEqual("1.2588", result["changePercent"])
+        self.assertEqual("2001-08-27", result["inceptionDate"])
         self.assertEqual("qfq", provider.last_hist_kwargs["adjust"])
 
     def test_resolve_domestic_fund_uses_fund_name_and_nav(self):
@@ -313,6 +391,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("1.527", result["latestPrice"])
         self.assertEqual("0.027", result["changeAmount"])
         self.assertEqual("1.80", result["changePercent"])
+        self.assertEqual("2026-07-09", result["inceptionDate"])
 
     def test_resolve_domestic_fund_prefers_latest_valued_dynamic_snapshot_column(self):
         provider = FakeFundSnapshotAkshare([{

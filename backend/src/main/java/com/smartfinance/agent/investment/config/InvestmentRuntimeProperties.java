@@ -45,6 +45,9 @@ public class InvestmentRuntimeProperties {
         requireRatio(risk.portfolioConcentrationWarningRatio, "risk.portfolio-concentration-warning-ratio");
         requirePercent(risk.conservativeStrongScore, "risk.conservative-strong-score");
         requirePercent(risk.aggressiveWeakScore, "risk.aggressive-weak-score");
+        requirePercent(risk.volatilityWarningPercent, "risk.volatility-warning-percent");
+        requirePercent(risk.drawdownWarningPercent, "risk.drawdown-warning-percent");
+        requirePercent(risk.minimumTurnoverRatePercent, "risk.minimum-turnover-rate-percent");
         requireText(risk.portfolioRuleVersion, "risk.portfolio-rule-version");
         requirePositive(sync.pollDelayMs, "sync.poll-delay-ms");
         requirePositive(sync.initialDelayMs, "sync.initial-delay-ms");
@@ -71,6 +74,10 @@ public class InvestmentRuntimeProperties {
         }
         requirePositive(ai.maxExplanationCharacters, "ai.max-explanation-characters");
         requirePositive(ai.maxInputJsonCharacters, "ai.max-input-json-characters");
+        requirePositive(ai.summaryMaxCharacters, "ai.summary-max-characters");
+        requirePositive(ai.maximumReasons, "ai.maximum-reasons");
+        requirePositive(ai.maximumRisks, "ai.maximum-risks");
+        requirePositive(ai.technicalDetailMaxCharacters, "ai.technical-detail-max-characters");
         requirePositive(api.productSearchLimit, "api.product-search-limit");
         requirePositive(api.defaultTransactionLimit, "api.default-transaction-limit");
         requirePositive(api.maxTransactionLimit, "api.max-transaction-limit");
@@ -138,6 +145,9 @@ public class InvestmentRuntimeProperties {
         private BigDecimal portfolioConcentrationWarningRatio;
         private BigDecimal conservativeStrongScore;
         private BigDecimal aggressiveWeakScore;
+        private BigDecimal volatilityWarningPercent;
+        private BigDecimal drawdownWarningPercent;
+        private BigDecimal minimumTurnoverRatePercent;
         private String portfolioRuleVersion;
     }
 
@@ -175,6 +185,10 @@ public class InvestmentRuntimeProperties {
         private int maximumParagraphs;
         private int maxExplanationCharacters;
         private int maxInputJsonCharacters;
+        private int summaryMaxCharacters;
+        private int maximumReasons;
+        private int maximumRisks;
+        private int technicalDetailMaxCharacters;
     }
 
     @Data

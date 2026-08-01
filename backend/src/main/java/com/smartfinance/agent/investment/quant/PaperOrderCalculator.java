@@ -2,8 +2,11 @@ package com.smartfinance.agent.investment.quant;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Set;
 
 final class PaperOrderCalculator {
+    private static final Set<String> TARGET_WEIGHT_ACTIONS = Set.of("BUY", "BUY_WATCH", "ADD");
+
     private PaperOrderCalculator() {
     }
 
@@ -18,7 +21,7 @@ final class PaperOrderCalculator {
         BigDecimal targetValue;
         if ("EXIT".equals(action)) targetValue = BigDecimal.ZERO;
         else if ("REDUCE".equals(action)) targetValue = currentValue.divide(BigDecimal.valueOf(2), 8, RoundingMode.HALF_UP);
-        else if ("ADD".equals(action)) targetValue = totalEquity.multiply(targetWeight == null ? BigDecimal.ZERO : targetWeight);
+        else if (TARGET_WEIGHT_ACTIONS.contains(action)) targetValue = totalEquity.multiply(targetWeight == null ? BigDecimal.ZERO : targetWeight);
         else return OrderDraft.none();
         BigDecimal difference = targetValue.subtract(currentValue);
         if (difference.abs().compareTo(minimumNotional) < 0) return OrderDraft.none();

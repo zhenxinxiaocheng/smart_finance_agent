@@ -8,10 +8,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 @Service
@@ -25,8 +28,17 @@ public class QuantResearchServiceImpl implements QuantResearchService {
             "QDII_INDEX_FUND",
             "COMMODITY_FUND"
     );
-    private static final Set<String> ALGORITHMS =
-            Set.of("ELASTIC_NET", "GRADIENT_BOOSTING", "VALIDATED_ENSEMBLE");
+    private static final Set<String> ALGORITHMS = Set.of(
+            "ELASTIC_NET",
+            "XGBOOST",
+            "EXTRA_TREES",
+            "TREND_VOLATILITY",
+            "RISK_FILTERED_MEAN_REVERSION",
+            "REGIME_ENSEMBLE",
+            // One compatibility cycle for persisted v1 experiments.
+            "GRADIENT_BOOSTING",
+            "VALIDATED_ENSEMBLE"
+    );
     private static final Set<String> TERMINAL_EXPERIMENT_STATUSES =
             Set.of("SUCCEEDED", "FAILED", "CANCELLED");
 
@@ -140,6 +152,9 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         experiment.setHorizonCode(horizon);
         experiment.setHorizonDays(horizonDays(horizon));
         experiment.setStatus("QUEUED");
+        experiment.setExecutionStatus("QUEUED");
+        experiment.setTrainingOutcome("OPTIMIZING");
+        experiment.setDeploymentStatus("RESEARCH");
         experiment.setTrainingMode("TUNE");
         experiment.setTriggerReason("USER_TUNING");
         experiment.setSearchSummaryJson(writeJson(Map.of()));
@@ -164,6 +179,10 @@ public class QuantResearchServiceImpl implements QuantResearchService {
                     request.parameters()
             );
             experiment.setStatus(String.valueOf(job.getOrDefault("status", "QUEUED")));
+            experiment.setExecutionStatus(text(job.get("executionStatus")));
+            experiment.setTrainingOutcome(text(job.get("trainingOutcome")));
+            experiment.setDeploymentStatus(text(job.get("deploymentStatus")));
+            experiment.setEconomicRole(text(job.get("economicRole")));
             experiment.setErrorCode(text(job.get("errorCode")));
             experiment.setErrorSummary(text(job.get("errorSummary")));
             Map<String, Object> logs = new LinkedHashMap<>();
@@ -338,6 +357,15 @@ public class QuantResearchServiceImpl implements QuantResearchService {
         result.put("horizonCode", experiment.getHorizonCode());
         result.put("horizonDays", experiment.getHorizonDays());
         result.put("status", experiment.getStatus());
+        result.put("executionStatus", experiment.getExecutionStatus());
+        result.put("trainingOutcome", experiment.getTrainingOutcome());
+        result.put("deploymentStatus", experiment.getDeploymentStatus());
+        result.put("economicRole", experiment.getEconomicRole());
+        result.put("optimizationStudyId", experiment.getOptimizationStudyId());
+        result.put("optimizationGeneration", experiment.getOptimizationGeneration());
+        result.put("baselineComparison", readJson(
+                experiment.getBaselineComparisonJson()
+        ));
         result.put("trainingMode", experiment.getTrainingMode());
         result.put("triggerReason", experiment.getTriggerReason());
         result.put("parentModelVersion", experiment.getParentModelVersion());
@@ -366,8 +394,205 @@ public class QuantResearchServiceImpl implements QuantResearchService {
                         .last("LIMIT 1")
         );
         result.put("validationReport", report == null ? null : validationReportView(report));
+        result.put("comparison", comparisonView(experiment, report));
         result.put("reused", false);
         return result;
+    }
+
+    private Map<String, Object> comparisonView(
+            QuantExperiment current,
+            QuantValidationReport currentReport
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scope", Map.of(
+                "datasetVersion", Objects.toString(current.getDatasetVersion(), ""),
+                "horizonCode", Objects.toString(current.getHorizonCode(), ""),
+                "validationMethod", Objects.toString(
+                        current.getQuantConfigVersion(),
+                        ""
+                )
+        ));
+        QuantExperiment previous = previousComparable(current);
+        if (previous == null) {
+            result.put("comparable", false);
+            result.put("reason", "NO_COMPATIBLE_PREVIOUS_EXPERIMENT");
+            result.put("parameterChanges", List.of());
+            return result;
+        }
+
+        QuantValidationReport previousReport = reportMapper.selectOne(
+                new LambdaQueryWrapper<QuantValidationReport>()
+                        .eq(
+                                QuantValidationReport::getExperimentId,
+                                previous.getId()
+                        )
+                        .orderByDesc(QuantValidationReport::getCreatedAt)
+                        .last("LIMIT 1")
+        );
+        Map<String, Object> currentConfig = readJson(current.getConfigJson());
+        Map<String, Object> previousConfig = readJson(previous.getConfigJson());
+        Map<String, Object> currentParameters = childMap(
+                currentConfig,
+                "parameters"
+        );
+        Map<String, Object> previousParameters = childMap(
+                previousConfig,
+                "parameters"
+        );
+        List<Map<String, Object>> parameterChanges = new ArrayList<>();
+        Set<String> parameterKeys = new LinkedHashSet<>();
+        parameterKeys.addAll(previousParameters.keySet());
+        parameterKeys.addAll(currentParameters.keySet());
+        for (String key : parameterKeys) {
+            Object before = previousParameters.get(key);
+            Object after = currentParameters.get(key);
+            if (!Objects.equals(before, after)) {
+                Map<String, Object> change = new LinkedHashMap<>();
+                change.put("parameter", key);
+                change.put("before", before);
+                change.put("after", after);
+                parameterChanges.add(change);
+            }
+        }
+        if (!Objects.equals(
+                previousConfig.get("algorithm"),
+                currentConfig.get("algorithm")
+        )) {
+            Map<String, Object> change = new LinkedHashMap<>();
+            change.put("parameter", "algorithm");
+            change.put("before", previousConfig.get("algorithm"));
+            change.put("after", currentConfig.get("algorithm"));
+            parameterChanges.add(0, change);
+        }
+
+        Map<String, Object> currentBaseline = readJson(
+                current.getBaselineComparisonJson()
+        );
+        Map<String, Object> previousBaseline = readJson(
+                previous.getBaselineComparisonJson()
+        );
+        Map<String, Object> currentMetrics = currentReport == null
+                ? Map.of()
+                : readJson(currentReport.getMetricsJson());
+        Map<String, Object> previousMetrics = previousReport == null
+                ? Map.of()
+                : readJson(previousReport.getMetricsJson());
+        Double currentExcess = numeric(
+                currentBaseline.get("netExcessVsStrongestBaseline")
+        );
+        Double previousExcess = numeric(
+                previousBaseline.get("netExcessVsStrongestBaseline")
+        );
+        Double currentDrawdown = numeric(currentMetrics.get("maximumDrawdown"));
+        Double previousDrawdown = numeric(previousMetrics.get("maximumDrawdown"));
+        Map<String, Object> searchSummary = readJson(
+                current.getSearchSummaryJson()
+        );
+
+        result.put("comparable", true);
+        result.put("previousExperimentId", previous.getId());
+        result.put("parameterChanges", parameterChanges);
+        result.put("netExcessVsStrongestBaseline", currentExcess);
+        result.put("netExcessChange", difference(currentExcess, previousExcess));
+        result.put(
+                "drawdownImprovement",
+                drawdownImprovement(currentDrawdown, previousDrawdown)
+        );
+        result.put("bottleneck", bottleneck(current, searchSummary));
+        result.put("nextSuggestion", text(searchSummary.get("nextAdjustment")));
+        return result;
+    }
+
+    private QuantExperiment previousComparable(QuantExperiment current) {
+        if (current.getId() == null
+                || current.getDatasetVersion() == null
+                || current.getDatasetVersion().isBlank()
+                || current.getHorizonCode() == null
+                || current.getQuantConfigVersion() == null
+                || current.getQuantConfigVersion().isBlank()) {
+            return null;
+        }
+        return experimentMapper.selectOne(
+                new LambdaQueryWrapper<QuantExperiment>()
+                        .eq(QuantExperiment::getUserId, current.getUserId())
+                        .eq(QuantExperiment::getAssetId, current.getAssetId())
+                        .eq(
+                                QuantExperiment::getDatasetVersion,
+                                current.getDatasetVersion()
+                        )
+                        .eq(
+                                QuantExperiment::getHorizonCode,
+                                current.getHorizonCode()
+                        )
+                        .eq(
+                                QuantExperiment::getQuantConfigVersion,
+                                current.getQuantConfigVersion()
+                        )
+                        .lt(QuantExperiment::getId, current.getId())
+                        .orderByDesc(QuantExperiment::getId)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private static Map<String, Object> childMap(
+            Map<String, Object> source,
+            String key
+    ) {
+        Object raw = source.get(key);
+        if (!(raw instanceof Map<?, ?> values)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        values.forEach((childKey, value) ->
+                result.put(String.valueOf(childKey), value));
+        return result;
+    }
+
+    private static Map<String, Object> bottleneck(
+            QuantExperiment experiment,
+            Map<String, Object> searchSummary
+    ) {
+        Object raw = searchSummary.get("failureDiagnosis");
+        if (raw instanceof Map<?, ?> values) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            values.forEach((key, value) ->
+                    result.put(String.valueOf(key), value));
+            return result;
+        }
+        if (experiment.getErrorCode() == null) {
+            return Map.of();
+        }
+        return Map.of(
+                "code", experiment.getErrorCode(),
+                "message", Objects.toString(experiment.getErrorSummary(), "")
+        );
+    }
+
+    private static Double difference(Double current, Double previous) {
+        return current == null || previous == null ? null : current - previous;
+    }
+
+    private static Double drawdownImprovement(
+            Double current,
+            Double previous
+    ) {
+        return current == null || previous == null
+                ? null
+                : Math.abs(previous) - Math.abs(current);
+    }
+
+    private static Double numeric(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private Map<String, Object> universeView(QuantResearchUniverse universe) {

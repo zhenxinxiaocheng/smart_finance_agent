@@ -23,6 +23,7 @@ from .providers import (
     akshare_fx_rates,
     fetch_a_share_trade_calendar,
     fetch_benchmark_history,
+    discover_fund_research_universe,
     fetch_realtime_stock_quote,
     fetch_stock_fundamentals,
     resolve_product_metadata,
@@ -60,6 +61,24 @@ class BenchmarkHistoryRequest(BaseModel):
     )
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
+
+
+class FundResearchUniverseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    model_family: Literal[
+        "INDEX_FUND",
+        "ACTIVE_FUND",
+        "QDII_INDEX_FUND",
+        "COMMODITY_FUND",
+    ] = Field(alias="modelFamily")
+    benchmark_code: str = Field(alias="benchmarkCode", min_length=1, max_length=80)
+    target_code: str = Field(alias="targetCode", min_length=6, max_length=6)
+    start_date: date = Field(alias="startDate")
+    end_date: date = Field(alias="endDate")
+    limit: int = Field(default=12, ge=1, le=50)
+    minimum_records: int = Field(default=250, alias="minimumRecords", ge=2)
+    selection_rule: dict[str, Any] = Field(alias="selectionRule")
 
 
 class DataQualityValidateRequest(BaseModel):
@@ -215,9 +234,15 @@ class QuantJobRequest(BaseModel):
     )
     algorithm: Literal[
         "ELASTIC_NET",
+        "XGBOOST",
+        "EXTRA_TREES",
+        "TREND_VOLATILITY",
+        "RISK_FILTERED_MEAN_REVERSION",
+        "REGIME_ENSEMBLE",
+        # One-cycle compatibility aliases for persisted research requests.
         "GRADIENT_BOOSTING",
         "VALIDATED_ENSEMBLE",
-    ] = "VALIDATED_ENSEMBLE"
+    ] = "REGIME_ENSEMBLE"
     current_weight: float | None = Field(default=None, alias="currentWeight", ge=0, le=1)
     records: list[dict[str, Any]] = Field(default_factory=list)
     benchmark_records: list[dict[str, Any]] = Field(default_factory=list, alias="benchmarkRecords")
@@ -358,6 +383,25 @@ def daily_benchmark(request: BenchmarkHistoryRequest):
         "records": records,
         "warnings": [],
     }
+
+
+@app.post("/internal/v1/market-data/research-universes/funds", dependencies=[Depends(internal_auth)])
+def fund_research_universe(request: FundResearchUniverseRequest):
+    try:
+        return discover_fund_research_universe(
+            model_family=request.model_family,
+            benchmark_code=request.benchmark_code,
+            target_code=request.target_code,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            limit=request.limit,
+            minimum_records=request.minimum_records,
+            selection_rule=request.selection_rule,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/internal/v1/data-quality/validate", dependencies=[Depends(internal_auth)])

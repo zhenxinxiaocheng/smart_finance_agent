@@ -32,7 +32,14 @@ class QuantResearchCatalogTest {
 
         assertThat(schema).containsEntry("validationMode", "STRICT");
         assertThat(((List<?>) schema.get("algorithms")).stream().map(String::valueOf).toList())
-                .containsExactly("ELASTIC_NET", "GRADIENT_BOOSTING", "VALIDATED_ENSEMBLE");
+                .containsExactly(
+                        "ELASTIC_NET",
+                        "XGBOOST",
+                        "EXTRA_TREES",
+                        "TREND_VOLATILITY",
+                        "RISK_FILTERED_MEAN_REVERSION",
+                        "REGIME_ENSEMBLE"
+                );
         assertThat((List<?>) schema.get("fields")).isNotEmpty();
     }
 

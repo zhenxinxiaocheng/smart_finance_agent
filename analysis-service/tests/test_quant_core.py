@@ -35,6 +35,88 @@ def market_records(count: int = 420, *, drift: float = 0.08) -> list[dict[str, o
 
 
 class QuantCoreTest(unittest.TestCase):
+    def test_walk_forward_windows_are_defined_by_target_asset_history(self):
+        start = date(2020, 1, 1)
+        panel = [
+            TrainingSample(
+                as_of_index=index,
+                label_end_index=index + 20,
+                as_of_date=(start + timedelta(days=index)).isoformat(),
+                features={"signal": float(index)},
+                net_excess_return=0.01,
+                positive_excess=index % 2 == 0,
+                series_id="PEER",
+                net_return=0.01,
+                positive_return=index % 2 == 0,
+                negative_return=index % 2 != 0,
+            )
+            for index in range(1500)
+        ]
+        target = [
+            TrainingSample(
+                as_of_index=index,
+                label_end_index=index + 20,
+                as_of_date=(start + timedelta(days=900 + index)).isoformat(),
+                features={"signal": float(index)},
+                net_excess_return=0.01,
+                positive_excess=index % 2 == 0,
+                series_id="TARGET",
+                net_return=0.01,
+                positive_return=index % 2 == 0,
+                negative_return=index % 2 != 0,
+            )
+            for index in range(500)
+        ]
+        samples = sorted(
+            [*panel, *target],
+            key=lambda sample: (sample.as_of_date, sample.series_id),
+        )
+
+        splits = quant_models._date_walk_forward_splits(
+            samples,
+            folds=5,
+            embargo_dates=20,
+            validation_series_id="TARGET",
+        )
+
+        self.assertEqual(5, len(splits))
+        for _train_indices, test_indices in splits:
+            self.assertTrue(test_indices.size)
+            self.assertTrue(all(
+                samples[int(index)].series_id == "TARGET"
+                for index in test_indices
+            ))
+
+    def test_economic_validation_indices_exclude_panel_members(self):
+        samples = [
+            TrainingSample(
+                as_of_index=index,
+                label_end_index=index + 1,
+                as_of_date=f"2026-01-{index + 1:02d}",
+                features={"signal": float(index)},
+                net_excess_return=0.01,
+                positive_excess=True,
+                series_id=series_id,
+                net_return=0.01,
+                positive_return=True,
+                negative_return=False,
+            )
+            for index, series_id in enumerate([
+                "TARGET",
+                "PEER",
+                "TARGET",
+                "BENCHMARK",
+            ])
+        ]
+
+        selected = quant_models._validation_series_indices(
+            samples,
+            np.arange(len(samples), dtype=int),
+            "TARGET",
+        )
+
+        self.assertEqual([0, 2], selected.tolist())
+
     def test_a_share_backtest_never_spends_more_cash_than_available(self):
         records = [
             {
@@ -340,6 +422,7 @@ class QuantCoreTest(unittest.TestCase):
             "deflatedSharpeProbability",
             "pbo",
             "costStressAnnualizedExcessReturn",
+            "drawdownGuardFoldPassRatio",
             "independentEventCount",
             "featureDistribution",
             "labelDistribution",
@@ -402,6 +485,54 @@ class QuantCoreTest(unittest.TestCase):
         self.assertEqual("HIGH", quant_models._prediction_confidence(0.01, 0.02, 1.0, 2.0, 1e-12))
         self.assertEqual("MEDIUM", quant_models._prediction_confidence(0.03, 0.02, 1.0, 2.0, 1e-12))
         self.assertEqual("LOW", quant_models._prediction_confidence(0.05, 0.02, 1.0, 2.0, 1e-12))
+
+    def test_all_six_strategy_families_produce_fitted_predictions(self):
+        config = self.fast_model_config()
+        config.data["training"]["xgboost"]["estimators"] = 32
+        config.data["training"]["extraTrees"]["estimators"] = 32
+        feature_names = (
+            "momentum_long",
+            "momentum_primary",
+            "momentum_short",
+            "realized_volatility",
+            "trend_slope",
+        )
+        rows = np.asarray([
+            [
+                np.sin(index / 8) * 0.08,
+                np.sin(index / 5) * 0.05,
+                np.sin(index / 3) * 0.03,
+                0.12 + (index % 5) * 0.02,
+                np.cos(index / 7) * 0.004,
+            ]
+            for index in range(80)
+        ])
+        labels = np.asarray([index % 2 for index in range(80)])
+        returns = np.where(labels == 1, 0.01, -0.006)
+
+        for algorithm in (
+            "ELASTIC_NET",
+            "XGBOOST",
+            "EXTRA_TREES",
+            "TREND_VOLATILITY",
+            "RISK_FILTERED_MEAN_REVERSION",
+            "REGIME_ENSEMBLE",
+        ):
+            models = quant_models._fit_models(
+                rows,
+                labels,
+                returns,
+                config,
+                include_quantiles=False,
+                algorithm=algorithm,
+                feature_names=feature_names,
+            )
+            probabilities = models[2].predict_proba(rows[:5])[:, 1]
+            expected = models[3].predict(rows[:5])
+            self.assertEqual((5,), probabilities.shape, algorithm)
+            self.assertEqual((5,), expected.shape, algorithm)
+            self.assertTrue(np.isfinite(probabilities).all(), algorithm)
+            self.assertTrue(np.isfinite(expected).all(), algorithm)
 
     def test_backtest_charges_costs_and_forces_no_trade_without_signal(self):
         config = load_quant_config()

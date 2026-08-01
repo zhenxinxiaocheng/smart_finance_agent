@@ -107,7 +107,7 @@ public class QuantResearchController {
                                  String modelFamily,
                                  String horizonCode,
                                  Map<String, Object> parameters) {
-            this(assetId, null, modelFamily, horizonCode, parameters, "VALIDATED_ENSEMBLE");
+            this(assetId, null, modelFamily, horizonCode, parameters, "REGIME_ENSEMBLE");
         }
     }
 }

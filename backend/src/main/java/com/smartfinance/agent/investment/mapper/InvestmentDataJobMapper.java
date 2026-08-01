@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Mapper
@@ -48,4 +49,21 @@ public interface InvestmentDataJobMapper extends BaseMapper<InvestmentDataJob> {
                    @Param("status") String status, @Param("attemptCount") int attemptCount,
                    @Param("nextRetryAt") LocalDateTime nextRetryAt, @Param("errorMessage") String errorMessage,
                    @Param("finishedAt") LocalDateTime finishedAt, @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE investment_data_job
+            SET requested_start_date = #{requestedStartDate},
+                sample_start_date = #{sampleStartDate},
+                sample_end_date = #{sampleEndDate},
+                coverage_complete = #{coverageComplete},
+                dataset_version = #{datasetVersion}
+            WHERE id = #{id} AND status = 'RUNNING' AND lease_token = #{leaseToken}
+            """)
+    int updateCoverage(@Param("id") Long id,
+                       @Param("leaseToken") String leaseToken,
+                       @Param("requestedStartDate") LocalDate requestedStartDate,
+                       @Param("sampleStartDate") LocalDate sampleStartDate,
+                       @Param("sampleEndDate") LocalDate sampleEndDate,
+                       @Param("coverageComplete") boolean coverageComplete,
+                       @Param("datasetVersion") String datasetVersion);
 }

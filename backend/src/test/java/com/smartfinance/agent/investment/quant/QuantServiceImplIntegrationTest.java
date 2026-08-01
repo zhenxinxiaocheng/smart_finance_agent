@@ -13,9 +13,11 @@ import com.smartfinance.agent.investment.quant.QuantService;
 import com.smartfinance.agent.investment.quant.QuantServiceImpl;
 import com.smartfinance.agent.investment.quant.QuantTrainingOrchestrator;
 import com.smartfinance.agent.investment.quant.QuantTradingDecisionService;
+import com.smartfinance.agent.investment.quant.QuantResearchUniversePreparationService;
 import com.smartfinance.agent.investment.domain.HorizonSetting;
 import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
+import com.smartfinance.agent.investment.service.InvestmentDataJobService;
 import com.smartfinance.agent.investment.service.InvestmentHorizonService;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -97,6 +99,10 @@ class QuantServiceImplIntegrationTest {
     private QuantPaperProperties paperProperties;
     @MockBean
     private QuantBenchmarkProfileService benchmarkProfileService;
+    @MockBean
+    private InvestmentDataJobService investmentDataJobService;
+    @MockBean
+    private QuantResearchUniversePreparationService researchUniversePreparationService;
 
     @BeforeEach
     void setUp() {
@@ -176,13 +182,53 @@ class QuantServiceImplIntegrationTest {
     void draftModelNeverCreatesOrderEvenWhenProbabilityIsOneHundredPercent() {
         when(analysisServiceClient.quantJob(JOB_ID)).thenReturn(draftRemoteJob());
 
-        quantService.job(7L, JOB_ID);
+        Map<String, Object> view = quantService.job(7L, JOB_ID);
 
+        assertThat(view)
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("executionStatus", "COMPLETED")
+                .containsEntry("trainingOutcome", "VALIDATION_FAILED")
+                .containsEntry("deploymentStatus", "RESEARCH")
+                .containsEntry("economicRole", "RISK_REFERENCE");
         assertThat(jdbc.queryForObject(
                 "SELECT status FROM quant_model_version WHERE model_version = ?",
                 String.class,
                 MODEL_VERSION
         )).isEqualTo("DRAFT");
+        assertThat(count("quant_prediction")).isZero();
+        verify(paperTradingService, never()).queueValidatedPrediction(any(), any(), any(), any());
+    }
+
+    @Test
+    void incompleteTerminalResultStillPersistsCompletedValidationFailure() {
+        when(analysisServiceClient.quantJob(JOB_ID)).thenReturn(Map.of(
+                "jobId", JOB_ID,
+                "status", "SUCCEEDED",
+                "executionStatus", "COMPLETED",
+                "trainingOutcome", "VALIDATION_FAILED",
+                "deploymentStatus", "RESEARCH",
+                "result", Map.of("unexpected", true)
+        ));
+
+        Map<String, Object> view = quantService.job(7L, JOB_ID);
+
+        assertThat(view)
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("executionStatus", "COMPLETED")
+                .containsEntry("trainingOutcome", "VALIDATION_FAILED")
+                .containsEntry("deploymentStatus", "RESEARCH");
+        assertThat(jdbc.queryForMap(
+                """
+                SELECT status, execution_status, training_outcome
+                  FROM quant_job
+                 WHERE external_job_id = ?
+                """,
+                JOB_ID
+        )).containsEntry("STATUS", "SUCCEEDED")
+                .containsEntry("EXECUTION_STATUS", "COMPLETED")
+                .containsEntry("TRAINING_OUTCOME", "VALIDATION_FAILED");
+        assertThat(count("quant_feature_set")).isZero();
+        assertThat(count("quant_model_version")).isZero();
         assertThat(count("quant_prediction")).isZero();
         verify(paperTradingService, never()).queueValidatedPrediction(any(), any(), any(), any());
     }
@@ -321,6 +367,7 @@ class QuantServiceImplIntegrationTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Disabled("Replaced by absolute-return training behavior")
     void missingOfficialFundBenchmarkBlocksTrainingRequest() {
         when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
                 "profile-v1",
@@ -353,7 +400,7 @@ class QuantServiceImplIntegrationTest {
                     (product_id, trade_date, close_price, adjust_type, source)
                 VALUES (11, DATE '2026-07-24', 1.25, 'NONE', 'TEST')
                 """);
-        when(benchmarkProfileService.resolve(
+        when(benchmarkProfileService.resolveCached(
                 eq("MUTUAL_FUND"),
                 eq("270042"),
                 any(),
@@ -376,6 +423,79 @@ class QuantServiceImplIntegrationTest {
                 .containsEntry("errorCode", "BENCHMARK_UNAVAILABLE")
                 .containsEntry("userMessage", "官方基准数据尚未准备完成，当前暂停模型训练");
         verify(analysisServiceClient, never()).createQuantJob(any());
+    }
+
+    @Test
+    void missingOfficialFundBenchmarkStillStartsAbsoluteReturnTraining() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "Wave", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        jdbc.update("""
+                UPDATE investment_product
+                SET product_type = 'MUTUAL_FUND', market = 'FUND_CN', code = '270042'
+                WHERE id = 11
+                """);
+        jdbc.update("""
+                INSERT INTO investment_data_quality_snapshot
+                    (dataset_version, product_type, code, market, frequency, adjust_type,
+                     provider, adapter_version, quality_config_version, quality_rule_set_version,
+                     quality_status, decision, enforcement_mode, requested_start_date,
+                     requested_end_date, sample_start_date, sample_end_date, fetched_at,
+                     evaluated_at, manifest_json, report_json)
+                VALUES (?, 'MUTUAL_FUND', '270042', 'FUND_CN', 'DAILY', 'NONE',
+                        'TEST', 'test-v1', 'quality-v1', 'rules-v1',
+                        'PASS', 'ALLOW', 'STRICT', DATE '2024-01-01',
+                        DATE '2026-07-24', DATE '2024-01-01', DATE '2026-07-24',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', '{}')
+                """, DATASET_VERSION);
+        jdbc.update("""
+                INSERT INTO product_daily_quote
+                    (product_id, trade_date, close_price, adjust_type, source)
+                VALUES (11, DATE '2026-07-24', 1.25, 'NONE', 'TEST')
+                """);
+        when(benchmarkProfileService.resolveCached(
+                eq("MUTUAL_FUND"),
+                eq("270042"),
+                any(),
+                any(),
+                any()
+        )).thenReturn(new QuantBenchmarkProfileService.ResolvedBenchmark(
+                false,
+                "NASDAQ100_TR_CNY",
+                "QDII_INDEX_FUND",
+                null,
+                List.of(),
+                "BENCHMARK_UNAVAILABLE",
+                "Official benchmark data is temporarily unavailable"
+        ));
+        WealthOverviewResponse overview = new WealthOverviewResponse();
+        overview.setTotalAssets(java.math.BigDecimal.valueOf(100_000));
+        when(wealthService.overview(7L)).thenReturn(overview);
+        when(analysisServiceClient.quantRuntimeManifest()).thenReturn(
+                Map.of("runtimeVersion", "1".repeat(64))
+        );
+        when(analysisServiceClient.createQuantJob(any())).thenReturn(Map.of(
+                "jobId", "8".repeat(32),
+                "status", "QUEUED",
+                "configVersion", "quant-research-v2"
+        ));
+
+        Map<String, Object> result = trainingOrchestrator.refresh(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "QUEUED")
+                .containsEntry("jobId", "8".repeat(32));
+        ArgumentCaptor<Map> request = ArgumentCaptor.forClass(Map.class);
+        verify(analysisServiceClient).createQuantJob(request.capture());
+        assertThat(castView(request.getValue()))
+                .containsEntry("type", "AUTO_SEARCH")
+                .containsEntry("modelFamily", "QDII_INDEX_FUND")
+                .doesNotContainKeys("benchmarkRecords", "benchmarkProfileVersion");
+        verify(investmentDataJobService).ensureBenchmarkQueued(7L, 12L, 11L);
     }
 
     @Test
@@ -487,6 +607,57 @@ class QuantServiceImplIntegrationTest {
     }
 
     @Test
+    void actionPlanReducesWhenCurrentWeightExceedsPositiveSignalTarget() {
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        insertAllowedQuality();
+        jdbc.update("UPDATE investment_asset SET quantity = 300 WHERE id = 12");
+        jdbc.update("""
+                INSERT INTO product_daily_quote
+                    (product_id, trade_date, close_price, adjust_type, source)
+                VALUES (11, DATE '2026-07-24', 1510, 'QFQ', 'TEST')
+                """);
+        insertModel(MODEL_VERSION, "VALIDATED");
+        jdbc.update("""
+                INSERT INTO quant_strategy_version
+                    (strategy_version, model_version, user_id, asset_id, product_type,
+                     model_family, horizon_code, deployment_role, status,
+                     validation_metrics_json, activated_at)
+                VALUES (?, ?, 7, 12, 'STOCK', 'A_SHARE_STOCK', 'WAVE',
+                        'CHALLENGER', 'PAPER', '{}', CURRENT_TIMESTAMP)
+                """, STRATEGY_VERSION, MODEL_VERSION);
+        jdbc.update("""
+                INSERT INTO quant_prediction
+                    (user_id, asset_id, dataset_version, feature_set_version, model_version,
+                     strategy_version, horizon_profile_version, horizon_code, horizon_days,
+                     as_of_date, probability_positive_excess, expected_excess_return,
+                     interval_lower, interval_upper, confidence, action, target_weight,
+                     top_factors_json, risk_flags_json, backtest_summary_json)
+                VALUES (7, 12, ?, ?, ?, ?, 'profile-v1', 'WAVE', 20,
+                        DATE '2026-07-24', 0.60, 0.01, -0.10, 0.15, 'MEDIUM',
+                        'BUY_WATCH', 0.10, '[]', '[]', '{}')
+                """, DATASET_VERSION, FEATURE_VERSION, MODEL_VERSION, STRATEGY_VERSION);
+        WealthOverviewResponse overview = new WealthOverviewResponse();
+        overview.setTotalAssets(java.math.BigDecimal.valueOf(1_000_000));
+        when(wealthService.overview(7L)).thenReturn(overview);
+
+        Map<String, Object> result = actionPlanService.actionPlan(7L, 12L, "WAVE");
+
+        assertThat(result)
+                .containsEntry("status", "READY")
+                .containsEntry("action", "REDUCE")
+                .containsEntry("currentWeight", new java.math.BigDecimal("0.45300000"))
+                .containsEntry("targetWeight", new java.math.BigDecimal("0.1000000000"))
+                .containsEntry("orderAmountCny", new java.math.BigDecimal("353000.00"))
+                .containsEntry("estimatedQuantity", new java.math.BigDecimal("200"));
+    }
+
+    @Test
     void modelManagementSeparatesChampionAndChallengerForTheSelectedAsset() {
         String championModel = "1".repeat(64);
         String challengerModel = "2".repeat(64);
@@ -521,6 +692,69 @@ class QuantServiceImplIntegrationTest {
     }
 
     @Test
+    void rejectedDraftIsExposedOnlyAsNonTradableTechnicalSignal() {
+        jdbc.update("""
+                UPDATE quant_job
+                   SET job_type = 'AUTO_SEARCH',
+                       status = 'SUCCEEDED',
+                       execution_status = 'COMPLETED',
+                       training_outcome = 'VALIDATION_FAILED',
+                       deployment_status = 'RESEARCH',
+                       economic_role = 'RISK_REFERENCE',
+                       error_code = 'MODEL_REJECTED',
+                       user_message = '交易模型继续自动优化',
+                       result_json = ?,
+                       finished_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE external_job_id = ?
+                """, """
+                {
+                  "modelStatus":"DRAFT",
+                  "profitProbability":0.388,
+                  "lossProbability":0.612,
+                  "expectedNetReturn":-0.0025,
+                  "predictionInterval":[-0.0365,0.0216],
+                  "marketRegime":"HIGH_VOLATILITY",
+                  "topFactors":[{"name":"trend_slope","contribution":-0.31}],
+                  "riskReference":{
+                    "marketRegime":"HIGH_VOLATILITY",
+                    "annualizedVolatility":0.284,
+                    "positionLimit":0.35,
+                    "drawdownWarning":"当前波动与回撤风险偏高",
+                    "tradable":false
+                  },
+                  "baselineComparison":{
+                    "strongestBaseline":"BUY_AND_HOLD",
+                    "netExcessVsStrongestBaseline":-0.021
+                  },
+                  "searchSummary":{
+                    "technicalSignalAvailable":true,
+                    "nextAction":"CONTINUE_ON_NEW_DATA_OR_VERSION",
+                    "nextAdjustment":"延长信号窗口并使用波动率目标抑制换手"
+                  }
+                }
+                """, JOB_ID);
+
+        Map<String, Object> result = modelManagementService.management(7L, 12L, "WAVE");
+        Map<String, Object> signal = castView(result.get("technicalSignal"));
+
+        assertThat(signal)
+                .containsEntry("status", "READY")
+                .containsEntry("tradable", false)
+                .containsEntry("economicRole", "RISK_REFERENCE")
+                .containsEntry("profitProbability", 0.388)
+                .containsEntry("positionLimit", 0.35)
+                .containsEntry("marketRegime", "HIGH_VOLATILITY");
+        assertThat(signal)
+                .doesNotContainKeys("targetWeight", "orderAmountCny", "estimatedQuantity");
+        assertThat(castView(result.get("training")))
+                .containsEntry("executionStatus", "COMPLETED")
+                .containsEntry("trainingOutcome", "VALIDATION_FAILED")
+                .containsEntry("label", "执行完成、验证未通过；已保留风险参考")
+                .containsEntry("continuation", "CONTINUE_ON_NEW_DATA_OR_VERSION");
+    }
+
+    @Test
     void automaticTrainingReusesOnlyTheSameRuntimeVersion() {
         String autoJobId = "6".repeat(32);
         String changedRuntimeJobId = "5".repeat(32);
@@ -541,7 +775,7 @@ class QuantServiceImplIntegrationTest {
                     (11, DATE '2026-07-23', 1500, 'QFQ', 'TEST'),
                     (11, DATE '2026-07-24', 1510, 'QFQ', 'TEST')
                 """);
-        when(benchmarkProfileService.resolve(
+        when(benchmarkProfileService.resolveCached(
                 eq("STOCK"),
                 eq("600519"),
                 any(),
@@ -586,6 +820,85 @@ class QuantServiceImplIntegrationTest {
                 .containsEntry("jobId", autoJobId)
                 .containsEntry("status", "QUEUED");
         assertThat(afterRuntimeChange).containsEntry("jobId", changedRuntimeJobId);
+        verify(analysisServiceClient, times(2)).createQuantJob(any());
+    }
+
+    @Test
+    void automaticTrainingDoesNotReuseIncompleteSucceededResult() {
+        String incompleteJobId = "4".repeat(32);
+        String replacementJobId = "3".repeat(32);
+        String runtimeVersion = "1".repeat(64);
+        when(horizonService.resolve(7L, 12L)).thenReturn(new ResolvedHorizonProfile(
+                "profile-v1",
+                "template-v1",
+                List.of(new HorizonSetting(
+                        "WAVE", "波段", 10, 7, 45, 20, true, "ASSET")),
+                List.of()
+        ));
+        insertAllowedQuality();
+        jdbc.update("""
+                INSERT INTO product_daily_quote
+                    (product_id, trade_date, close_price, adjust_type, source)
+                VALUES
+                    (11, DATE '2026-07-23', 1500, 'QFQ', 'TEST'),
+                    (11, DATE '2026-07-24', 1510, 'QFQ', 'TEST')
+                """);
+        when(benchmarkProfileService.resolveCached(
+                eq("STOCK"),
+                eq("600519"),
+                any(),
+                any(),
+                any()
+        )).thenReturn(new QuantBenchmarkProfileService.ResolvedBenchmark(
+                false,
+                null,
+                null,
+                null,
+                List.of(),
+                "BENCHMARK_UNAVAILABLE",
+                "未配置股票辅助基准"
+        ));
+        WealthOverviewResponse overview = new WealthOverviewResponse();
+        overview.setTotalAssets(java.math.BigDecimal.valueOf(100_000));
+        when(wealthService.overview(7L)).thenReturn(overview);
+        when(analysisServiceClient.quantRuntimeManifest()).thenReturn(
+                Map.of("runtimeVersion", runtimeVersion)
+        );
+        when(analysisServiceClient.createQuantJob(any())).thenReturn(
+                Map.of(
+                        "jobId", incompleteJobId,
+                        "status", "QUEUED",
+                        "configVersion", "quant-research-v2"
+                ),
+                Map.of(
+                        "jobId", replacementJobId,
+                        "status", "QUEUED",
+                        "configVersion", "quant-research-v2"
+                )
+        );
+
+        Map<String, Object> first = trainingOrchestrator.refresh(7L, 12L, "WAVE");
+        jdbc.update("""
+                UPDATE quant_job
+                   SET status = 'SUCCEEDED',
+                       execution_status = 'COMPLETED',
+                       training_outcome = 'VALIDATION_FAILED',
+                       result_json = '{"unexpected":true}'
+                 WHERE external_job_id = ?
+                """, incompleteJobId);
+        Map<String, Object> replacement = trainingOrchestrator.refresh(7L, 12L, "WAVE");
+
+        assertThat(first).containsEntry("jobId", incompleteJobId);
+        assertThat(replacement).containsEntry("jobId", replacementJobId);
+        assertThat(jdbc.queryForMap("""
+                SELECT status, execution_status, training_outcome, error_code
+                  FROM quant_job
+                 WHERE external_job_id = ?
+                """, incompleteJobId))
+                .containsEntry("STATUS", "FAILED")
+                .containsEntry("EXECUTION_STATUS", "FAILED")
+                .containsEntry("TRAINING_OUTCOME", null)
+                .containsEntry("ERROR_CODE", "INVALID_RESULT_CONTRACT");
         verify(analysisServiceClient, times(2)).createQuantJob(any());
     }
 
@@ -771,6 +1084,18 @@ class QuantServiceImplIntegrationTest {
         result.put("modelVersion", MODEL_VERSION);
         result.put("modelFileHash", "1".repeat(64));
         result.put("modelStatus", "VALIDATED");
+        result.put("executionStatus", "COMPLETED");
+        result.put("trainingOutcome", "VALIDATED");
+        result.put("deploymentStatus", "RESEARCH");
+        result.put("economicRole", "RETURN_ENHANCER");
+        result.put("optimizationSummary", Map.of(
+                "optimizationStudyId", "study-010736",
+                "generation", 12
+        ));
+        result.put("baselineComparison", Map.of(
+                "netExcessVsStrongestBaseline", 0.03
+        ));
+        result.put("diagnostics", List.of());
         result.put("validationReport", Map.of(
                 "passed", true,
                 "lifecycle", "VALIDATED",
@@ -798,6 +1123,10 @@ class QuantServiceImplIntegrationTest {
                 "jobId", JOB_ID,
                 "type", "TRAIN_PREDICT",
                 "status", "SUCCEEDED",
+                "executionStatus", "COMPLETED",
+                "trainingOutcome", "VALIDATED",
+                "deploymentStatus", "RESEARCH",
+                "economicRole", "RETURN_ENHANCER",
                 "result", result
         );
     }
@@ -845,12 +1174,17 @@ class QuantServiceImplIntegrationTest {
         result.put("probabilityPositiveExcess", 1.0);
         result.put("targetWeight", 0.75);
         result.put("modelStatus", "DRAFT");
+        result.put("trainingOutcome", "VALIDATION_FAILED");
+        result.put("economicRole", "RISK_REFERENCE");
         result.put("validationReport", Map.of(
                 "passed", false,
                 "lifecycle", "DRAFT",
                 "failureCodes", List.of("MODEL_REJECTED"),
                 "checks", List.of()
         ));
-        return remote;
+        Map<String, Object> draftRemote = new LinkedHashMap<>(remote);
+        draftRemote.put("trainingOutcome", "VALIDATION_FAILED");
+        draftRemote.put("economicRole", "RISK_REFERENCE");
+        return draftRemote;
     }
 }

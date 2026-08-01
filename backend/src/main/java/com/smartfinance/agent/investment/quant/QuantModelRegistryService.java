@@ -58,6 +58,9 @@ public class QuantModelRegistryService {
     @Transactional
     public void persistArtifacts(QuantJob job, Map<String, Object> result) {
         String featureSetVersion = text(result.get("featureSetVersion"));
+        if (featureSetVersion == null) {
+            return;
+        }
         String modelVersion = text(result.get("modelVersion"));
         String strategyVersion = text(result.get("strategyVersion"));
         boolean strictlyValidated = isStrictlyValidated(result);
@@ -67,9 +70,6 @@ public class QuantModelRegistryService {
                 modelVersion,
                 strategyVersion
         );
-        if (featureSetVersion == null) {
-            return;
-        }
         persistFeatureSet(job, result, featureSetVersion);
         if (modelVersion != null && !deployedInference) {
             persistModelAndStrategy(job, result, modelVersion, strategyVersion, strictlyValidated);
@@ -271,6 +271,16 @@ public class QuantModelRegistryService {
             model.setStatus(strictlyValidated
                     ? String.valueOf(result.getOrDefault("modelStatus", "VALIDATED"))
                     : "DRAFT");
+            model.setDeploymentStatus(strictlyValidated ? "SHADOW" : "RESEARCH");
+            model.setEconomicRole(Objects.requireNonNullElse(
+                    text(result.get("economicRole")),
+                    "RISK_REFERENCE"
+            ));
+            model.setOptimizationStudyId(job.getOptimizationStudyId());
+            model.setOptimizationGeneration(job.getOptimizationGeneration());
+            model.setBaselineComparisonJson(writeJson(
+                    result.getOrDefault("baselineComparison", Map.of())
+            ));
             model.setArtifactUri("analysis-service://quant-models/" + modelVersion);
             model.setArtifactHash(String.valueOf(result.get("modelFileHash")));
             model.setMetricsJson(writeJson(result.getOrDefault("backtestSummary", Map.of())));
@@ -374,7 +384,7 @@ public class QuantModelRegistryService {
 
     private static boolean isStrictlyValidated(Map<String, Object> result) {
         String lifecycle = text(result.get("modelStatus"));
-        if (!List.of("VALIDATED", "PAPER_VERIFIED").contains(lifecycle)) {
+        if (!"VALIDATED".equals(lifecycle) && !"PAPER_VERIFIED".equals(lifecycle)) {
             return false;
         }
         Object reportValue = result.get("validationReport");

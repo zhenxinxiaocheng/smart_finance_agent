@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,6 +98,20 @@ class InvestmentDataJobServiceTest {
     }
 
     @Test
+    void benchmarkPreparationUsesDedicatedReusableJobType() {
+        when(mapper.insert(any())).thenReturn(1);
+
+        InvestmentDataJob job = service.ensureBenchmarkQueued(7L, 11L, 21L);
+
+        assertThat(job.getUserId()).isEqualTo(7L);
+        assertThat(job.getAssetId()).isEqualTo(11L);
+        assertThat(job.getProductId()).isEqualTo(21L);
+        assertThat(job.getJobType()).isEqualTo("BENCHMARK_HISTORY");
+        assertThat(job.getStatus()).isEqualTo("QUEUED");
+        verify(mapper).insert(job);
+    }
+
+    @Test
     void unknownProductTypeIsRejected() {
         assertThatThrownBy(() -> service.ensureQueued(7L, 11L, 21L, "BOND", false))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -172,12 +187,45 @@ class InvestmentDataJobServiceTest {
         existing.setStartedAt(LocalDateTime.of(2026, 7, 22, 9, 55));
         existing.setFinishedAt(LocalDateTime.of(2026, 7, 22, 9, 56));
         existing.setUpdatedAt(LocalDateTime.of(2026, 7, 22, 10, 0));
+        existing.setRequestedStartDate(LocalDate.of(2001, 8, 27));
+        existing.setSampleStartDate(LocalDate.of(2001, 8, 27));
+        existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
+        existing.setCoverageComplete(true);
+        existing.setDatasetVersion("dataset-v1");
         when(mapper.selectOne(any())).thenReturn(existing);
 
         var status = service.statusForAsset(7L, 11L);
 
         assertThat(status).containsOnlyKeys(
-                "status", "recordCount", "attemptCount", "errorMessage", "updatedAt");
+                "status", "recordCount", "attemptCount", "errorMessage", "updatedAt",
+                "requestedStartDate", "sampleStartDate", "sampleEndDate",
+                "coverageComplete", "datasetVersion");
+        assertThat(status).containsEntry("coverageComplete", true);
+    }
+
+    @Test
+    void recordsActualCoverageOnlyForCurrentLeaseOwner() {
+        when(mapper.updateCoverage(
+                91L,
+                "worker-token",
+                LocalDate.of(2001, 8, 27),
+                LocalDate.of(2001, 8, 27),
+                LocalDate.of(2026, 7, 21),
+                true,
+                "dataset-v1")).thenReturn(1);
+
+        boolean updated = service.recordCoverage(
+                91L,
+                "worker-token",
+                new InvestmentHistoryPreparationService.PreparationResult(
+                        5_987,
+                        LocalDate.of(2001, 8, 27),
+                        LocalDate.of(2001, 8, 27),
+                        LocalDate.of(2026, 7, 21),
+                        true,
+                        "dataset-v1"));
+
+        assertThat(updated).isTrue();
     }
 
     private static InvestmentDataJob job(String status, String jobType) {

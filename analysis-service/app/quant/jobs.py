@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import re
+import math
+import statistics
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +18,7 @@ from .backtest import simulate_a_share_long_only
 from .config import QuantConfig, with_experiment_parameters
 from .engine import (
     BenchmarkUnavailable,
+    InsufficientQuantData,
     QuantDomainError,
     QuantEngine,
     TrainingSample,
@@ -32,8 +37,10 @@ class QuantJobService:
         self.storage_root = storage_root.resolve()
         self.config = config
         self.jobs_root = self.storage_root / "quant-jobs"
+        self.requests_root = self.storage_root / "quant-job-requests"
         self.models_root = self.storage_root / "quant-models"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
+        self.requests_root.mkdir(parents=True, exist_ok=True)
         self.models_root.mkdir(parents=True, exist_ok=True)
         self.model_store = ImmutableModelStore(self.models_root)
         self.factor_store = FactorSnapshotStore(self.storage_root)
@@ -41,6 +48,7 @@ class QuantJobService:
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="quant-job")
         self._lock = threading.Lock()
         self._futures: dict[str, Any] = {}
+        self._recover_interrupted_jobs()
 
     def submit(self, request: Mapping[str, Any]) -> dict[str, Any]:
         job_type = str(request.get("type", "")).strip().upper()
@@ -58,6 +66,18 @@ class QuantJobService:
             "jobId": job_id,
             "type": job_type,
             "status": "QUEUED",
+            "executionStatus": "QUEUED",
+            "trainingOutcome": (
+                "OPTIMIZING"
+                if job_type in {"TRAIN_PREDICT", "AUTO_SEARCH"}
+                else None
+            ),
+            "deploymentStatus": (
+                "RESEARCH"
+                if job_type in {"TRAIN_PREDICT", "AUTO_SEARCH", "PREDICT"}
+                else None
+            ),
+            "economicRole": None,
             "configVersion": self.config.version,
             "datasetVersion": request.get("datasetVersion"),
             "createdAt": now,
@@ -65,10 +85,45 @@ class QuantJobService:
             "result": None,
         }
         self._write(state)
+        self._write_request(job_id, dict(request))
         future = self.executor.submit(self._run, job_id, dict(request))
         with self._lock:
             self._futures[job_id] = future
         return state
+
+    def _recover_interrupted_jobs(self) -> None:
+        for path in sorted(self.jobs_root.glob("*.json")):
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+                job_id = str(state.get("jobId") or "")
+                if state.get("status") not in {"QUEUED", "RUNNING"}:
+                    continue
+                request_path = self._request_path(job_id)
+                if not request_path.is_file():
+                    state.update(
+                        status="FAILED",
+                        updatedAt=_now(),
+                        finishedAt=_now(),
+                        errorCode="JOB_FAILED",
+                        errorSummary="Interrupted quant job request was not persisted",
+                        userMessage="服务重启前的训练任务无法恢复，请重新发起自动训练",
+                        result={
+                            "action": "PAUSE",
+                            "riskFlags": ["JOB_FAILED"],
+                            "userMessage": "服务重启前的训练任务无法恢复，请重新发起自动训练",
+                        },
+                    )
+                    self._write(state)
+                    continue
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+                state.update(status="QUEUED", updatedAt=_now())
+                state.update(executionStatus="QUEUED")
+                self._write(state)
+                future = self.executor.submit(self._run, job_id, request)
+                with self._lock:
+                    self._futures[job_id] = future
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
 
     def get(self, job_id: str) -> dict[str, Any]:
         path = self._path(job_id)
@@ -86,6 +141,7 @@ class QuantJobService:
                 future.cancel()
         state.update(
             status="CANCELLED",
+            executionStatus="CANCELLED",
             updatedAt=_now(),
             finishedAt=_now(),
             errorCode=None,
@@ -99,21 +155,67 @@ class QuantJobService:
         state = self.get(job_id)
         if state["status"] == "CANCELLED":
             return
-        state.update(status="RUNNING", updatedAt=_now())
+        state.update(
+            status="RUNNING",
+            executionStatus="RUNNING",
+            updatedAt=_now(),
+        )
         self._write(state)
         try:
-            result = self._execute(str(state["type"]), request)
-            if self.get(job_id)["status"] == "CANCELLED":
-                return
-            state.update(status="SUCCEEDED", updatedAt=_now(), result=result)
-        except Exception as error:
+            job_type = str(state["type"])
+            result = self._execute(job_type, request)
             if self.get(job_id)["status"] == "CANCELLED":
                 return
             state.update(
-                status="FAILED",
+                status="SUCCEEDED",
+                executionStatus="COMPLETED",
+                trainingOutcome=_training_outcome(job_type, result),
+                deploymentStatus=result.get("deploymentStatus") or "RESEARCH",
+                economicRole=result.get("economicRole"),
                 updatedAt=_now(),
-                **_failure_payload(error),
+                finishedAt=_now(),
+                result=result,
             )
+        except Exception as error:
+            if self.get(job_id)["status"] == "CANCELLED":
+                return
+            failure = _failure_payload(error)
+            if isinstance(error, InsufficientQuantData):
+                user_message = failure["result"]["userMessage"]
+                result = {
+                    **failure["result"],
+                    "executionStatus": "COMPLETED",
+                    "trainingOutcome": "DATA_BLOCKED",
+                    "deploymentStatus": "RESEARCH",
+                    "economicRole": "RISK_REFERENCE",
+                    "riskReference": self._fallback_risk_reference(
+                        request,
+                        user_message,
+                    ),
+                }
+                state.update(
+                    status="SUCCEEDED",
+                    executionStatus="COMPLETED",
+                    trainingOutcome="DATA_BLOCKED",
+                    deploymentStatus="RESEARCH",
+                    economicRole="RISK_REFERENCE",
+                    updatedAt=_now(),
+                    finishedAt=_now(),
+                    errorCode=failure["errorCode"],
+                    errorSummary=failure["errorSummary"],
+                    userMessage=user_message,
+                    result=result,
+                )
+            else:
+                state.update(
+                    status="FAILED",
+                    executionStatus="FAILED",
+                    trainingOutcome="VALIDATION_FAILED",
+                    updatedAt=_now(),
+                    finishedAt=_now(),
+                    userMessage=failure["result"]["userMessage"],
+                    **failure,
+                )
         self._write(state)
 
     def _execute(self, job_type: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -142,10 +244,6 @@ class QuantJobService:
             request.get("benchmarkCode"),
             benchmark,
         )
-        if product_type == "MUTUAL_FUND" and not benchmark_code:
-            raise BenchmarkUnavailable(
-                "official benchmark records are required for fund training"
-            )
         fundamentals = request.get("fundamentals") or []
         engine = QuantEngine(config)
         factor = engine.factor_row(records, product_type, horizon_days, benchmark, fundamentals)
@@ -169,10 +267,27 @@ class QuantJobService:
             **factor.values,
         }
         samples = None
+        target_samples = None
         factor_rows = [latest_factor_row]
         if job_type in {"TRAIN_PREDICT", "AUTO_SEARCH"}:
-            samples = engine.training_samples(records, product_type, horizon_days, benchmark, fundamentals)
+            target_samples = engine.training_samples(
+                records,
+                product_type,
+                horizon_days,
+                benchmark,
+                fundamentals,
+            )
             member_batches: list[tuple[str, Sequence[TrainingSample]]] = []
+            market_samples = _market_allocation_samples(
+                engine,
+                model_family=model_family,
+                benchmark_records=benchmark,
+                horizon_days=horizon_days,
+            )
+            if market_samples:
+                member_batches.append(
+                    ("MARKET::OFFICIAL_BENCHMARK", market_samples)
+                )
             for position, member in enumerate(request.get("universeRecords") or []):
                 member_records = member.get("records") or []
                 if len(member_records) < 2:
@@ -182,7 +297,7 @@ class QuantJobService:
                     member_records,
                     member_type,
                     horizon_days,
-                    member.get("benchmarkRecords") or [],
+                    _member_benchmark_records(member, benchmark),
                     member.get("fundamentals") or [],
                 )
                 series_id = str(
@@ -191,12 +306,13 @@ class QuantJobService:
                     or f"universe-member-{position}"
                 )
                 member_batches.append((series_id, member_samples))
-            samples = _merge_panel_samples(samples, member_batches)
+            samples = _merge_panel_samples(target_samples, member_batches)
             factor_rows = [{
                 **factor_context,
                 "asOfDate": sample.as_of_date,
                 "seriesId": sample.series_id,
                 "sampleRole": "TRAINING",
+                "predictionHead": sample.prediction_head,
                 "netReturn": sample.net_return,
                 "positiveReturn": sample.positive_return,
                 "negativeReturn": sample.negative_return,
@@ -329,7 +445,10 @@ class QuantJobService:
                 final_evaluator=evaluate_final_holdout,
             ).search(
                 samples,
+                evaluation_samples=target_samples,
                 benchmark_available=bool(benchmark_code and benchmark),
+                study_name=_optimization_study_name(request, config),
+                storage=self._optimization_storage(),
             )
             artifact = search_result.artifact
             search_summary = search_result.summary
@@ -360,7 +479,27 @@ class QuantJobService:
             current_weight=float(request.get("currentWeight") or 0.0),
             config=config,
         )
+        economic_role = str(
+            artifact.metrics.get("economicRole") or "RISK_REFERENCE"
+        )
+        diagnostics = (
+            [
+                check
+                for check in validation_report.get("checks", [])
+                if not bool(check.get("required"))
+            ]
+            if isinstance(validation_report, dict)
+            else []
+        )
         return common | {
+            "executionStatus": "COMPLETED",
+            "trainingOutcome": (
+                "VALIDATED"
+                if artifact.status == "VALIDATED"
+                else "VALIDATION_FAILED"
+            ),
+            "deploymentStatus": "RESEARCH",
+            "economicRole": economic_role,
             "modelVersion": artifact.model_version,
             "modelFileHash": model_file_hash,
             "modelStatus": artifact.status,
@@ -378,6 +517,32 @@ class QuantJobService:
             "featureVector": factor.values,
             "riskFlags": risk_flags,
             "validationReport": validation_report,
+            "diagnostics": diagnostics,
+            "baselineComparison": _baseline_comparison(artifact.metrics),
+            "optimizationSummary": search_summary,
+            "riskReference": {
+                "marketRegime": common["marketRegime"],
+                "annualizedVolatility": factor.values.get(
+                    "realized_volatility",
+                    0.0,
+                ),
+                "maximumPositionWeight": config.number(
+                    f"risk.maximumAssetWeight.{product_type}"
+                ),
+                "currentDrawdown": factor.values.get(
+                    "maximum_drawdown",
+                    0.0,
+                ),
+                "warning": (
+                    "高波动或下行阶段，建议降低仓位上限"
+                    if common["marketRegime"]
+                    in {"HIGH_VOLATILITY", "DOWNTREND"}
+                    else "当前风险状态未触发强制降仓"
+                ),
+                "tradable": economic_role
+                in {"RETURN_ENHANCER", "DRAWDOWN_GUARD"}
+                and artifact.status == "VALIDATED",
+            },
             "backtestSummary": artifact.metrics,
             "searchSummary": search_summary,
         }
@@ -395,10 +560,83 @@ class QuantJobService:
     def _save_model(self, artifact: Any) -> str:
         return self.model_store.save(artifact)
 
+    def _fallback_risk_reference(
+        self,
+        request: Mapping[str, Any],
+        warning: str,
+    ) -> dict[str, Any]:
+        closes: list[float] = []
+        for record in request.get("records") or []:
+            if not isinstance(record, Mapping):
+                continue
+            raw = record.get("close", record.get("nav"))
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0.0:
+                closes.append(value)
+        returns = [
+            closes[index] / closes[index - 1] - 1.0
+            for index in range(1, len(closes))
+            if closes[index - 1] > 0.0
+        ]
+        annualized_volatility = (
+            statistics.pstdev(returns) * math.sqrt(252.0)
+            if len(returns) >= 2
+            else None
+        )
+        peak = 0.0
+        maximum_drawdown = 0.0
+        for close in closes:
+            peak = max(peak, close)
+            if peak > 0.0:
+                maximum_drawdown = min(
+                    maximum_drawdown,
+                    close / peak - 1.0,
+                )
+        regime = (
+            "HIGH_VOLATILITY"
+            if annualized_volatility is not None
+            and annualized_volatility
+            >= self.config.number("regime.highVolatility")
+            else "RANGE"
+            if returns
+            else "UNKNOWN"
+        )
+        return {
+            "marketRegime": regime,
+            "annualizedVolatility": annualized_volatility,
+            "currentDrawdown": maximum_drawdown if closes else None,
+            "maximumPositionWeight": None,
+            "warning": warning,
+            "tradable": False,
+        }
+
+    def _optimization_storage(self) -> str:
+        root = self.storage_root / "quant-optimization"
+        root.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{(root / 'studies.db').resolve().as_posix()}"
+
     def _path(self, job_id: str) -> Path:
         if not _JOB_ID.fullmatch(job_id):
             raise ValueError("invalid quant job id")
         return self.jobs_root / f"{job_id}.json"
+
+    def _request_path(self, job_id: str) -> Path:
+        if not _JOB_ID.fullmatch(job_id):
+            raise ValueError("invalid quant job id")
+        return self.requests_root / f"{job_id}.json"
+
+    def _write_request(self, job_id: str, request: Mapping[str, Any]) -> None:
+        path = self._request_path(job_id)
+        temporary = path.with_suffix(".tmp")
+        payload = json.dumps(
+            request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        with self._lock:
+            temporary.write_text(payload, encoding="utf-8")
+            temporary.replace(path)
 
     def _write(self, state: Mapping[str, Any]) -> None:
         path = self._path(str(state["jobId"]))
@@ -417,6 +655,73 @@ def default_quant_storage_root(config: QuantConfig) -> Path:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _training_outcome(
+    job_type: str,
+    result: Mapping[str, Any],
+) -> str | None:
+    if job_type not in {"TRAIN_PREDICT", "AUTO_SEARCH"}:
+        return None
+    return (
+        "VALIDATED"
+        if str(result.get("modelStatus") or "") == "VALIDATED"
+        else "VALIDATION_FAILED"
+    )
+
+
+def _optimization_study_name(
+    request: Mapping[str, Any],
+    config: QuantConfig,
+) -> str:
+    material = {
+        "datasetVersion": request.get("datasetVersion"),
+        "featureVersion": request.get("featureVersion"),
+        "algorithmVersion": request.get(
+            "algorithmVersion",
+            request.get("runtimeVersion") or "quant-algorithms-v5",
+        ),
+        "quantConfigVersion": config.version,
+        "researchUniverseVersion": request.get("researchUniverseVersion"),
+        "productType": request.get("productType"),
+        "code": request.get("code"),
+        "horizonCode": request.get("horizonCode"),
+        "horizonDays": request.get("horizonDays"),
+    }
+    fingerprint = hashlib.sha256(json.dumps(
+        material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()[:24]
+    return f"quant-{fingerprint}"
+
+
+def _baseline_comparison(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "strategyAnnualizedNetReturn": metrics.get("annualizedNetReturn"),
+        "buyAndHoldAnnualizedReturn": metrics.get(
+            "buyAndHoldAnnualizedReturn"
+        ),
+        "officialBenchmarkAnnualizedReturn": metrics.get(
+            "officialBenchmarkAnnualizedReturn"
+        ),
+        "cashAnnualizedReturn": metrics.get("cashAnnualizedReturn"),
+        "strongestBaseline": metrics.get("strongestBaseline"),
+        "strongestBaselineAnnualizedReturn": metrics.get(
+            "strongestBaselineAnnualizedReturn"
+        ),
+        "netExcessVsStrongestBaseline": metrics.get(
+            "netExcessVsStrongestBaseline"
+        ),
+        "strategyMaximumDrawdown": metrics.get("maximumDrawdown"),
+        "buyAndHoldMaximumDrawdown": metrics.get(
+            "buyAndHoldMaximumDrawdown"
+        ),
+        "drawdownReduction": metrics.get("drawdownReduction"),
+        "downsideCapture": metrics.get("downsideCapture"),
+        "turnover": metrics.get("turnover"),
+    }
 
 
 def _a_share_records(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -467,6 +772,46 @@ def _merge_panel_samples(
             raise ValueError("universe member seriesId must be non-empty and distinct from TARGET")
         merged.extend(replace(sample, series_id=normalized_id) for sample in samples)
     return sorted(merged, key=lambda item: (item.as_of_date, item.series_id))
+
+
+def _member_benchmark_records(
+    member: Mapping[str, Any],
+    shared_benchmark: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    member_benchmark = member.get("benchmarkRecords")
+    if isinstance(member_benchmark, list) and member_benchmark:
+        return member_benchmark
+    return shared_benchmark
+
+
+def _market_allocation_samples(
+    engine: QuantEngine,
+    *,
+    model_family: str,
+    benchmark_records: list[Mapping[str, Any]],
+    horizon_days: int,
+) -> list[TrainingSample]:
+    normalized_family = str(model_family).strip().upper()
+    if normalized_family not in {"INDEX_FUND", "QDII_INDEX_FUND"}:
+        return []
+    if not benchmark_records:
+        raise BenchmarkUnavailable(
+            "index fund market allocation head requires official benchmark history"
+        )
+    samples = engine.training_samples(
+        benchmark_records,
+        "MUTUAL_FUND",
+        horizon_days,
+        benchmark_records,
+    )
+    return [
+        replace(
+            sample,
+            series_id="MARKET::OFFICIAL_BENCHMARK",
+            prediction_head="MARKET_ALLOCATION",
+        )
+        for sample in samples
+    ]
 
 
 def _failure_payload(error: Exception) -> dict[str, Any]:

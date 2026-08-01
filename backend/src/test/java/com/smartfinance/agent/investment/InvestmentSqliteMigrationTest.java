@@ -121,7 +121,7 @@ class InvestmentSqliteMigrationTest {
                 assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
                         .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("18");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("23");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -171,7 +171,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("18");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("23");
         } finally {
             Files.deleteIfExists(database);
         }

@@ -44,30 +44,21 @@ class QuantConfig:
         return value.strip()
 
 
-_EXPERIMENT_PARAMETER_PATHS = {
-    "linearWeight": "prediction.ensemble.linearWeight",
-    "classificationC": "training.elasticNet.classificationC",
-    "regressionAlpha": "training.elasticNet.regressionAlpha",
-    "estimators": "training.xgboost.estimators",
-    "maximumDepth": "training.xgboost.maximumDepth",
-    "learningRate": "training.xgboost.learningRate",
-}
-
-
 def with_experiment_parameters(
     base: QuantConfig,
     parameters: dict[str, Any] | None,
 ) -> QuantConfig:
     if not parameters:
         return base
-    unsupported = sorted(set(parameters) - set(_EXPERIMENT_PARAMETER_PATHS))
+    parameter_paths = _experiment_parameter_paths(base.data)
+    unsupported = sorted(set(parameters) - set(parameter_paths))
     if unsupported:
         raise ValueError(f"unsupported experiment parameter: {unsupported[0]}")
     data = deepcopy(base.data)
     for key, value in parameters.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"experiment parameter must be numeric: {key}")
-        parts = _EXPERIMENT_PARAMETER_PATHS[key].split(".")
+        parts = parameter_paths[key].split(".")
         current = data
         for part in parts[:-1]:
             current = current[part]
@@ -80,6 +71,33 @@ def with_experiment_parameters(
     ).encode("utf-8")
     data["version"] = f"{base.version}-exp-{hashlib.sha256(material).hexdigest()[:12]}"
     return QuantConfig(data)
+
+
+def _experiment_parameter_paths(data: dict[str, Any]) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    strategies = data.get("autoSearch", {}).get("strategies", [])
+    if not isinstance(strategies, list):
+        return paths
+    for strategy in strategies:
+        if not isinstance(strategy, dict):
+            continue
+        specs = strategy.get("parameters", [])
+        if not isinstance(specs, list):
+            continue
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            name = spec.get("name")
+            path = spec.get("configPath")
+            if not isinstance(name, str) or not isinstance(path, str):
+                continue
+            existing = paths.get(name)
+            if existing is not None and existing != path:
+                raise ValueError(
+                    f"search parameter {name} maps to multiple config paths"
+                )
+            paths[name] = path
+    return paths
 
 
 def load_quant_config(path: str | Path | None = None) -> QuantConfig:
@@ -99,13 +117,14 @@ def load_quant_config(path: str | Path | None = None) -> QuantConfig:
     config.integer("training.walkForwardFolds")
     config.integer("training.minimumCalibrationSamples")
     config.integer("training.minimumEvaluationSamples")
-    config.number("autoSearch.finalHoldoutFraction")
-    config.integer("autoSearch.minimumFinalHoldoutSamples")
-    config.integer("autoSearch.finalHoldoutValidation.minimumSamples")
-    config.number("autoSearch.finalHoldoutValidation.minimumOosR2")
-    config.number("autoSearch.finalHoldoutValidation.minimumBrierSkill")
-    config.number("autoSearch.finalHoldoutValidation.minimumLogLossSkill")
-    config.number("autoSearch.finalHoldoutValidation.minimumNetReturn")
-    config.number("autoSearch.finalHoldoutValidation.minimumIntervalCoverage")
-    config.number("autoSearch.finalHoldoutValidation.maximumIntervalCoverage")
+    if "autoSearch" in data:
+        config.number("autoSearch.finalHoldoutFraction")
+        config.integer("autoSearch.minimumFinalHoldoutSamples")
+        config.integer("autoSearch.finalHoldoutValidation.minimumSamples")
+        config.number("autoSearch.finalHoldoutValidation.minimumOosR2")
+        config.number("autoSearch.finalHoldoutValidation.minimumBrierSkill")
+        config.number("autoSearch.finalHoldoutValidation.minimumLogLossSkill")
+        config.number("autoSearch.finalHoldoutValidation.minimumNetReturn")
+        config.number("autoSearch.finalHoldoutValidation.minimumIntervalCoverage")
+        config.number("autoSearch.finalHoldoutValidation.maximumIntervalCoverage")
     return config

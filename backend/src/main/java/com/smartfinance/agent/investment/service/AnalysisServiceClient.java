@@ -1,11 +1,14 @@
 package com.smartfinance.agent.investment.service;
 
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -24,12 +27,25 @@ public class AnalysisServiceClient {
                                   BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
                                   BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
                                   BigDecimal volumeRatio, BigDecimal amplitude,
-                                  List<String> warnings) {
+                                  List<String> warnings, LocalDate inceptionDate) {
+        public ResolvedProduct(String productType, String code, String name, String market,
+                               String currency, String provider, LocalDate dataDate,
+                               BigDecimal latestPrice, BigDecimal previousClose,
+                               BigDecimal changeAmount, BigDecimal changePercent,
+                               BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
+                               BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
+                               BigDecimal volumeRatio, BigDecimal amplitude,
+                               List<String> warnings) {
+            this(productType, code, name, market, currency, provider, dataDate, latestPrice,
+                    previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
+                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, null);
+        }
+
         public ResolvedProduct(String productType, String code, String name, String market,
                                String currency, String provider, LocalDate dataDate,
                                BigDecimal latestPrice, List<String> warnings) {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
-                    null, null, null, null, null, null, null, null, null, null, null, warnings);
+                    null, null, null, null, null, null, null, null, null, null, null, warnings, null);
         }
     }
 
@@ -45,12 +61,30 @@ public class AnalysisServiceClient {
     }
 
     private final RestClient restClient;
+    private final RestClient benchmarkRestClient;
     private final String internalToken;
 
+    @Autowired
     public AnalysisServiceClient(RestClient.Builder builder,
                                  @Value("${analysis-service.base-url:http://127.0.0.1:8090}") String baseUrl,
-                                 @Value("${analysis-service.internal-token:dev-analysis-token}") String internalToken) {
+                                 @Value("${analysis-service.internal-token:dev-analysis-token}") String internalToken,
+                                 @Value("${analysis-service.benchmark-connect-timeout:10s}") Duration benchmarkConnectTimeout,
+                                 @Value("${analysis-service.benchmark-read-timeout:90s}") Duration benchmarkReadTimeout) {
+        RestClient.Builder baseBuilder = builder.clone().baseUrl(baseUrl);
+        this.restClient = baseBuilder.clone().build();
+        SimpleClientHttpRequestFactory benchmarkRequestFactory =
+                new SimpleClientHttpRequestFactory();
+        benchmarkRequestFactory.setConnectTimeout(benchmarkConnectTimeout);
+        benchmarkRequestFactory.setReadTimeout(benchmarkReadTimeout);
+        this.benchmarkRestClient = baseBuilder.clone()
+                .requestFactory(benchmarkRequestFactory)
+                .build();
+        this.internalToken = internalToken;
+    }
+
+    AnalysisServiceClient(RestClient.Builder builder, String baseUrl, String internalToken) {
         this.restClient = builder.baseUrl(baseUrl).build();
+        this.benchmarkRestClient = this.restClient;
         this.internalToken = internalToken;
     }
 
@@ -180,7 +214,37 @@ public class AnalysisServiceClient {
         body.put("benchmarkCode", benchmarkCode);
         body.put("startDate", startDate.toString());
         body.put("endDate", endDate.toString());
-        return postInternal("/internal/v1/market-data/benchmarks/daily", body, "量化基准行情");
+        return postInternal(
+                benchmarkRestClient,
+                "/internal/v1/market-data/benchmarks/daily",
+                body,
+                "量化基准行情"
+        );
+    }
+
+    public Map<String, Object> researchFundUniverse(String modelFamily,
+                                                    String benchmarkCode,
+                                                    String targetCode,
+                                                    LocalDate startDate,
+                                                    LocalDate endDate,
+                                                    int limit,
+                                                    int minimumRecords,
+                                                    Map<String, Object> selectionRule) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("modelFamily", modelFamily);
+        body.put("benchmarkCode", benchmarkCode);
+        body.put("targetCode", targetCode);
+        body.put("startDate", startDate.toString());
+        body.put("endDate", endDate.toString());
+        body.put("limit", limit);
+        body.put("minimumRecords", minimumRecords);
+        body.put("selectionRule", selectionRule);
+        return postInternal(
+                benchmarkRestClient,
+                "/internal/v1/market-data/research-universes/funds",
+                body,
+                "量化研究资产池"
+        );
     }
 
     public Map<String, Object> cancelQuantJob(String jobId) {
@@ -256,7 +320,10 @@ public class AnalysisServiceClient {
                 decimal(response, "lowPrice"), decimal(response, "volume"),
                 decimal(response, "amount"), decimal(response, "turnoverRate"),
                 decimal(response, "volumeRatio"), decimal(response, "amplitude"),
-                response.get("warnings") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of()
+                response.get("warnings") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of(),
+                response.get("inceptionDate") == null
+                        ? null
+                        : LocalDate.parse(String.valueOf(response.get("inceptionDate")))
         );
     }
 
@@ -302,7 +369,15 @@ public class AnalysisServiceClient {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> postInternal(String path, Map<String, ?> body, String operation) {
-        Map<String, Object> response = restClient.post()
+        return postInternal(restClient, path, body, operation);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> postInternal(RestClient client,
+                                             String path,
+                                             Map<String, ?> body,
+                                             String operation) {
+        Map<String, Object> response = client.post()
                 .uri(path)
                 .header("X-Internal-Token", internalToken)
                 .contentType(MediaType.APPLICATION_JSON)

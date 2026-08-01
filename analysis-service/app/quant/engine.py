@@ -44,6 +44,7 @@ class TrainingSample:
     net_return: float | None = None
     positive_return: bool | None = None
     negative_return: bool | None = None
+    prediction_head: str = "ASSET_RETURN"
 
 
 class QuantEngine:

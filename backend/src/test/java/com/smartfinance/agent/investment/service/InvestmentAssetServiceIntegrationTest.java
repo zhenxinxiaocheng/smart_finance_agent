@@ -5,6 +5,7 @@ import com.smartfinance.agent.investment.dto.InvestmentAssetUpdateRequest;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
+import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.ChinaTradingCalendarService;
@@ -56,6 +57,8 @@ class InvestmentAssetServiceIntegrationTest {
     @Autowired
     private ProductDailyQuoteMapper quoteMapper;
     @Autowired
+    private InvestmentProductMapper productMapper;
+    @Autowired
     private InvestmentDataJobMapper dataJobMapper;
     @MockBean
     private AnalysisServiceClient analysisServiceClient;
@@ -70,7 +73,8 @@ class InvestmentAssetServiceIntegrationTest {
                         "STOCK", "600519", "贵州茅台", "SSE", "CNY", "AKSHARE",
                         LocalDate.of(2026, 7, 10), new BigDecimal("1204.98"),
                         new BigDecimal("1190.00"), new BigDecimal("14.98"), new BigDecimal("1.2588"),
-                        null, null, null, null, null, null, null, null, List.of()));
+                        null, null, null, null, null, null, null, null, List.of(),
+                        LocalDate.of(2001, 8, 27)));
         when(analysisServiceClient.realtimeQuote(anyString(), anyString()))
                 .thenReturn(new AnalysisServiceClient.RealtimeQuote(
                         "600519", "SSE", new BigDecimal("1198.72"),
@@ -89,6 +93,8 @@ class InvestmentAssetServiceIntegrationTest {
         assertThat(asset.getName()).isEqualTo("贵州茅台");
         assertThat(asset.getQuantity()).isNull();
         assertThat(asset.getAverageCost()).isNull();
+        assertThat(productMapper.selectById(asset.getProductId()).getInceptionDate())
+                .isEqualTo(LocalDate.of(2001, 8, 27));
         assertThat(assetService.list(7L)).extracting("id").containsExactly(asset.getId());
         assertThatThrownBy(() -> assetService.get(8L, asset.getId()))
                 .isInstanceOf(IllegalArgumentException.class);

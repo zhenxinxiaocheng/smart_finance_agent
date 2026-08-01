@@ -36,6 +36,7 @@ class QuantModelMonitorServiceTest {
     @Mock private InvestmentAssetMapper assetMapper;
     @Mock private ProductDailyQuoteMapper quoteMapper;
     @Mock private AnalysisServiceClient analysisServiceClient;
+    @Mock private QuantTrainingOrchestrator trainingOrchestrator;
 
     private QuantModelMonitorService service;
 
@@ -55,6 +56,7 @@ class QuantModelMonitorServiceTest {
                 analysisServiceClient,
                 runtime,
                 new ObjectMapper().findAndRegisterModules(),
+                trainingOrchestrator,
                 20
         );
     }

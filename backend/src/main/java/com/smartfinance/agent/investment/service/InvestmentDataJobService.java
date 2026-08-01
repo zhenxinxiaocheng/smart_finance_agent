@@ -57,6 +57,54 @@ public class InvestmentDataJobService {
         return job;
     }
 
+    @Transactional
+    public InvestmentDataJob ensureBenchmarkQueued(Long userId, Long assetId, Long productId) {
+        return ensureSpecialQueued(userId, assetId, productId, "BENCHMARK_HISTORY");
+    }
+
+    @Transactional
+    public InvestmentDataJob ensureResearchUniverseQueued(Long userId,
+                                                          Long assetId,
+                                                          Long productId) {
+        return ensureSpecialQueued(userId, assetId, productId, "RESEARCH_UNIVERSE_HISTORY");
+    }
+
+    private InvestmentDataJob ensureSpecialQueued(Long userId,
+                                                  Long assetId,
+                                                  Long productId,
+                                                  String jobType) {
+        InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
+        if (existing != null) {
+            if (List.of("SUCCEEDED", "FAILED", "PARTIAL", "CANCELLED")
+                    .contains(existing.getStatus())) {
+                resetForRefresh(existing);
+                existing.setForceRefresh(false);
+                mapper.updateById(existing);
+            }
+            return existing;
+        }
+
+        InvestmentDataJob job = new InvestmentDataJob();
+        job.setUserId(userId);
+        job.setAssetId(assetId);
+        job.setProductId(productId);
+        job.setJobType(jobType);
+        job.setStatus("QUEUED");
+        job.setForceRefresh(false);
+        job.setRecordCount(0);
+        job.setAttemptCount(0);
+        try {
+            mapper.insert(job);
+        } catch (DuplicateKeyException duplicateKey) {
+            InvestmentDataJob winningJob = findByAssetAndType(assetId, jobType);
+            if (winningJob != null) {
+                return winningJob;
+            }
+            throw duplicateKey;
+        }
+        return job;
+    }
+
     public Map<String, Object> statusForAsset(Long userId, Long assetId) {
         InvestmentDataJob job = mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
                 .eq(InvestmentDataJob::getUserId, userId)
@@ -72,6 +120,11 @@ public class InvestmentDataJobService {
         status.put("attemptCount", job.getAttemptCount());
         status.put("errorMessage", job.getErrorMessage());
         status.put("updatedAt", job.getUpdatedAt());
+        status.put("requestedStartDate", job.getRequestedStartDate());
+        status.put("sampleStartDate", job.getSampleStartDate());
+        status.put("sampleEndDate", job.getSampleEndDate());
+        status.put("coverageComplete", job.getCoverageComplete());
+        status.put("datasetVersion", job.getDatasetVersion());
         return status;
     }
 
@@ -126,6 +179,23 @@ public class InvestmentDataJobService {
                               LocalDateTime finishedAt) {
         return mapper.reschedule(id, leaseToken, "FAILED", attemptCount, null,
                 errorMessage, finishedAt, finishedAt) == 1;
+    }
+
+    public boolean recordCoverage(
+            Long id,
+            String leaseToken,
+            InvestmentHistoryPreparationService.PreparationResult result) {
+        if (result == null) {
+            return false;
+        }
+        return mapper.updateCoverage(
+                id,
+                leaseToken,
+                result.requestedStartDate(),
+                result.sampleStartDate(),
+                result.sampleEndDate(),
+                result.coverageComplete(),
+                result.datasetVersion()) == 1;
     }
 
     private InvestmentDataJob findByAssetAndType(Long assetId, String jobType) {

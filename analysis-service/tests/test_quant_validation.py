@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.quant.validation import (
+    EconomicRole,
     ModelLifecycle,
     ValidationFailureCode,
     choose_calibration_method,
@@ -11,6 +12,7 @@ from app.quant.validation import (
 )
 from app.quant.engine import TrainingSample
 from app.quant.models import _date_walk_forward_splits
+from app.quant.models import _drawdown_guard_fold_pass
 from app.quant.models import _probability_of_backtest_overfitting
 
 
@@ -27,6 +29,14 @@ def passing_metrics() -> dict[str, float]:
         "intervalCoverage": 0.8,
         "pinballSkill": 0.03,
         "annualizedExcessReturn": 0.06,
+        "annualizedNetReturn": 0.08,
+        "netExcessVsStrongestBaseline": 0.03,
+        "costStressNetExcessVsStrongestBaseline": 0.02,
+        "cashAnnualizedReturn": 0.015,
+        "drawdownReduction": 0.1,
+        "downsideCapture": 0.9,
+        "crossWindowVolatility": 0.04,
+        "turnover": 0.2,
         "sharpe": 0.9,
         "deflatedSharpeProbability": 0.97,
         "pbo": 0.1,
@@ -85,24 +95,38 @@ class QuantValidationTest(unittest.TestCase):
         self.assertEqual(0.0, _probability_of_backtest_overfitting(stable))
         self.assertGreater(_probability_of_backtest_overfitting(overfit), 0.2)
 
+    def test_drawdown_guard_fold_treats_avoided_loss_as_success(self):
+        self.assertTrue(_drawdown_guard_fold_pass(0.0, -0.10, 0.8))
+        self.assertTrue(_drawdown_guard_fold_pass(-0.07, -0.10, 0.8))
+        self.assertFalse(_drawdown_guard_fold_pass(-0.09, -0.10, 0.8))
+        self.assertTrue(_drawdown_guard_fold_pass(0.0, 0.05, 0.8))
+        self.assertFalse(_drawdown_guard_fold_pass(-0.01, 0.05, 0.8))
+
     def test_small_calibration_sample_uses_sigmoid(self):
         self.assertEqual("sigmoid", choose_calibration_method(999))
         self.assertEqual("isotonic", choose_calibration_method(1000))
 
-    def test_missing_benchmark_is_a_hard_validation_failure(self):
+    def test_missing_benchmark_can_still_validate_drawdown_guard(self):
+        metrics = passing_metrics() | {
+            "netExcessVsStrongestBaseline": -0.02,
+            "deflatedSharpeProbability": 0.4,
+            "drawdownReduction": 0.3,
+            "downsideCapture": 0.7,
+            "annualizedNetReturn": 0.04,
+            "costStressAnnualizedExcessReturn": 0.03,
+            "foldPassRatio": 0.2,
+            "drawdownGuardFoldPassRatio": 0.8,
+        }
         report = evaluate_validation(
-            passing_metrics(),
+            metrics,
             horizon_code="SHORT",
             benchmark_available=False,
             data_fresh=True,
         )
 
-        self.assertEqual(ModelLifecycle.DRAFT, report.lifecycle)
-        self.assertIn(
-            ValidationFailureCode.BENCHMARK_UNAVAILABLE,
-            report.failure_codes,
-        )
-        self.assertFalse(report.passed)
+        self.assertEqual(ModelLifecycle.VALIDATED, report.lifecycle)
+        self.assertEqual(EconomicRole.DRAWDOWN_GUARD, report.economic_role)
+        self.assertTrue(report.passed)
 
     def test_strict_metrics_produce_validated_report(self):
         report = evaluate_validation(
@@ -113,9 +137,52 @@ class QuantValidationTest(unittest.TestCase):
         )
 
         self.assertEqual(ModelLifecycle.VALIDATED, report.lifecycle)
+        self.assertEqual(EconomicRole.RETURN_ENHANCER, report.economic_role)
         self.assertEqual((), report.failure_codes)
         self.assertTrue(report.passed)
-        self.assertTrue(all(item.passed for item in report.checks))
+        self.assertTrue(all(
+            item.passed for item in report.checks if item.required
+        ))
+
+    def test_prediction_diagnostics_do_not_veto_economic_model(self):
+        metrics = passing_metrics() | {
+            "oosR2": -0.4,
+            "dmPValue": 0.8,
+            "medianRankIc": -0.1,
+            "brierSkill": -0.2,
+            "intervalCoverage": 0.5,
+        }
+
+        report = evaluate_validation(
+            metrics,
+            horizon_code="SHORT",
+            benchmark_available=True,
+            data_fresh=True,
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(EconomicRole.RETURN_ENHANCER, report.economic_role)
+        self.assertFalse(report.diagnostics_passed)
+
+    def test_failed_economic_roles_fall_back_to_non_tradable_risk_reference(self):
+        metrics = passing_metrics() | {
+            "netExcessVsStrongestBaseline": -0.02,
+            "drawdownReduction": 0.05,
+            "downsideCapture": 1.1,
+            "annualizedNetReturn": 0.0,
+        }
+
+        report = evaluate_validation(
+            metrics,
+            horizon_code="SHORT",
+            benchmark_available=True,
+            data_fresh=True,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(ModelLifecycle.DRAFT, report.lifecycle)
+        self.assertEqual(EconomicRole.RISK_REFERENCE, report.economic_role)
+        self.assertIn(ValidationFailureCode.MODEL_REJECTED, report.failure_codes)
 
     def test_insufficient_independent_events_are_reported_explicitly(self):
         metrics = passing_metrics() | {"independentEventCount": 19.0}
@@ -128,6 +195,32 @@ class QuantValidationTest(unittest.TestCase):
         )
 
         self.assertIn(
+            ValidationFailureCode.INSUFFICIENT_DATA,
+            report.failure_codes,
+        )
+
+    def test_medium_horizon_uses_available_independent_event_capacity(self):
+        metrics = passing_metrics() | {
+            "independentEventCount": 11.0,
+            "evaluationSampleCount": 660.0,
+            "horizonDays": 60.0,
+        }
+
+        report = evaluate_validation(
+            metrics,
+            horizon_code="MEDIUM",
+            benchmark_available=True,
+            data_fresh=True,
+        )
+
+        independent_check = next(
+            item
+            for item in report.checks
+            if item.key == "independentEventCount"
+        )
+        self.assertEqual(11.0, independent_check.threshold)
+        self.assertTrue(independent_check.passed)
+        self.assertNotIn(
             ValidationFailureCode.INSUFFICIENT_DATA,
             report.failure_codes,
         )

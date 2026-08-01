@@ -193,7 +193,10 @@ public class QuantActionPlanService {
             case "NO_TRADE" -> "PAUSE";
             default -> action;
         };
-        if (List.of("BUY", "ADD").contains(action) && weightDelta.signum() <= 0) {
+        if (List.of("BUY", "ADD").contains(action) && weightDelta.signum() < 0) {
+            return "REDUCE";
+        }
+        if (List.of("BUY", "ADD").contains(action) && weightDelta.signum() == 0) {
             return "HOLD";
         }
         if (List.of("REDUCE", "EXIT").contains(action) && weightDelta.signum() >= 0) {

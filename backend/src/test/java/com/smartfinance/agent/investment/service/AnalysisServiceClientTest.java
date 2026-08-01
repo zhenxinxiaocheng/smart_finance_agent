@@ -219,6 +219,7 @@ class AnalysisServiceClientTest {
                 .andRespond(withSuccess("""
                         {"productType":"STOCK","code":"600519","name":"贵州茅台","market":"SSE",
                          "currency":"CNY","provider":"AKSHARE","dataDate":"2026-07-10",
+                         "inceptionDate":"2001-08-27",
                          "latestPrice":"1204.98","previousClose":"1190.00",
                          "changeAmount":"14.98","changePercent":"1.2588","warnings":[]}
                         """, MediaType.APPLICATION_JSON));
@@ -229,6 +230,7 @@ class AnalysisServiceClientTest {
         assertThat(result.latestPrice()).isEqualByComparingTo("1204.98");
         assertThat(result.changeAmount()).isEqualByComparingTo("14.98");
         assertThat(result.changePercent()).isEqualByComparingTo("1.2588");
+        assertThat(result.inceptionDate()).isEqualTo(LocalDate.of(2001, 8, 27));
         server.verify();
     }
 }

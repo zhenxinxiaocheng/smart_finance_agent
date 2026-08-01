@@ -1,6 +1,7 @@
 package com.smartfinance.agent.investment.quant;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +16,7 @@ import com.smartfinance.agent.investment.mapper.InvestmentDataQualitySnapshotMap
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
+import com.smartfinance.agent.investment.service.InvestmentDataJobService;
 import com.smartfinance.agent.investment.service.InvestmentHorizonService;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -50,6 +52,8 @@ public class QuantTrainingOrchestrator {
     private final QuantUniverseMembershipMapper membershipMapper;
     private final WealthService wealthService;
     private final QuantModelRegistryService modelRegistryService;
+    private final InvestmentDataJobService dataJobService;
+    private final QuantResearchUniversePreparationService researchUniversePreparationService;
     private final ObjectMapper objectMapper;
 
     public QuantTrainingOrchestrator(InvestmentAssetMapper assetMapper,
@@ -65,6 +69,8 @@ public class QuantTrainingOrchestrator {
                                      QuantUniverseMembershipMapper membershipMapper,
                                      WealthService wealthService,
                                      QuantModelRegistryService modelRegistryService,
+                                     InvestmentDataJobService dataJobService,
+                                     QuantResearchUniversePreparationService researchUniversePreparationService,
                                      ObjectMapper objectMapper) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
@@ -79,13 +85,15 @@ public class QuantTrainingOrchestrator {
         this.membershipMapper = membershipMapper;
         this.wealthService = wealthService;
         this.modelRegistryService = modelRegistryService;
+        this.dataJobService = dataJobService;
+        this.researchUniversePreparationService = researchUniversePreparationService;
         this.objectMapper = objectMapper;
     }
 
     @Transactional
     public Map<String, Object> refresh(Long userId, Long assetId, String horizonCode) {
         return refreshInternal(
-                userId, assetId, null, horizonCode, null, null, "VALIDATED_ENSEMBLE", Map.of());
+                userId, assetId, null, horizonCode, null, null, "REGIME_ENSEMBLE", Map.of());
     }
 
     @Transactional
@@ -182,33 +190,69 @@ public class QuantTrainingOrchestrator {
         request.put("horizonProfileVersion", profile.version());
         request.put("horizonCode", horizon.code());
         request.put("horizonDays", horizon.targetHoldingDays());
-        QuantBenchmarkProfileService.ResolvedBenchmark benchmark = benchmarkProfileService.resolve(
+        LocalDate benchmarkStartDate = quotes.get(0).getTradeDate();
+        if ("MUTUAL_FUND".equals(product.getProductType())) {
+            benchmarkStartDate = researchUniversePreparationService.requiredStartDate(
+                    product,
+                    benchmarkStartDate,
+                    quotes.get(quotes.size() - 1).getTradeDate()
+            );
+        }
+        QuantBenchmarkProfileService.ResolvedBenchmark benchmark = benchmarkProfileService.resolveCached(
                 product.getProductType(),
                 product.getCode(),
                 quotes.get(quotes.size() - 1).getTradeDate(),
-                quotes.get(0).getTradeDate(),
+                benchmarkStartDate,
                 quotes.get(quotes.size() - 1).getTradeDate()
         );
-        if ("MUTUAL_FUND".equals(product.getProductType()) && !benchmark.available()) {
-            return blockedJob(
-                    userId,
-                    assetId,
-                    profile,
-                    horizon,
-                    quality.getDatasetVersion(),
+        if (benchmark == null) {
+            benchmark = new QuantBenchmarkProfileService.ResolvedBenchmark(
+                    false,
+                    null,
+                    null,
+                    null,
+                    List.of(),
                     "BENCHMARK_UNAVAILABLE",
-                    experimentFingerprint
+                    "官方基准尚未准备"
             );
         }
-        String resolvedModelFamily = benchmark.available()
+        if ("MUTUAL_FUND".equals(product.getProductType()) && !benchmark.available()) {
+            dataJobService.ensureBenchmarkQueued(userId, assetId, product.getId());
+        }
+        String resolvedModelFamily = benchmark.modelFamily() != null
                 ? benchmark.modelFamily()
                 : defaultModelFamily(product.getProductType());
         request.put("modelFamily", resolvedModelFamily);
         if (requestedModelFamily != null && !requestedModelFamily.isBlank()) {
-            if (benchmark.available() && !requestedModelFamily.equals(benchmark.modelFamily())) {
+            if (benchmark.modelFamily() != null
+                    && !requestedModelFamily.equals(benchmark.modelFamily())) {
                 throw new IllegalArgumentException("研究资产与所选模型家族不匹配");
             }
             request.put("modelFamily", requestedModelFamily);
+        }
+        Long effectiveUniverseId = universeId;
+        if (effectiveUniverseId == null
+                && "MUTUAL_FUND".equals(product.getProductType())
+                && benchmark.available()) {
+            BenchmarkProfile profileConfiguration = benchmarkProfileService.configuration(
+                    product.getProductType(),
+                    product.getCode(),
+                    quotes.get(quotes.size() - 1).getTradeDate()
+            );
+            if (profileConfiguration != null) {
+                QuantResearchUniverse readyUniverse =
+                        researchUniversePreparationService.findReadyUniverse(
+                                resolvedModelFamily,
+                                profileConfiguration.getBenchmarkCode(),
+                                profileConfiguration.getSourceVersion()
+                        );
+                if (readyUniverse == null) {
+                    dataJobService.ensureResearchUniverseQueued(
+                            userId, assetId, product.getId());
+                } else {
+                    effectiveUniverseId = readyUniverse.getId();
+                }
+            }
         }
         request.put("algorithm", algorithm);
         String requestFingerprint = null;
@@ -228,9 +272,13 @@ public class QuantTrainingOrchestrator {
             fingerprintMaterial.put("algorithm", algorithm);
             fingerprintMaterial.put("runtimeVersion", runtimeVersion);
             fingerprintMaterial.put("benchmarkCode",
-                    benchmark.available() ? benchmark.benchmarkCode() : null);
+                    benchmark.benchmarkCode());
             fingerprintMaterial.put("benchmarkProfileVersion",
-                    benchmark.available() ? benchmark.sourceVersion() : null);
+                    benchmark.sourceVersion());
+            if (effectiveUniverseId != null) {
+                fingerprintMaterial.put("researchUniverseVersion",
+                        researchContextVersion(userId, assetId, effectiveUniverseId));
+            }
             requestFingerprint = QuantResearchCatalog.canonicalHash(fingerprintMaterial);
             QuantJob reusable = reusableAutomaticJob(userId, assetId, requestFingerprint);
             if (reusable != null) {
@@ -253,11 +301,13 @@ public class QuantTrainingOrchestrator {
         request.put("currentWeight", PortfolioWeightCalculator.calculate(
                 asset.getQuantity(), latestQuote.getClosePrice(), wealth.getTotalAssets()));
         request.put("records", QuantMarketRecords.fromQuotes(quotes, product.getProductType()));
-        if (universeId != null) {
+        if (effectiveUniverseId != null) {
             request.put("researchUniverseVersion",
-                    researchContextVersion(userId, assetId, universeId));
+                    researchContextVersion(userId, assetId, effectiveUniverseId));
             request.put("universeRecords", loadUniverseRecords(
-                    universeId, product.getId(), quotes.get(quotes.size() - 1).getTradeDate()));
+                    effectiveUniverseId,
+                    product.getId(),
+                    quotes.get(quotes.size() - 1).getTradeDate()));
         }
         Map<String, Object> remote = analysisClient.createQuantJob(request);
         QuantJob job = new QuantJob();
@@ -266,6 +316,18 @@ public class QuantTrainingOrchestrator {
         job.setExternalJobId(requiredText(remote, "jobId"));
         job.setJobType(jobType);
         job.setStatus(String.valueOf(remote.getOrDefault("status", "QUEUED")));
+        job.setExecutionStatus(Objects.requireNonNullElse(
+                text(remote.get("executionStatus")),
+                executionStatus(job.getStatus())
+        ));
+        job.setTrainingOutcome(Objects.requireNonNullElse(
+                text(remote.get("trainingOutcome")),
+                "OPTIMIZING"
+        ));
+        job.setDeploymentStatus(Objects.requireNonNullElse(
+                text(remote.get("deploymentStatus")),
+                "RESEARCH"
+        ));
         job.setDatasetVersion(quality.getDatasetVersion());
         job.setQuantConfigVersion(text(remote.get("configVersion")));
         job.setProductType(product.getProductType());
@@ -292,6 +354,16 @@ public class QuantTrainingOrchestrator {
         Map<String, Object> remote = analysisClient.quantJob(jobId);
         String status = String.valueOf(remote.getOrDefault("status", job.getStatus()));
         job.setStatus(status);
+        job.setExecutionStatus(Objects.requireNonNullElse(
+                text(remote.get("executionStatus")),
+                executionStatus(status)
+        ));
+        String remoteTrainingOutcome = text(remote.get("trainingOutcome"));
+        if (remoteTrainingOutcome != null) job.setTrainingOutcome(remoteTrainingOutcome);
+        String remoteDeploymentStatus = text(remote.get("deploymentStatus"));
+        if (remoteDeploymentStatus != null) job.setDeploymentStatus(remoteDeploymentStatus);
+        String remoteEconomicRole = text(remote.get("economicRole"));
+        if (remoteEconomicRole != null) job.setEconomicRole(remoteEconomicRole);
         job.setErrorCode(text(remote.get("errorCode")));
         job.setErrorSummary(text(remote.get("errorSummary")));
         job.setUserMessage(text(remote.get("userMessage")));
@@ -316,14 +388,51 @@ public class QuantTrainingOrchestrator {
     private QuantJob reusableAutomaticJob(Long userId,
                                           Long assetId,
                                           String requestFingerprint) {
-        return jobMapper.selectOne(new LambdaQueryWrapper<QuantJob>()
+        QuantJob candidate = jobMapper.selectOne(new LambdaQueryWrapper<QuantJob>()
                 .eq(QuantJob::getUserId, userId)
                 .eq(QuantJob::getAssetId, assetId)
                 .eq(QuantJob::getJobType, "AUTO_SEARCH")
                 .eq(QuantJob::getRequestFingerprint, requestFingerprint)
-                .in(QuantJob::getStatus, "QUEUED", "RUNNING", "SUCCEEDED")
                 .orderByDesc(QuantJob::getCreatedAt)
                 .last("LIMIT 1"));
+        if (candidate == null
+                || "QUEUED".equals(candidate.getStatus())
+                || "RUNNING".equals(candidate.getStatus())) {
+            return candidate;
+        }
+        boolean terminalOutcome = "VALIDATED".equals(candidate.getTrainingOutcome())
+                || "VALIDATION_FAILED".equals(candidate.getTrainingOutcome());
+        boolean completeResult = "COMPLETED".equals(candidate.getExecutionStatus())
+                && terminalOutcome
+                && hasText(candidate.getFeatureSetVersion())
+                && hasText(candidate.getModelVersion());
+        if ("SUCCEEDED".equals(candidate.getStatus()) && completeResult) {
+            return candidate;
+        }
+        releaseInvalidAutomaticJob(candidate, completeResult);
+        return null;
+    }
+
+    private void releaseInvalidAutomaticJob(QuantJob candidate,
+                                            boolean completeResult) {
+        LambdaUpdateWrapper<QuantJob> update = new LambdaUpdateWrapper<QuantJob>()
+                .eq(QuantJob::getId, candidate.getId())
+                .set(QuantJob::getRequestFingerprint, null);
+        if ("SUCCEEDED".equals(candidate.getStatus()) && !completeResult) {
+            update.set(QuantJob::getStatus, "FAILED")
+                    .set(QuantJob::getExecutionStatus, "FAILED")
+                    .set(QuantJob::getTrainingOutcome, null)
+                    .set(QuantJob::getErrorCode, "INVALID_RESULT_CONTRACT")
+                    .set(
+                            QuantJob::getErrorSummary,
+                            "量化任务返回结果不完整，系统将自动重新训练"
+                    );
+        }
+        jobMapper.update(null, update);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     @Transactional
@@ -463,7 +572,7 @@ public class QuantTrainingOrchestrator {
                     .toList();
             if (quotes.size() < 2) continue;
             QuantBenchmarkProfileService.ResolvedBenchmark benchmark =
-                    benchmarkProfileService.resolve(
+                    benchmarkProfileService.resolveCached(
                             product.getProductType(),
                             product.getCode(),
                             quotes.get(quotes.size() - 1).getTradeDate(),
@@ -515,6 +624,20 @@ public class QuantTrainingOrchestrator {
         result.put("jobId", job.getExternalJobId());
         result.put("type", job.getJobType());
         result.put("status", job.getStatus());
+        result.put("executionStatus", Objects.requireNonNullElse(
+                job.getExecutionStatus(),
+                executionStatus(job.getStatus())
+        ));
+        result.put("trainingOutcome", job.getTrainingOutcome());
+        result.put("deploymentStatus", job.getDeploymentStatus());
+        result.put("economicRole", job.getEconomicRole());
+        result.put("optimizationStudyId", job.getOptimizationStudyId());
+        result.put("optimizationGeneration", job.getOptimizationGeneration());
+        result.put("baselineComparison", readJson(job.getBaselineComparisonJson()));
+        result.put("diagnostics", readJsonValue(
+                job.getDiagnosticsJson(),
+                List.of()
+        ));
         result.put("experimentFingerprint", job.getExperimentFingerprint());
         result.put("requestFingerprint", job.getRequestFingerprint());
         result.put("errorCode", job.getErrorCode());
@@ -537,6 +660,28 @@ public class QuantTrainingOrchestrator {
         if (configVersion != null) job.setQuantConfigVersion(configVersion);
         job.setModelVersion(text(result.get("modelVersion")));
         job.setStrategyVersion(text(result.get("strategyVersion")));
+        String execution = text(result.get("executionStatus"));
+        if (execution != null) job.setExecutionStatus(execution);
+        String outcome = text(result.get("trainingOutcome"));
+        if (outcome != null) job.setTrainingOutcome(outcome);
+        String deployment = text(result.get("deploymentStatus"));
+        if (deployment != null) job.setDeploymentStatus(deployment);
+        String role = text(result.get("economicRole"));
+        if (role != null) job.setEconomicRole(role);
+        Object optimization = result.get("optimizationSummary");
+        if (optimization instanceof Map<?, ?> summary) {
+            job.setOptimizationStudyId(text(summary.get("optimizationStudyId")));
+            job.setOptimizationGeneration(integer(summary.get("generation")));
+        }
+        job.setBaselineComparisonJson(writeJson(
+                Objects.requireNonNullElse(
+                        result.get("baselineComparison"),
+                        Map.of()
+                )
+        ));
+        job.setDiagnosticsJson(writeJson(
+                Objects.requireNonNullElse(result.get("diagnostics"), List.of())
+        ));
     }
 
     private void applyValidationOutcome(QuantJob job, Map<?, ?> result) {
@@ -554,6 +699,12 @@ public class QuantTrainingOrchestrator {
                 .findFirst()
                 .orElse("MODEL_REJECTED");
         job.setErrorCode(primary);
+        job.setTrainingOutcome(
+                Set.of("INSUFFICIENT_DATA", "DATA_STALE", "BENCHMARK_UNAVAILABLE")
+                        .contains(primary)
+                        ? "DATA_BLOCKED"
+                        : "VALIDATION_FAILED"
+        );
         job.setErrorSummary(failureCodes.isEmpty()
                 ? "模型未通过严格验证"
                 : "未通过指标：" + String.join("、", failureCodes));
@@ -565,6 +716,13 @@ public class QuantTrainingOrchestrator {
         if (existing.isEmpty()) return;
         QuantExperiment experiment = existing.get();
         experiment.setStatus(job.getStatus());
+        experiment.setExecutionStatus(job.getExecutionStatus());
+        experiment.setTrainingOutcome(job.getTrainingOutcome());
+        experiment.setDeploymentStatus(job.getDeploymentStatus());
+        experiment.setEconomicRole(job.getEconomicRole());
+        experiment.setOptimizationStudyId(job.getOptimizationStudyId());
+        experiment.setOptimizationGeneration(job.getOptimizationGeneration());
+        experiment.setBaselineComparisonJson(job.getBaselineComparisonJson());
         experiment.setDatasetVersion(job.getDatasetVersion());
         experiment.setFeatureSetVersion(job.getFeatureSetVersion());
         experiment.setCandidateModelVersion(job.getModelVersion());
@@ -631,6 +789,15 @@ public class QuantTrainingOrchestrator {
         return value.trim().toUpperCase(Locale.ROOT);
     }
 
+    private Object readJsonValue(String value, Object fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        try {
+            return objectMapper.readValue(value, Object.class);
+        } catch (JsonProcessingException e) {
+            return fallback;
+        }
+    }
+
     private static String defaultModelFamily(String productType) {
         return "STOCK".equalsIgnoreCase(productType) ? "A_SHARE_STOCK" : "ACTIVE_FUND";
     }
@@ -653,6 +820,26 @@ public class QuantTrainingOrchestrator {
         if (value == null) return null;
         String text = String.valueOf(value).trim();
         return text.isEmpty() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
+    private static Integer integer(Object value) {
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return value == null ? null : Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static String executionStatus(String legacyStatus) {
+        return switch (String.valueOf(legacyStatus)) {
+            case "QUEUED" -> "QUEUED";
+            case "RUNNING" -> "RUNNING";
+            case "FAILED", "BLOCKED" -> "FAILED";
+            case "CANCELLED" -> "CANCELLED";
+            case "SUCCEEDED" -> "COMPLETED";
+            default -> "QUEUED";
+        };
     }
 
     @SuppressWarnings("unchecked")

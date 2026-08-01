@@ -57,16 +57,24 @@ final class QuantResearchCatalog {
         result.put("validationMode", "STRICT");
         result.put(
                 "algorithms",
-                List.of("ELASTIC_NET", "GRADIENT_BOOSTING", "VALIDATED_ENSEMBLE")
+                List.of(
+                        "ELASTIC_NET",
+                        "XGBOOST",
+                        "EXTRA_TREES",
+                        "TREND_VOLATILITY",
+                        "RISK_FILTERED_MEAN_REVERSION",
+                        "REGIME_ENSEMBLE"
+                )
         );
         result.put("horizons", List.of("SHORT", "MEDIUM", "LONG"));
         result.put("fields", List.of(
                 field("linearWeight", "集成线性权重", "NUMBER", 0.5, 0.0, 1.0, 0.05),
                 field("classificationC", "Logistic正则强度", "NUMBER", 0.5, 0.01, 10.0, 0.01),
-                field("regressionAlpha", "ElasticNet Alpha", "NUMBER", 0.001, 0.00001, 1.0, 0.00001),
-                field("estimators", "提升树数量", "INTEGER", 48, 16, 500, 1),
-                field("maximumDepth", "提升树最大深度", "INTEGER", 3, 1, 8, 1),
-                field("learningRate", "提升树学习率", "NUMBER", 0.05, 0.005, 0.3, 0.005)
+                field("regressionAlpha", "ElasticNet Alpha", "NUMBER", 0.001, 0.00001, 0.1, 0.00001),
+                field("estimators", "树数量", "INTEGER", 48, 32, 512, 32),
+                field("maximumDepth", "树最大深度", "INTEGER", 3, 1, 6, 1),
+                field("learningRate", "提升树学习率", "NUMBER", 0.05, 0.005, 0.2, 0.005),
+                field("targetAnnualizedVolatility", "目标年化波动率", "NUMBER", 0.12, 0.06, 0.18, 0.01)
         ));
         result.put("immutableValidation", Map.of(
                 "minimumWalkForwardFolds", 5,
@@ -90,7 +98,7 @@ final class QuantResearchCatalog {
                 assetId,
                 modelFamily,
                 horizonCode,
-                "VALIDATED_ENSEMBLE",
+                "REGIME_ENSEMBLE",
                 parameters
         );
     }

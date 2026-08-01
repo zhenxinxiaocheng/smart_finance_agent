@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Data
@@ -20,6 +21,10 @@ public class InvestmentProduct {
     private String name;
     private String currency;
     private String status;
+    private LocalDate inceptionDate;
+    private LocalDate historyStartDate;
+    private LocalDate historyEndDate;
+    private Boolean historyCoverageComplete;
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
     @TableField(fill = FieldFill.INSERT_UPDATE)

@@ -7,6 +7,7 @@ pandas==3.0.3
 scipy==1.18.0
 scikit-learn==1.7.1
 xgboost==3.0.2
+optuna==4.9.0
 akshare==1.18.40
 baostock==0.8.9
 tushare==1.4.24

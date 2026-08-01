@@ -19,6 +19,17 @@ class PaperOrderCalculatorTest {
     }
 
     @Test
+    void buyWatchUsesTargetWeightForInitialPaperPosition() {
+        PaperOrderCalculator.OrderDraft draft = PaperOrderCalculator.calculate(
+                "MUTUAL_FUND", "BUY_WATCH", new BigDecimal("0.02"),
+                new BigDecimal("100000"), BigDecimal.ZERO, new BigDecimal("1.25"),
+                100, 4, new BigDecimal("100"));
+
+        assertThat(draft.side()).isEqualTo("BUY");
+        assertThat(draft.quantity()).isEqualByComparingTo("1600");
+    }
+
+    @Test
     void reduceTargetsHalfOfCurrentPaperPosition() {
         PaperOrderCalculator.OrderDraft draft = PaperOrderCalculator.calculate(
                 "STOCK", "REDUCE", BigDecimal.ZERO,

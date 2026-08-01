@@ -45,6 +45,7 @@ public class QuantModelMonitorService {
     private final AnalysisServiceClient analysisServiceClient;
     private final InvestmentRuntimeProperties runtimeProperties;
     private final ObjectMapper objectMapper;
+    private final QuantTrainingOrchestrator trainingOrchestrator;
     private final int strategyBatchLimit;
 
     public QuantModelMonitorService(QuantStrategyVersionMapper strategyMapper,
@@ -58,6 +59,7 @@ public class QuantModelMonitorService {
                                     AnalysisServiceClient analysisServiceClient,
                                     InvestmentRuntimeProperties runtimeProperties,
                                     ObjectMapper objectMapper,
+                                    QuantTrainingOrchestrator trainingOrchestrator,
                                     @Value("${investment.quant.monitor.strategy-batch-limit}") int strategyBatchLimit) {
         this.strategyMapper = strategyMapper;
         this.modelMapper = modelMapper;
@@ -70,6 +72,7 @@ public class QuantModelMonitorService {
         this.analysisServiceClient = analysisServiceClient;
         this.runtimeProperties = runtimeProperties;
         this.objectMapper = objectMapper;
+        this.trainingOrchestrator = trainingOrchestrator;
         this.strategyBatchLimit = strategyBatchLimit;
     }
 
@@ -138,6 +141,20 @@ public class QuantModelMonitorService {
         monitor.setEvidenceJson(writeJson(evidence));
         monitorMapper.insert(monitor);
         applyLifecycle(strategy, model, policy, monitor, observations.size());
+        if (failed) {
+            try {
+                trainingOrchestrator.refresh(
+                        strategy.getUserId(),
+                        strategy.getAssetId(),
+                        strategy.getHorizonCode()
+                );
+            } catch (RuntimeException exception) {
+                log.warn(
+                        "Quant retraining deferred after drift: modelVersion={}",
+                        model.getModelVersion()
+                );
+            }
+        }
     }
 
     private List<Observation> maturedObservations(String modelVersion) {
@@ -198,6 +215,7 @@ public class QuantModelMonitorService {
             strategy.setRetiredAt(LocalDateTime.now());
             strategyMapper.updateById(strategy);
             model.setStatus("RETIRED");
+            model.setDeploymentStatus("RETIRED");
             modelMapper.updateById(model);
             promoteFallback(strategy);
             return;
@@ -234,6 +252,7 @@ public class QuantModelMonitorService {
         strategy.setStatus("CHAMPION");
         strategyMapper.updateById(strategy);
         model.setStatus("PAPER_VERIFIED");
+        model.setDeploymentStatus("PAPER_VERIFIED");
         modelMapper.updateById(model);
     }
 

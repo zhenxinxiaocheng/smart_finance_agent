@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import json
 import math
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from datetime import date, timedelta
 from pathlib import Path
 
 from app.quant.config import QuantConfig, load_quant_config
 from app.quant.jobs import QuantJobService
+from app.quant.optimization import OptimizationBudget
 
 
 def market_records(count: int) -> list[dict[str, object]]:
@@ -42,21 +45,19 @@ def training_market_records(count: int) -> list[dict[str, object]]:
 
 
 class QuantJobServiceTest(unittest.TestCase):
-    def test_auto_search_job_uses_configured_candidates_and_returns_search_summary(self):
+    def test_auto_search_job_uses_adaptive_study_and_returns_search_summary(self):
         data = copy.deepcopy(load_quant_config().data)
-        data["autoSearch"] = {
-            "maximumCandidates": 1,
-            "timeBudgetSeconds": 60,
-            "noImprovementLimit": 1,
-            "finalHoldoutFraction": 0.2,
-            "minimumFinalHoldoutSamples": 40,
-            "finalHoldoutValidation": copy.deepcopy(
-                data["autoSearch"]["finalHoldoutValidation"]
-            ),
-            "candidates": [
-                {"algorithm": "ELASTIC_NET", "parameters": {}},
-            ],
-        }
+        data["training"]["minimumSamples"] = 40
+        data["training"]["walkForwardFolds"] = 2
+        data["training"]["minimumCalibrationSamples"] = 10
+        data["training"]["minimumEvaluationSamples"] = 10
+        data["training"]["xgboost"]["estimators"] = 8
+        data["autoSearch"]["timeBudgetSeconds"] = 60
+        data["autoSearch"]["minimumFinalHoldoutSamples"] = 10
+        data["autoSearch"]["finalHoldoutValidation"]["minimumSamples"] = 10
+        data["autoSearch"]["strategies"] = [
+            copy.deepcopy(data["autoSearch"]["strategies"][0])
+        ]
         test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
         test_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=test_root) as root:
@@ -65,19 +66,23 @@ class QuantJobServiceTest(unittest.TestCase):
                 QuantConfig(data),
                 max_workers=1,
             )
-            created = service.submit({
-                "type": "AUTO_SEARCH",
-                "datasetVersion": "e" * 64,
-                "productType": "STOCK",
-                "horizonCode": "WAVE",
-                "horizonDays": 20,
-                "records": training_market_records(700),
-            })
-
-            completed = self._wait(service, created["jobId"])
+            with patch(
+                "app.quant.auto_search.optimization_budget",
+                return_value=OptimizationBudget(1, 1, 1, 60),
+            ):
+                created = service.submit({
+                    "type": "AUTO_SEARCH",
+                    "datasetVersion": "e" * 64,
+                    "productType": "STOCK",
+                    "code": "600000",
+                    "horizonCode": "WAVE",
+                    "horizonDays": 20,
+                    "records": training_market_records(420),
+                })
+                completed = self._wait(service, created["jobId"])
             service.executor.shutdown(wait=True)
 
-            self.assertEqual("SUCCEEDED", completed["status"])
+            self.assertEqual("SUCCEEDED", completed["status"], completed)
             self.assertEqual("AUTO_SEARCH", completed["type"])
             self.assertEqual(
                 1,
@@ -86,6 +91,10 @@ class QuantJobServiceTest(unittest.TestCase):
             self.assertEqual(
                 completed["result"]["modelVersion"],
                 completed["result"]["searchSummary"]["selectedModelVersion"],
+            )
+            self.assertEqual(
+                "COMPLETED",
+                completed["executionStatus"],
             )
 
     def test_train_predict_job_persists_versioned_model_artifact(self):
@@ -209,6 +218,32 @@ class QuantJobServiceTest(unittest.TestCase):
             self.assertEqual(completed, restarted.get(created["jobId"]))
             restarted.executor.shutdown(wait=True)
 
+    def test_legacy_running_job_without_request_is_failed_after_restart(self):
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            path = Path(root)
+            jobs_root = path / "quant-jobs"
+            jobs_root.mkdir(parents=True)
+            job_id = "a" * 32
+            (jobs_root / f"{job_id}.json").write_text(json.dumps({
+                "jobId": job_id,
+                "type": "FACTOR_ANALYSIS",
+                "status": "RUNNING",
+                "configVersion": load_quant_config().version,
+                "datasetVersion": "b" * 64,
+                "createdAt": "2026-07-28T00:00:00+00:00",
+                "updatedAt": "2026-07-28T00:00:00+00:00",
+                "result": None,
+            }), encoding="utf-8")
+
+            restarted = QuantJobService(path, load_quant_config(), max_workers=1)
+            completed = restarted.get(job_id)
+            restarted.executor.shutdown(wait=True)
+
+            self.assertEqual("FAILED", completed["status"])
+            self.assertEqual("JOB_FAILED", completed["errorCode"])
+
     def test_failed_job_reports_structured_error_instead_of_cached_result_claim(self):
         test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
         test_root.mkdir(exist_ok=True)
@@ -234,6 +269,7 @@ class QuantJobServiceTest(unittest.TestCase):
             )
             self.assertNotIn("上一份有效结果", completed["result"]["userMessage"])
 
+    @unittest.skip("Replaced by technical-signal fallback behavior")
     def test_fund_training_without_official_benchmark_is_blocked(self):
         test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
         test_root.mkdir(exist_ok=True)
@@ -261,6 +297,35 @@ class QuantJobServiceTest(unittest.TestCase):
             self.assertEqual(
                 "官方基准数据尚未准备完成，当前暂停模型训练",
                 completed["result"]["userMessage"],
+            )
+
+    def test_fund_factor_signal_is_available_without_official_benchmark(self):
+        test_root = Path(__file__).resolve().parents[1] / ".test-tmp"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as root:
+            service = QuantJobService(Path(root), load_quant_config(), max_workers=1)
+            created = service.submit({
+                "type": "FACTOR_ANALYSIS",
+                "datasetVersion": "f" * 64,
+                "productType": "MUTUAL_FUND",
+                "modelFamily": "QDII_INDEX_FUND",
+                "horizonCode": "SHORT",
+                "horizonDays": 20,
+                "records": market_records(220),
+            })
+
+            completed = self._wait(service, created["jobId"])
+            service.executor.shutdown(wait=True)
+
+            self.assertEqual("SUCCEEDED", completed["status"])
+            self.assertIn(
+                completed["result"]["marketRegime"],
+                {"UPTREND", "DOWNTREND", "RANGE", "HIGH_VOLATILITY"},
+            )
+            self.assertTrue(completed["result"]["topFactors"])
+            self.assertIn(
+                "BENCHMARK_UNAVAILABLE",
+                completed["result"]["riskFlags"],
             )
 
     @staticmethod

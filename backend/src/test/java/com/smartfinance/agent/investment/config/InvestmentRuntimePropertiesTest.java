@@ -27,6 +27,9 @@ class InvestmentRuntimePropertiesTest {
         properties.getRisk().setPortfolioConcentrationWarningRatio(new BigDecimal("0.25"));
         properties.getRisk().setConservativeStrongScore(new BigDecimal("70"));
         properties.getRisk().setAggressiveWeakScore(new BigDecimal("40"));
+        properties.getRisk().setVolatilityWarningPercent(new BigDecimal("25"));
+        properties.getRisk().setDrawdownWarningPercent(new BigDecimal("20"));
+        properties.getRisk().setMinimumTurnoverRatePercent(new BigDecimal("0.1"));
         properties.getRisk().setPortfolioRuleVersion("portfolio-test-v1");
         properties.getSync().setInitialDelayMs(500);
         properties.getSync().setPollDelayMs(1000);
@@ -52,6 +55,10 @@ class InvestmentRuntimePropertiesTest {
         properties.getAi().setMaximumParagraphs(4);
         properties.getAi().setMaxExplanationCharacters(2000);
         properties.getAi().setMaxInputJsonCharacters(3000);
+        properties.getAi().setSummaryMaxCharacters(48);
+        properties.getAi().setMaximumReasons(3);
+        properties.getAi().setMaximumRisks(3);
+        properties.getAi().setTechnicalDetailMaxCharacters(300);
         properties.getApi().setProductSearchLimit(30);
         properties.getApi().setDefaultTransactionLimit(50);
         properties.getApi().setMaxTransactionLimit(150);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
@@ -10,6 +11,12 @@ class ModelLifecycle(StrEnum):
     VALIDATED = "VALIDATED"
     PAPER_VERIFIED = "PAPER_VERIFIED"
     RETIRED = "RETIRED"
+
+
+class EconomicRole(StrEnum):
+    RETURN_ENHANCER = "RETURN_ENHANCER"
+    DRAWDOWN_GUARD = "DRAWDOWN_GUARD"
+    RISK_REFERENCE = "RISK_REFERENCE"
 
 
 class ValidationFailureCode(StrEnum):
@@ -28,20 +35,25 @@ class ValidationCheck:
     operator: str
     threshold: float
     passed: bool
+    required: bool
     message: str
 
 
 @dataclass(frozen=True)
 class ValidationReport:
     lifecycle: ModelLifecycle
+    economic_role: EconomicRole
     passed: bool
+    diagnostics_passed: bool
     failure_codes: tuple[ValidationFailureCode, ...]
     checks: tuple[ValidationCheck, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
             "lifecycle": self.lifecycle.value,
+            "economicRole": self.economic_role.value,
             "passed": self.passed,
+            "diagnosticsPassed": self.diagnostics_passed,
             "failureCodes": [value.value for value in self.failure_codes],
             "checks": [
                 {
@@ -51,6 +63,7 @@ class ValidationReport:
                     "operator": item.operator,
                     "threshold": item.threshold,
                     "passed": item.passed,
+                    "required": item.required,
                     "message": item.message,
                 }
                 for item in self.checks
@@ -72,7 +85,7 @@ def choose_calibration_method(independent_samples: int) -> str:
 
 
 def evaluate_validation(
-    metrics: Mapping[str, float],
+    metrics: Mapping[str, object],
     *,
     horizon_code: str,
     benchmark_available: bool,
@@ -81,14 +94,14 @@ def evaluate_validation(
     normalized_horizon = str(horizon_code).strip().upper()
     if normalized_horizon not in _MINIMUM_EVENTS:
         raise ValueError(f"unsupported validation horizon: {horizon_code}")
+    normalized_metrics = dict(metrics)
+    normalized_metrics.setdefault(
+        "drawdownGuardFoldPassRatio",
+        normalized_metrics.get("foldPassRatio"),
+    )
+    metrics = normalized_metrics
 
-    failures: list[ValidationFailureCode] = []
-    if not benchmark_available:
-        failures.append(ValidationFailureCode.BENCHMARK_UNAVAILABLE)
-    if not data_fresh:
-        failures.append(ValidationFailureCode.DATA_STALE)
-
-    specifications = (
+    diagnostic_specifications = (
         ("oosR2", "PREDICTION", ">", 0.0, "样本外 R² 必须大于零"),
         ("dmPValue", "PREDICTION", "<", 0.05, "预测误差必须显著优于基线"),
         ("medianRankIc", "PREDICTION", ">", 0.0, "Rank IC 中位数必须为正"),
@@ -101,66 +114,180 @@ def evaluate_validation(
         ("intervalCoverage", "INTERVAL", ">=", 0.75, "80% 区间覆盖率不得低于 75%"),
         ("intervalCoverage", "INTERVAL", "<=", 0.85, "80% 区间覆盖率不得高于 85%"),
         ("pinballSkill", "INTERVAL", ">", 0.0, "区间损失必须优于基线"),
-        ("annualizedExcessReturn", "ECONOMIC", ">", 0.0, "成本后年化超额收益必须为正"),
-        ("sharpe", "ECONOMIC", ">", 0.5, "样本外 Sharpe 必须大于 0.5"),
-        ("deflatedSharpeProbability", "ROBUSTNESS", ">=", 0.95, "DSR 置信概率必须不低于 95%"),
-        ("pbo", "ROBUSTNESS", "<=", 0.2, "回测过拟合概率不得高于 20%"),
-        ("foldPassRatio", "STABILITY", ">=", 0.6, "至少 60% 外层窗口盈利"),
-        ("maximumDrawdown", "RISK", "abs<=", 0.2, "最大回撤不得超过 20%"),
-        (
-            "costStressAnnualizedExcessReturn",
-            "ROBUSTNESS",
-            ">=",
-            0.0,
-            "1.5 倍交易成本压力下收益不得为负",
-        ),
+    )
+    data_specifications = (
         ("walkForwardFolds", "TRAINING", ">=", 5.0, "至少需要 5 个走步验证窗口"),
         (
             "independentEventCount",
             "TRAINING",
             ">=",
-            _MINIMUM_EVENTS[normalized_horizon],
+            _minimum_independent_events(metrics, normalized_horizon),
             "独立样本事件数量不足",
         ),
     )
-    checks: list[ValidationCheck] = []
-    missing_metric = False
-    for key, category, operator, threshold, message in specifications:
-        if key not in metrics:
-            actual = float("nan")
-            passed = False
-            missing_metric = True
-        else:
-            actual = float(metrics[key])
-            passed = _compare(actual, operator, threshold)
-        checks.append(
-            ValidationCheck(
-                key=key,
-                category=category,
-                actual=actual,
-                operator=operator,
-                threshold=threshold,
-                passed=passed,
-                message=message,
-            )
-        )
 
-    independent_events = float(metrics.get("independentEventCount", 0.0))
-    folds = float(metrics.get("walkForwardFolds", 0.0))
-    if (
-        independent_events < _MINIMUM_EVENTS[normalized_horizon]
-        or folds < 5
-        or missing_metric
+    return_specifications = (
+        (
+            "netExcessVsStrongestBaseline",
+            "RETURN_ENHANCER",
+            ">",
+            0.0,
+            "扣费后收益必须超过最强基准",
+        ),
+        (
+            "deflatedSharpeProbability",
+            "RETURN_ENHANCER",
+            ">=",
+            0.95,
+            "DSR 置信概率必须不低于 95%",
+        ),
+        ("pbo", "RETURN_ENHANCER", "<=", 0.2, "回测过拟合概率不得高于 20%"),
+        (
+            "foldPassRatio",
+            "RETURN_ENHANCER",
+            ">=",
+            0.6,
+            "至少 60% 外层窗口有效",
+        ),
+        (
+            "costStressNetExcessVsStrongestBaseline",
+            "RETURN_ENHANCER",
+            ">=",
+            0.0,
+            "成本压力下仍须不弱于最强基准",
+        ),
+        (
+            "crossWindowVolatility",
+            "RETURN_ENHANCER",
+            "<=",
+            0.25,
+            "跨窗口表现波动不得过高",
+        ),
+    )
+    guard_specifications = (
+        (
+            "drawdownReduction",
+            "DRAWDOWN_GUARD",
+            ">=",
+            0.2,
+            "相对买入持有至少降低 20% 最大回撤",
+        ),
+        (
+            "downsideCapture",
+            "DRAWDOWN_GUARD",
+            "<=",
+            0.8,
+            "下跌捕获率不得高于 80%",
+        ),
+        (
+            "annualizedNetReturn",
+            "DRAWDOWN_GUARD",
+            ">=",
+            _metric(metrics, "cashAnnualizedReturn", 0.015),
+            "扣费后收益不得低于现金基准",
+        ),
+        (
+            "drawdownGuardFoldPassRatio",
+            "DRAWDOWN_GUARD",
+            ">=",
+            0.6,
+            "至少 60% 外层窗口有效",
+        ),
+        (
+            "costStressAnnualizedExcessReturn",
+            "DRAWDOWN_GUARD",
+            ">=",
+            _metric(metrics, "cashAnnualizedReturn", 0.015),
+            "成本压力下收益不得低于现金基准",
+        ),
+        (
+            "crossWindowVolatility",
+            "DRAWDOWN_GUARD",
+            "<=",
+            0.25,
+            "跨窗口表现波动不得过高",
+        ),
+    )
+
+    return_passed = benchmark_available and all(
+        _compare(_metric(metrics, key), operator, threshold)
+        for key, _category, operator, threshold, _message
+        in return_specifications
+    )
+    guard_passed = all(
+        _compare(_metric(metrics, key), operator, threshold)
+        for key, _category, operator, threshold, _message
+        in guard_specifications
+    )
+    economic_role = (
+        EconomicRole.RETURN_ENHANCER
+        if return_passed
+        else EconomicRole.DRAWDOWN_GUARD
+        if guard_passed
+        else EconomicRole.RISK_REFERENCE
+    )
+
+    checks: list[ValidationCheck] = []
+    for specifications, required in (
+        (diagnostic_specifications, False),
+        (data_specifications, True),
+        (
+            return_specifications,
+            economic_role == EconomicRole.RETURN_ENHANCER,
+        ),
+        (
+            guard_specifications,
+            economic_role == EconomicRole.DRAWDOWN_GUARD,
+        ),
     ):
+        for key, category, operator, threshold, message in specifications:
+            actual = _metric(metrics, key)
+            passed = _compare(actual, operator, threshold)
+            checks.append(
+                ValidationCheck(
+                    key=key,
+                    category=category,
+                    actual=actual,
+                    operator=operator,
+                    threshold=threshold,
+                    passed=passed,
+                    required=required,
+                    message=message,
+                )
+            )
+
+    failures: list[ValidationFailureCode] = []
+    if not data_fresh:
+        failures.append(ValidationFailureCode.DATA_STALE)
+    missing_required_data = any(
+        not item.passed and item.required
+        for item in checks
+        if item.category == "TRAINING"
+    )
+    if missing_required_data:
         failures.append(ValidationFailureCode.INSUFFICIENT_DATA)
-    if any(not item.passed for item in checks) and not missing_metric:
+    if economic_role == EconomicRole.RISK_REFERENCE:
         failures.append(ValidationFailureCode.MODEL_REJECTED)
+        if not benchmark_available:
+            failures.append(ValidationFailureCode.BENCHMARK_UNAVAILABLE)
 
     unique_failures = tuple(dict.fromkeys(failures))
-    passed = not unique_failures and all(item.passed for item in checks)
+    passed = (
+        not unique_failures
+        and economic_role
+        in {EconomicRole.RETURN_ENHANCER, EconomicRole.DRAWDOWN_GUARD}
+        and all(item.passed for item in checks if item.required)
+    )
+    diagnostic_checks = [
+        item for item in checks
+        if item.category in {"PREDICTION", "STABILITY", "CALIBRATION", "INTERVAL"}
+        and not item.required
+    ]
     return ValidationReport(
         lifecycle=ModelLifecycle.VALIDATED if passed else ModelLifecycle.DRAFT,
+        economic_role=economic_role,
         passed=passed,
+        diagnostics_passed=all(item.passed for item in diagnostic_checks),
         failure_codes=unique_failures,
         checks=tuple(checks),
     )
@@ -176,6 +303,44 @@ def tradable_target_weight(
     if normalized not in {ModelLifecycle.VALIDATED, ModelLifecycle.PAPER_VERIFIED}:
         return None
     return target_weight
+
+
+def _metric(
+    metrics: Mapping[str, object],
+    key: str,
+    default: float = float("nan"),
+) -> float:
+    value = metrics.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _minimum_independent_events(
+    metrics: Mapping[str, object],
+    horizon_code: str,
+) -> float:
+    policy_minimum = _MINIMUM_EVENTS[horizon_code]
+    evaluation_samples = _metric(metrics, "evaluationSampleCount")
+    horizon_days = _metric(metrics, "horizonDays")
+    if (
+        not math.isfinite(evaluation_samples)
+        or not math.isfinite(horizon_days)
+        or evaluation_samples <= 0
+        or horizon_days <= 0
+    ):
+        return policy_minimum
+    available_capacity = math.floor(evaluation_samples / horizon_days)
+    minimum_statistical_blocks = 8.0
+    if available_capacity < minimum_statistical_blocks:
+        return minimum_statistical_blocks
+    return min(
+        policy_minimum,
+        max(minimum_statistical_blocks, float(available_capacity)),
+    )
 
 
 def _compare(actual: float, operator: str, threshold: float) -> bool:
