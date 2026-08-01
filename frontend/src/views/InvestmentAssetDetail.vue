@@ -106,39 +106,31 @@
             </div>
           </div>
           <div class="space-y-5 p-5">
-            <div>
+            <div v-if="!isFund">
               <div class="flex items-center justify-between gap-3">
-                <Badge :variant="quantActionVariant(quant.action)">{{ quantActionLabel(quant.action) }}</Badge>
-                <span class="text-xs text-muted-foreground">{{ quant.horizonDays ? `${quant.horizonDays} 个交易日` : '模型准备中' }}</span>
+                <span class="text-sm font-semibold">专业走势研判</span>
+                <Badge :variant="activeDirection.variant">{{ confidenceLabel(activeOutlook.confidence) }}</Badge>
               </div>
-              <p class="mt-3 text-2xl font-semibold" :class="quantActionTone(quant.action)">{{ quantActionLabel(quant.action) }}</p>
-              <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ quant.userMessage || quantConclusion }}</p>
+              <p class="mt-3 text-2xl font-semibold" :class="activeDirection.tone">{{ outlookDirectionLabel(activeOutlook.direction) }}</p>
+              <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ activeDirection.action }} · {{ activePeriodText }}</p>
+              <p v-if="activeAnalysis.status === 'INSUFFICIENT'" class="mt-3 text-sm leading-6 text-muted-foreground">{{ activeAnalysis.reason || '历史数据不足，暂时无法判断走势。' }}</p>
+              <ul v-else class="mt-4 space-y-2 text-sm leading-6">
+                <li v-for="reason in activeOutlook.reasons || []" :key="reason" class="flex gap-2"><span class="text-primary">•</span><span>{{ reason }}</span></li>
+              </ul>
             </div>
 
-            <div v-if="hasUsableQuantModel" class="grid grid-cols-2 gap-2">
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">未来盈利概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.profitProbability) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预计扣费后收益</div><strong class="mt-1 block text-lg tabular-nums" :class="tone(quant.expectedNetReturn)">{{ decimalPercent(quant.expectedNetReturn) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">未来亏损概率</div><strong class="mt-1 block text-lg tabular-nums">{{ probabilityPercent(quant.lossProbability) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">计划金额</div><strong class="mt-1 block">{{ money(quant.orderAmountCny) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">当前仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.currentWeight) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">建议目标仓位</div><strong class="mt-1 block">{{ probabilityPercent(quant.recommendedTargetWeight ?? quant.targetWeight) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">预测区间</div><strong class="mt-1 block text-xs tabular-nums">{{ predictionIntervalText(quant.predictionInterval) }}</strong></div>
-              <div class="rounded-lg border bg-muted/20 p-3"><div class="text-xs text-muted-foreground">执行时间</div><strong class="mt-1 block text-xs">{{ quant.executeFrom ? new Date(quant.executeFrom).toLocaleString('zh-CN', { hour12: false }) : '-' }}</strong></div>
+            <div v-else>
+              <div class="flex items-center justify-between gap-3"><span class="text-sm font-semibold">基金表现研判</span><Badge variant="outline">{{ activePeriodText }}</Badge></div>
+              <p class="mt-3 text-2xl font-semibold" :class="verdictTone(activeVerdict)">{{ activeHeadline }}</p>
+              <p class="mt-1 text-sm leading-6 text-muted-foreground">根据净值趋势、波动和回撤状态生成。</p>
             </div>
 
-            <div v-if="quant.riskFlags?.length" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
-              {{ quant.riskFlags.map(riskFlagLabel).join('；') }}
+            <div v-if="!isFund && activeOutlook.risks?.length" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <p class="text-xs font-medium text-amber-700 dark:text-amber-300">需要留意</p>
+              <ul class="mt-1.5 space-y-1 text-xs leading-5 text-muted-foreground">
+                <li v-for="risk in activeOutlook.risks" :key="risk">• {{ risk }}</li>
+              </ul>
             </div>
-
-            <details v-if="hasUsableQuantModel && quant.modelVersion" class="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
-              <summary class="cursor-pointer select-none">模型与验证信息</summary>
-              <div class="mt-2 space-y-1 break-all">
-                <p>模型版本：{{ shortVersion(quant.modelVersion) }}</p>
-                <p>策略版本：{{ shortVersion(quant.strategyVersion) }}</p>
-                <p v-if="quant.backtestSummary?.sharpe != null">样本外 Sharpe：{{ Number(quant.backtestSummary.sharpe).toFixed(2) }}</p>
-                <p v-if="quant.backtestSummary?.maximumDrawdown != null">样本外最大回撤：{{ decimalPercent(quant.backtestSummary.maximumDrawdown) }}</p>
-              </div>
-            </details>
 
             <div v-if="asset.productType === 'MUTUAL_FUND'" class="space-y-2.5">
               <ActionPriceRow
@@ -160,6 +152,22 @@
               <ActionPriceRow label="减仓观察区" :value="zoneText(priceZones.reduce)" tone="text-amber-600 dark:text-amber-400" />
               <ActionPriceRow label="跌破风险位" :value="riskPriceText(priceZones.risk)" tone="text-destructive" />
             </div>
+
+            <div v-if="!isFund" class="rounded-lg border bg-muted/20 p-3">
+              <div class="text-xs text-muted-foreground">走势失效条件</div>
+              <div class="mt-1 text-sm font-semibold">{{ invalidationText(activeOutlook.invalidation, singlePrice) }}</div>
+            </div>
+
+            <details v-if="hasUsableQuantModel" class="rounded-lg border bg-muted/10 px-3 py-2.5">
+              <summary class="cursor-pointer select-none text-sm font-medium">量化模型（独立结果）</summary>
+              <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">盈利概率</span><strong class="mt-1 block">{{ probabilityPercent(quant.profitProbability) }}</strong></div>
+                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">扣费后收益</span><strong class="mt-1 block" :class="tone(quant.expectedNetReturn)">{{ decimalPercent(quant.expectedNetReturn) }}</strong></div>
+                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">亏损概率</span><strong class="mt-1 block">{{ probabilityPercent(quant.lossProbability) }}</strong></div>
+                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">模型动作</span><strong class="mt-1 block">{{ quantActionLabel(quant.action) }}</strong></div>
+              </div>
+              <p v-if="quant.riskFlags?.length" class="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{{ quant.riskFlags.map(riskFlagLabel).join('；') }}</p>
+            </details>
           </div>
         </Card>
       </section>
@@ -173,14 +181,14 @@
         <div class="grid gap-3 md:grid-cols-3">
           <Card v-for="item in horizonCards" :key="item.key" class="gap-3 py-4 shadow-sm">
             <CardHeader class="px-4">
-              <div class="flex items-center justify-between gap-2"><CardTitle class="text-base">{{ item.label }}</CardTitle><Badge :variant="verdictVariant(item.data.verdict)">{{ verdictLabel(item.data.verdict) }}</Badge></div>
+              <div class="flex items-center justify-between gap-2"><CardTitle class="text-base">{{ item.label }}</CardTitle><Badge :variant="directionMeta(item.data.outlook?.direction).variant">{{ outlookDirectionLabel(item.data.outlook?.direction) }}</Badge></div>
               <CardDescription>{{ horizonRange(item.data) }}</CardDescription>
             </CardHeader>
             <CardContent class="px-4">
-              <p v-if="item.data.status === 'INSUFFICIENT'" class="text-sm leading-6 text-muted-foreground">{{ item.data.reason || '历史数据不足，暂不生成评分。' }}</p>
+              <p v-if="item.data.status === 'INSUFFICIENT'" class="text-sm leading-6 text-muted-foreground">{{ item.data.reason || '历史数据不足，暂不判断走势。' }}</p>
               <template v-else>
-                <div class="flex items-end justify-between"><span class="text-xs text-muted-foreground">技术评分</span><strong class="text-xl tabular-nums" :class="verdictTone(item.data.verdict)">{{ formatScore(item.data.score) }}</strong></div>
-                <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div class="h-full rounded-full transition-all" :class="scoreBarTone(item.data.verdict)" :style="{ width: `${Math.max(2, Number(item.data.score || 0))}%` }" /></div>
+                <div class="flex items-end justify-between gap-3"><span class="text-xs text-muted-foreground">判断可信度</span><strong class="text-sm">{{ confidenceLabel(item.data.outlook?.confidence) }}</strong></div>
+                <p class="mt-3 text-sm leading-6 text-muted-foreground">{{ item.data.outlook?.reasons?.[0] || '当前指标尚未形成明确证据。' }}</p>
               </template>
             </CardContent>
           </Card>
@@ -188,7 +196,7 @@
       </section>
 
       <section class="grid gap-4 xl:grid-cols-12">
-        <Card class="shadow-sm xl:col-span-7">
+        <Card class="shadow-sm xl:col-span-12">
           <CardHeader>
             <div class="flex items-start justify-between gap-3">
               <div>
@@ -223,30 +231,6 @@
           </CardContent>
         </Card>
 
-        <Card class="shadow-sm xl:col-span-5">
-          <CardHeader>
-            <div class="flex items-center gap-1"><CardTitle>数量参考</CardTitle><InfoTooltip :content="helpText.quantityReference" label="了解数量参考" /></div>
-            <CardDescription>计划操作时可参考的分批金额与数量</CardDescription>
-          </CardHeader>
-          <CardContent class="space-y-3">
-            <div v-if="quantityState.showBatches" class="grid grid-cols-3 gap-2">
-              <div v-for="(batch, index) in personalized.batches || []" :key="index" class="rounded-lg border bg-muted/20 p-3 text-center">
-                <div class="text-xs text-muted-foreground">第 {{ index + 1 }} 批</div>
-                <div class="mt-1 font-semibold tabular-nums">{{ asset.productType === 'MUTUAL_FUND' ? money(batch.amount) : `${integer(batch.quantity)} 股` }}</div>
-                <div v-if="asset.productType !== 'MUTUAL_FUND'" class="mt-0.5 text-xs text-muted-foreground">约 {{ money(batch.amount) }}</div>
-              </div>
-            </div>
-            <div v-if="quantityState.showBudget" class="flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm"><span class="text-muted-foreground">建议总预算</span><strong>{{ money(personalized.suggestedBudget) }}</strong></div>
-            <div v-if="quantityState.showSell" class="flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm"><span class="text-muted-foreground">减仓数量参考</span><strong>{{ asset.productType === 'MUTUAL_FUND' ? decimal(personalized.sellQuantity) + ' 份' : integer(personalized.sellQuantity) + ' 股' }}</strong></div>
-            <div v-if="quantityState.emptyMessage" class="rounded-lg border border-dashed bg-muted/30 p-4">
-              <div class="flex items-start gap-2.5">
-                <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                <div><p class="text-sm font-medium">当前没有可执行的数量建议</p><p class="mt-1 text-xs leading-5 text-muted-foreground">{{ quantityState.emptyMessage }}</p></div>
-              </div>
-            </div>
-            <p class="text-xs leading-5 text-muted-foreground">数量会随账户余额、持仓和风险上限变化；模型预测本身不会被账户余额修改。</p>
-          </CardContent>
-        </Card>
       </section>
 
       <section class="grid gap-4 xl:grid-cols-12">
@@ -277,10 +261,12 @@
               <div class="flex items-center gap-1"><h3 class="font-semibold">历史回测</h3><InfoTooltip :content="helpText.backtest" label="了解历史回测" /></div>
               <p class="mt-1 text-xs leading-5 text-muted-foreground">只用当时可见数据，不使用未来信息生成信号</p>
               <div class="mt-4 space-y-3">
-                <MetricLine label="历史出现" :value="`${activeBacktest.occurrences || 0} 次`" />
-                <MetricLine label="胜率" :value="percent(activeBacktest.winRate, false)" />
+                <MetricLine label="同方向历史出现" :value="`${activeBacktest.occurrences || 0} 次`" />
+                <MetricLine label="之后上涨占比" :value="percent(activeBacktest.positiveRate, false)" />
+                <MetricLine label="之后下跌占比" :value="percent(activeBacktest.negativeRate, false)" />
                 <MetricLine label="中位前瞻收益" :value="percent(activeBacktest.medianForwardReturn)" :tone="tone(activeBacktest.medianForwardReturn)" />
-                <MetricLine label="样本最大回撤" :value="percent(activeBacktest.maxDrawdown, false)" tone="text-destructive" />
+                <MetricLine label="最大不利波动" :value="percent(activeBacktest.maximumAdverseExcursion, false)" tone="text-destructive" />
+                <MetricLine label="走势失效占比" :value="percent(activeBacktest.invalidationRate, false)" />
               </div>
             </div>
             <div class="rounded-lg border bg-muted/10 p-4">
@@ -307,7 +293,7 @@
               </div>
               <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span>{{ ai.status === 'READY' ? '已保存解读' : '后台生成中' }}</span>
-                <span>数据版本 {{ shortVersion(ai.provenance?.datasetVersion) }} · 最短刷新 {{ ai.cooldownMinutes }} 分钟</span>
+                <span>最短刷新 {{ ai.cooldownMinutes }} 分钟</span>
               </div>
             </div>
           </div>
@@ -345,15 +331,17 @@ import { InfoTooltip } from '@/components/ui/tooltip'
 import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
-import { buildQuantityReferenceState, missingPriceZoneText } from '@/lib/investmentActionState'
 import { normalizeAiExplanation } from '@/lib/investmentExplanation'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
 import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
+import { isUsableQuantAnalysis } from '@/lib/quantDisplay'
 import {
-  isUsableQuantAnalysis,
-  quantSummaryMetric,
-} from '@/lib/quantDisplay'
+  confidenceLabel,
+  directionLabel as outlookDirectionLabel,
+  directionMeta,
+  invalidationText,
+} from '@/lib/technicalOutlook'
 import { feedback } from '@/lib/feedback'
 import {
   clearInvestmentAssetHorizonOverrideAPI,
@@ -382,7 +370,6 @@ const preferenceOpen = ref(false)
 const asset = computed(() => detail.value?.asset || {})
 const technical = computed(() => detail.value?.technicalAnalysis || {})
 const fundamental = computed(() => detail.value?.fundamentalAnalysis || {})
-const personalized = computed(() => detail.value?.personalizedAction || {})
 const backtest = computed(() => detail.value?.backtestSummary || {})
 const ai = computed(() => normalizeAiExplanation(detail.value?.aiExplanation))
 const disclaimer = computed(() => detail.value?.disclaimer || {})
@@ -406,17 +393,14 @@ const horizonOptions = computed(() => (horizonProfile.value.settings || []).map(
 })))
 const isFund = computed(() => asset.value.productType === 'MUTUAL_FUND')
 const activeAnalysis = computed(() => technical.value.horizons?.[activeHorizon.value] || technical.value)
+const activeOutlook = computed(() => activeAnalysis.value.outlook || technical.value.outlook || {})
+const activeDirection = computed(() => directionMeta(activeOutlook.value.direction))
 const activeBacktest = computed(() => backtest.value.horizons?.[activeHorizon.value] || backtest.value)
 const activeLevels = computed(() => activeAnalysis.value.levels || technical.value.levels || {})
 const hasUsableQuantModel = computed(() => isUsableQuantAnalysis(quant.value))
-const quantConclusion = computed(() => {
-  if (!hasUsableQuantModel.value) return quant.value.userMessage || '暂无有效量化模型'
-  const probability = probabilityPercent(quant.value.profitProbability)
-  return `模型估计所选周期内扣除成本后的盈利概率为 ${probability}；请按计划金额、执行时间和停止条件操作。`
-})
 const priceZones = computed(() => isFund.value
-  ? personalized.value.priceZones || technical.value.actionZones || {}
-  : activeAnalysis.value.actionZones || technical.value.actionZones || personalized.value.priceZones || {})
+  ? technical.value.actionZones || {}
+  : activeAnalysis.value.actionZones || technical.value.actionZones || {})
 const activeVerdict = computed(() => isFund.value
   ? actionVerdict(technical.value.action)
   : activeAnalysis.value.verdict || technical.value.verdict || actionVerdict(technical.value.action))
@@ -424,27 +408,8 @@ const activeHeadline = computed(() => activeAnalysis.value.status === 'INSUFFICI
   ? '数据不足'
   : isFund.value ? fundActionLabel(technical.value.action) : verdictLabel(activeVerdict.value))
 const activePeriodText = computed(() => horizonRange(activeAnalysis.value))
-const cycleDifference = computed(() => new Set(Object.values(technical.value.horizons || {}).map(item => item.verdict).filter(Boolean)).size > 1)
-const conclusionReason = computed(() => {
-  if (isFund.value) return ''
-  if (activeAnalysis.value.status === 'INSUFFICIENT') {
-    return activeAnalysis.value.reason || '该周期所需历史数据不足，暂不生成评分。'
-  }
-  const reason = activeVerdict.value === 'FAVORABLE'
-    ? '当前趋势和动量相对较强。'
-    : activeVerdict.value === 'WEAK'
-      ? '当前趋势与动量整体偏弱。'
-      : '当前指标还没有形成一致方向。'
-  return `${reason}${activePeriodText.value}，${cycleDifference.value ? '不同周期的判断存在分歧。' : '不同周期的方向较一致。'}`
-})
+const cycleDifference = computed(() => new Set(Object.values(technical.value.horizons || {}).map(item => item.outlook?.direction).filter(Boolean)).size > 1)
 const horizonCards = computed(() => horizonOptions.value.map(item => ({ key: item.value, label: item.label, data: technical.value.horizons?.[item.value] || {} })))
-const quantityState = computed(() => buildQuantityReferenceState({
-  productType: asset.value.productType,
-  suggestedBudget: personalized.value.suggestedBudget,
-  sellQuantity: personalized.value.sellQuantity,
-  technicalConfidence: personalized.value.technicalConfidence,
-  batches: personalized.value.batches || [],
-}))
 const fundamentalDimensions = computed(() => {
   const labels = { growth: '成长', profitability: '盈利', cashQuality: '现金质量', resilience: '财务韧性', valuation: '估值' }
   return Object.entries(fundamental.value.dimensions || {}).map(([key, data]) => ({ key, label: labels[key] || key, data }))
@@ -459,19 +424,13 @@ const sourceLabel = computed(() => ({
   PREPARING: '数据准备中',
 }[sourceStatus.value.dataState] || '数据准备中'))
 const dataTime = computed(() => sourceStatus.value.quoteDate || asset.value.dataDate || '暂无日期')
-const quantSummary = computed(() => quantSummaryMetric(
-  quant.value,
-  probabilityPercent,
-))
 const topMetrics = computed(() => [
   { label: asset.value.productType === 'MUTUAL_FUND' ? '最新净值' : '当前价格', value: originalMoney(asset.value.latestPrice, asset.value.currency), hint: `${signedPercent(asset.value.changePercent)} 今日涨跌`, tone: tone(asset.value.changePercent) },
   { label: '持仓市值', value: money(asset.value.marketValueCny), hint: asset.value.quantity == null ? '尚未填写持仓' : `${decimal(asset.value.quantity)} ${asset.value.productType === 'MUTUAL_FUND' ? '份' : '股'}` },
   { label: '持仓盈亏', value: signedMoney(asset.value.unrealizedPnlCny), hint: `${signedPercent(asset.value.holdingReturnPercent)} 持仓收益`, tone: tone(asset.value.unrealizedPnlCny) },
-  {
-    ...quantSummary.value,
-    tone: hasUsableQuantModel.value ? quantActionTone(quant.value.action) : '',
-    help: helpText.quantProbability,
-  }
+  isFund.value
+    ? { label: '基金研判', value: activeHeadline.value, hint: activePeriodText.value, tone: verdictTone(activeVerdict.value) }
+    : { label: '走势研判', value: outlookDirectionLabel(activeOutlook.value.direction), hint: `${confidenceLabel(activeOutlook.value.confidence)} · ${activePeriodText.value}`, tone: activeDirection.value.tone, help: helpText.technicalOutlook },
 ])
 
 const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
@@ -619,13 +578,15 @@ async function clearPreference() {
 }
 
 function verdictLabel(value) { return ({ FAVORABLE: '值得关注', WAIT: '中性观察', WEAK: '技术偏弱' }[value] || '等待数据') }
-function verdictVariant(value) { return value === 'WEAK' ? 'destructive' : value === 'FAVORABLE' ? 'secondary' : 'outline' }
 function verdictTone(value) { return value === 'WEAK' ? 'text-destructive' : value === 'FAVORABLE' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }
-function scoreBarTone(value) { return value === 'WEAK' ? 'bg-destructive' : value === 'FAVORABLE' ? 'bg-emerald-500' : 'bg-amber-500' }
 function actionVerdict(value) { return ({ ACCUMULATE: 'FAVORABLE', HOLD: 'WAIT', PAUSE: 'WEAK', TAKE_PROFIT: 'WAIT' }[value] || 'WAIT') }
 function fundActionLabel(value) { return ({ ACCUMULATE: '定投参考', HOLD: '继续持有', PAUSE: '暂停追加', TAKE_PROFIT: '分批止盈' }[value] || '等待数据') }
 function horizonRange(value) { return value?.minimumDays != null ? `${value.minimumDays}–${value.maximumDays} 个交易日` : '等待足够历史数据' }
-function missingZoneReason() { return missingPriceZoneText({ hasLatestPrice: asset.value.latestPrice != null, historyInsufficient: activeAnalysis.value.status === 'INSUFFICIENT' }) }
+function missingZoneReason() {
+  if (asset.value.latestPrice == null) return '缺少最新价格'
+  if (activeAnalysis.value.status === 'INSUFFICIENT') return '历史数据不足'
+  return '当前未形成有效区间'
+}
 function zoneText(zone) { if (!zone) return missingZoneReason(); const low = zone.low ?? zone.price; const high = zone.high ?? zone.price; return low == null ? missingZoneReason() : low === high ? singlePrice(low) : `${singlePrice(low)} – ${singlePrice(high)}` }
 function riskPriceText(zone) { return zone?.price == null ? missingZoneReason() : singlePrice(zone.price) }
 function singlePrice(value) { return value == null ? '暂无数据' : new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)) }
@@ -636,15 +597,10 @@ function signedMoney(value) { if (value == null) return '-'; const n = Number(va
 function signedPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%` }
 function percent(value, signed = true) { if (value == null) return '-'; const n = Number(value); return `${signed && n > 0 ? '+' : ''}${n.toFixed(2)}%` }
 function decimal(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(Number(value)) }
-function integer(value) { return value == null ? '0' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Number(value)) }
 function tone(value) { const n = Number(value || 0); return n > 0 ? 'text-emerald-600 dark:text-emerald-400' : n < 0 ? 'text-destructive' : '' }
 function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', MODEL_DRIFT: '模型表现漂移', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
 function quantActionLabel(value) { return ({ BUY_WATCH: '买入观察', ADD: '加仓', HOLD: '持有', REDUCE: '减仓', EXIT: '退出', NO_TRADE: '暂不交易' }[value] || '暂不交易') }
-function quantActionVariant(value) { return value === 'EXIT' || value === 'REDUCE' ? 'destructive' : value === 'ADD' || value === 'BUY_WATCH' ? 'secondary' : 'outline' }
-function quantActionTone(value) { return value === 'EXIT' || value === 'REDUCE' ? 'text-destructive' : value === 'ADD' || value === 'BUY_WATCH' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }
 function probabilityPercent(value) { return value == null ? '-' : `${(Number(value) * 100).toFixed(1)}%` }
 function decimalPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${(Number(value) * 100).toFixed(2)}%` }
-function predictionIntervalText(value) { return Array.isArray(value) && value.length === 2 ? `${decimalPercent(value[0])} ～ ${decimalPercent(value[1])}` : '-' }
 function riskFlagLabel(value) { return ({ MODEL_NOT_VALIDATED: '模型尚未通过样本外验证，当前不交易', MODEL_UNAVAILABLE: '模型尚未完成训练，当前不交易', DATA_NOT_READY: '可靠数据正在准备中，当前不交易', RESULT_UNAVAILABLE: '有效模型结果正在准备中', MODEL_REFRESH_REQUIRED: '周期已变化，需要更新模型', CASH_BENCHMARK: '当前使用现金收益作为比较基准', FUNDAMENTALS_UNAVAILABLE: '历史基本面公告数据不足，本次模型主要使用行情因子' }[value] || '当前风险条件不支持交易') }
-function shortVersion(value) { return value ? String(value).slice(0, 16) : '-' }
 </script>

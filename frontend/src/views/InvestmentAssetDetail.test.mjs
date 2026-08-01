@@ -25,3 +25,8 @@ test('历史任务使用用户可理解的状态提示', () => {
   assert.match(template, /历史数据准备未完成/)
   assert.doesNotMatch(template, /errorMessage/)
 })
+
+test('技术分析不再伪造金额和买卖数量', () => {
+  assert.match(template, /专业走势研判/)
+  assert.doesNotMatch(template, /数量参考|建议总预算|减仓数量参考/)
+})

@@ -14,6 +14,7 @@ test('投资详情页使用动态路由和完整分析分区', () => {
   assert.match(routerSource, /path:\s*'stocks\/:assetId'/)
   assert.match(routerSource, /name:\s*'InvestmentAssetDetail'/)
   assert.match(pageSource, /InvestmentKlineChart/)
+  assert.match(pageSource, /专业走势研判/)
   assert.match(pageSource, /多周期分析/)
   assert.match(pageSource, /财务警告/)
   assert.match(pageSource, /AI 解读/)
@@ -33,14 +34,14 @@ test('分析周期来自后端画像且单资产设置可恢复为全局配置',
 
 test('数据不足的周期不展示伪造评分', () => {
   assert.match(pageSource, /item\.data\.status === 'INSUFFICIENT'/)
-  assert.match(pageSource, /历史数据不足，暂不生成评分/)
+  assert.match(pageSource, /历史数据不足，暂不判断走势/)
   assert.match(pageSource, /hasUsableQuantModel/)
 })
 
 test('风险警告与技术结果在页面上分区呈现', () => {
   assert.match(pageSource, /technicalAnalysis/)
   assert.match(pageSource, /financialWarnings/)
-  assert.match(pageSource, /affectsTechnicalAnalysis/)
+  assert.doesNotMatch(pageSource, /affectsTechnicalAnalysis/)
 })
 
 test('投资详情页不提供全局总资产入口', () => {
@@ -63,8 +64,7 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', ()
 
 test('复杂模块提供可悬停和键盘访问的问号说明', () => {
   assert.match(pageSource, /InfoTooltip/)
-  assert.match(pageSource, /helpText\.quantProbability/)
-  assert.match(pageSource, /helpText\.quantityReference/)
+  assert.match(pageSource, /helpText\.technicalOutlook/)
   assert.match(pageSource, /helpText\.backtest/)
   assert.match(tooltipSource, /TooltipTrigger/)
   assert.match(tooltipSource, /aria-label/)
@@ -74,10 +74,9 @@ test('复杂模块提供可悬停和键盘访问的问号说明', () => {
 test('只解释专业指标且说明用户如何阅读结果', () => {
   assert.doesNotMatch(pageSource, /helpText\.aiExplanation/)
   assert.doesNotMatch(pageSource, /helpText\.financialWarnings/)
-  assert.match(investmentHelpText.technicalScore, /策略版本/)
+  assert.match(investmentHelpText.technicalOutlook, /趋势、动量、量价、波动和价格结构/)
   assert.match(investmentHelpText.quantProbability, /扣除交易成本/)
   assert.match(investmentHelpText.priceZones, /买入\/加仓/)
-  assert.match(investmentHelpText.quantityReference, /当前整手配置/)
   assert.match(investmentHelpText.backtest, /样本次数/)
   assert.doesNotMatch(JSON.stringify(investmentHelpText), /方便理解|用通俗中文解释|不保证未来一定上涨/)
 })
@@ -104,30 +103,34 @@ test('结论卡不重复解释显而易见的操作', () => {
   assert.doesNotMatch(pageSource, /现在怎么做|conclusionAction/)
 })
 
-test('数量为零时显示原因且次要分析默认收起', () => {
-  assert.match(pageSource, /quantityState\.emptyMessage/)
-  assert.match(pageSource, /当前没有可执行的数量建议/)
+test('技术走势是主结论且旧伪数量模块已删除', () => {
+  assert.match(pageSource, /activeOutlook/)
+  assert.match(pageSource, /outlookDirectionLabel/)
+  assert.match(pageSource, /走势失效条件/)
+  assert.doesNotMatch(pageSource, /数量参考|personalized|quantityState|buildQuantityReferenceState/)
   assert.match(pageSource, /<details/)
   assert.match(pageSource, /查看详细分析/)
 })
 
-test('当前周期的关键价位沿用兼容分析且主要结论来自量化模型', () => {
+test('当前周期的关键价位和主要结论来自同一技术走势规则', () => {
   assert.match(pageSource, /:levels="activeLevels"/)
   assert.match(pageSource, /activeAnalysis\.value\.levels/)
   assert.match(pageSource, /activeAnalysis\.value\.actionZones/)
-  assert.match(pageSource, /quantActionLabel\(quant\.action\)/)
+  assert.match(pageSource, /activeAnalysis\.value\.outlook/)
   assert.doesNotMatch(pageSource, /label:\s*'技术评分'.*topMetrics/)
 })
 
-test('量化模型结论替代技术评分成为主要交易判断', () => {
+test('只有存在可用模型时才把量化结果作为独立次级模块展示', () => {
   assert.match(investmentApiSource, /getInvestmentQuantAnalysisAPI/)
   assert.match(investmentApiSource, /getQuantActionPlanAPI/)
+  assert.match(pageSource, /v-if="hasUsableQuantModel"/)
+  assert.match(pageSource, /量化模型（独立结果）/)
   assert.doesNotMatch(pageSource, /refreshInvestmentQuantAnalysisAPI/)
   assert.doesNotMatch(pageSource, /getInvestmentQuantJobAPI/)
   assert.match(pageSource, /profitProbability/)
   assert.match(pageSource, /expectedNetReturn/)
   assert.match(pageSource, /lossProbability/)
-  assert.match(pageSource, /orderAmountCny/)
+  assert.doesNotMatch(pageSource, /orderAmountCny/)
   assert.doesNotMatch(pageSource, /probabilityPositiveExcess/)
   assert.doesNotMatch(pageSource, /topFactors/)
   assert.match(pageSource, /NO_TRADE/)
