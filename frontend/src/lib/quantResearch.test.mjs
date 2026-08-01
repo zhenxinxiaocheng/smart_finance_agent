@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import {
   buildDefaultParameters,
   canPromoteExperiment,
+  experimentStatusLabel,
+  formatComparison,
   recommendedPosition,
   validationCheckRows
 } from './quantResearch.js'
@@ -46,6 +48,32 @@ assert.equal(canPromoteExperiment({
   status: 'SUCCEEDED',
   validationReport: { passed: false, lifecycle: 'DRAFT' }
 }), false)
+
+assert.equal(experimentStatusLabel({
+  executionStatus: 'COMPLETED',
+  trainingOutcome: 'VALIDATION_FAILED'
+}), '执行完成、验证未通过')
+assert.equal(experimentStatusLabel({
+  executionStatus: 'RUNNING',
+  trainingOutcome: 'OPTIMIZING'
+}), '正在优化')
+
+assert.deepEqual(formatComparison({
+  comparable: true,
+  parameterChanges: [
+    { parameter: 'maximumDepth', before: 5, after: 2 }
+  ],
+  netExcessChange: 0.012,
+  drawdownImprovement: 0.07,
+  bottleneck: { code: 'COST_TOO_HIGH', message: '交易成本过高' },
+  nextSuggestion: '降低换手'
+}), {
+  parameterChange: 'maximumDepth：5 → 2',
+  netExcessChange: '+1.20%',
+  drawdownImprovement: '+7.00%',
+  bottleneck: '交易成本过高',
+  nextSuggestion: '降低换手'
+})
 
 assert.deepEqual(validationCheckRows({
   checks: [

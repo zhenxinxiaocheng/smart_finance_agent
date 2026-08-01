@@ -251,13 +251,19 @@
 
       <section class="grid gap-4 xl:grid-cols-12">
         <Card class="shadow-sm xl:col-span-5">
-          <CardHeader><CardTitle class="flex items-center gap-2"><ShieldAlert class="size-4" />财务警告</CardTitle><CardDescription>仅提醒，不影响技术分析</CardDescription></CardHeader>
+          <CardHeader><CardTitle class="flex items-center gap-2"><ShieldAlert class="size-4" />财务警告</CardTitle><CardDescription>根据账户与市场风险规则实时生成</CardDescription></CardHeader>
           <CardContent class="space-y-2.5">
-            <Alert v-for="warning in detail.financialWarnings" :key="warning.code" :variant="warning.severity === 'ERROR' ? 'destructive' : 'default'" class="py-2.5">
+            <Alert v-for="warning in detail.financialWarnings || []" :key="warning.code" :variant="warning.severity === 'ERROR' ? 'destructive' : 'default'" class="py-2.5">
               <TriangleAlert v-if="warning.severity === 'WARNING'" class="text-amber-600 dark:text-amber-400" /><Info v-else />
               <AlertTitle>{{ warningTitle(warning.code) }}</AlertTitle>
-              <AlertDescription>{{ warning.message }}<span v-if="warning.affectsTechnicalAnalysis === false" class="mt-1 block text-xs">不会修改技术评分、支撑压力或交易区间。</span></AlertDescription>
+              <AlertDescription>{{ warning.message }}</AlertDescription>
             </Alert>
+            <div v-if="!(detail.financialWarnings || []).length" class="rounded-lg border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
+              当前没有触发有证据支持的财务或风控警告。
+            </div>
+            <p class="rounded-lg bg-muted/30 px-3 py-2 text-xs leading-5 text-muted-foreground">
+              {{ disclaimer.text || '结果仅用于辅助分析，不连接券商，也不会自动交易。' }}
+            </p>
           </CardContent>
         </Card>
 
@@ -266,7 +272,7 @@
             <div><p class="font-semibold">查看详细分析</p><p class="mt-1 text-sm text-muted-foreground">历史回测与 AI 解读</p></div>
             <ChevronDown class="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
           </summary>
-          <div class="grid gap-4 border-t p-4 md:grid-cols-2">
+          <div class="grid gap-4 border-t p-4 md:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
             <div class="rounded-lg border bg-muted/10 p-4">
               <div class="flex items-center gap-1"><h3 class="font-semibold">历史回测</h3><InfoTooltip :content="helpText.backtest" label="了解历史回测" /></div>
               <p class="mt-1 text-xs leading-5 text-muted-foreground">只用当时可见数据，不使用未来信息生成信号</p>
@@ -279,9 +285,30 @@
             </div>
             <div class="rounded-lg border bg-muted/10 p-4">
               <h3 class="flex items-center gap-2 font-semibold"><Sparkles class="size-4 text-primary" />AI 解读</h3>
-              <p class="mt-1 text-xs leading-5 text-muted-foreground">AI 只解释已保存的模型与风控结果，不能修改交易结论</p>
-              <div class="mt-4 rounded-lg border bg-background p-4 text-sm leading-7 text-foreground/90 whitespace-pre-line">{{ ai.text || '正在根据最新分析生成中文解读…' }}</div>
-              <div class="mt-3 flex items-center justify-between text-xs text-muted-foreground"><span>{{ ai.status === 'READY' ? '缓存解读' : '后台生成中' }}</span><span>最短刷新间隔 {{ ai.cooldownMinutes }} 分钟</span></div>
+              <p class="mt-1 text-xs leading-5 text-muted-foreground">只解释已保存的计算结果，不会改写交易结论</p>
+              <div class="mt-4 rounded-lg border bg-background p-4">
+                <p class="text-base font-semibold leading-7">{{ ai.summary || '正在生成简短解读…' }}</p>
+                <div v-if="ai.reasons.length" class="mt-4">
+                  <p class="text-xs font-medium text-muted-foreground">为什么</p>
+                  <ul class="mt-2 space-y-1.5 text-sm leading-6">
+                    <li v-for="reason in ai.reasons" :key="reason">• {{ reason }}</li>
+                  </ul>
+                </div>
+                <div v-if="ai.risks.length" class="mt-4">
+                  <p class="text-xs font-medium text-muted-foreground">需要留意</p>
+                  <ul class="mt-2 space-y-1.5 text-sm leading-6 text-amber-700 dark:text-amber-300">
+                    <li v-for="risk in ai.risks" :key="risk">• {{ risk }}</li>
+                  </ul>
+                </div>
+                <details v-if="ai.technicalDetails" class="mt-4 rounded-md border bg-muted/20">
+                  <summary class="cursor-pointer px-3 py-2 text-xs font-medium">查看技术详情</summary>
+                  <p class="border-t px-3 py-3 text-xs leading-6 text-muted-foreground whitespace-pre-line">{{ ai.technicalDetails }}</p>
+                </details>
+              </div>
+              <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>{{ ai.status === 'READY' ? '已保存解读' : '后台生成中' }}</span>
+                <span>数据版本 {{ shortVersion(ai.provenance?.datasetVersion) }} · 最短刷新 {{ ai.cooldownMinutes }} 分钟</span>
+              </div>
             </div>
           </div>
         </details>
@@ -319,6 +346,7 @@ import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
 import { buildQuantityReferenceState, missingPriceZoneText } from '@/lib/investmentActionState'
+import { normalizeAiExplanation } from '@/lib/investmentExplanation'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
 import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
@@ -356,7 +384,8 @@ const technical = computed(() => detail.value?.technicalAnalysis || {})
 const fundamental = computed(() => detail.value?.fundamentalAnalysis || {})
 const personalized = computed(() => detail.value?.personalizedAction || {})
 const backtest = computed(() => detail.value?.backtestSummary || {})
-const ai = computed(() => detail.value?.aiExplanation || {})
+const ai = computed(() => normalizeAiExplanation(detail.value?.aiExplanation))
+const disclaimer = computed(() => detail.value?.disclaimer || {})
 const sourceStatus = computed(() => detail.value?.sourceStatus || {})
 const historyJob = computed(() => sourceStatus.value.historyJob || {})
 const historyJobStatus = computed(() => historyJob.value.status)
@@ -609,7 +638,7 @@ function percent(value, signed = true) { if (value == null) return '-'; const n 
 function decimal(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(Number(value)) }
 function integer(value) { return value == null ? '0' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Number(value)) }
 function tone(value) { const n = Number(value || 0); return n > 0 ? 'text-emerald-600 dark:text-emerald-400' : n < 0 ? 'text-destructive' : '' }
-function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒', REFERENCE_ONLY: '分析边界' }[code] || '财务提醒') }
+function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', MODEL_DRIFT: '模型表现漂移', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
 function quantActionLabel(value) { return ({ BUY_WATCH: '买入观察', ADD: '加仓', HOLD: '持有', REDUCE: '减仓', EXIT: '退出', NO_TRADE: '暂不交易' }[value] || '暂不交易') }
 function quantActionVariant(value) { return value === 'EXIT' || value === 'REDUCE' ? 'destructive' : value === 'ADD' || value === 'BUY_WATCH' ? 'secondary' : 'outline' }
 function quantActionTone(value) { return value === 'EXIT' || value === 'REDUCE' ? 'text-destructive' : value === 'ADD' || value === 'BUY_WATCH' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }

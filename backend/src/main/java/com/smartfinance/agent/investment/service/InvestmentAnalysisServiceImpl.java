@@ -11,6 +11,10 @@ import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
+import com.smartfinance.agent.investment.quant.QuantModelMonitor;
+import com.smartfinance.agent.investment.quant.QuantModelMonitorMapper;
+import com.smartfinance.agent.investment.quant.QuantStrategyVersion;
+import com.smartfinance.agent.investment.quant.QuantStrategyVersionMapper;
 import com.smartfinance.agent.mapper.FinancialProfileMapper;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -18,12 +22,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 
 @Service
@@ -45,6 +49,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final ObjectMapper objectMapper;
     private final PersonalizedActionCalculator actionCalculator;
     private final InvestmentDataJobService dataJobService;
+    private final InvestmentFinancialWarningEngine warningEngine;
+    private final QuantStrategyVersionMapper quantStrategyMapper;
+    private final QuantModelMonitorMapper quantMonitorMapper;
 
     public InvestmentAnalysisServiceImpl(InvestmentAssetService assetService,
                                          InvestmentProductMapper productMapper,
@@ -61,7 +68,10 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          InvestmentAiExplanationService aiExplanationService,
                                          PersonalizedActionCalculator actionCalculator,
                                          ObjectMapper objectMapper,
-                                         InvestmentDataJobService dataJobService) {
+                                         InvestmentDataJobService dataJobService,
+                                         InvestmentFinancialWarningEngine warningEngine,
+                                         QuantStrategyVersionMapper quantStrategyMapper,
+                                         QuantModelMonitorMapper quantMonitorMapper) {
         this.assetService = assetService;
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
@@ -78,6 +88,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.actionCalculator = actionCalculator;
         this.objectMapper = objectMapper;
         this.dataJobService = dataJobService;
+        this.warningEngine = warningEngine;
+        this.quantStrategyMapper = quantStrategyMapper;
+        this.quantMonitorMapper = quantMonitorMapper;
     }
 
     @Override
@@ -169,15 +182,53 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         sourceStatus.put("quoteDate", quotes.isEmpty() ? null : quotes.get(quotes.size() - 1).getTradeDate());
         sourceStatus.put("analyzedAt", snapshot == null ? null : snapshot.getAnalyzedAt());
         sourceStatus.put("historyJob", historyJob);
+        String datasetVersion = text(quality.get("datasetVersion"));
+        String analysisVersion = snapshot == null
+                ? text(technical.get("strategyVersion"))
+                : snapshot.getStrategyVersion();
+        LocalDateTime calculatedAt = snapshot == null
+                ? LocalDateTime.now(runtimeZone())
+                : snapshot.getAnalyzedAt();
+        technical = withProvenance(
+                technical, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        fundamental = withProvenance(
+                fundamental, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        fund = withProvenance(
+                fund, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        actionMap.put("provenance", provenance(
+                asset, horizonProfile.primaryCode(), datasetVersion,
+                analysisVersion, calculatedAt, "RULE_CALCULATION"
+        ));
         InvestmentAssetDetailResponse response = new InvestmentAssetDetailResponse();
         response.setAsset(asset);
         response.setTechnicalAnalysis(technical);
         response.setFundamentalAnalysis(fundamental);
         response.setPersonalizedAction(actionMap);
+        Map<String, Object> warningSource = new LinkedHashMap<>(quality);
+        if (blocked) {
+            warningSource.put("decision", "BLOCK");
+        }
         response.setFinancialWarnings(financialWarnings(
-                asset, wealth, technicalScore, financialProfileMapper.selectByUserId(userId)));
+                userId, asset, wealth, technicalScore,
+                financialProfileMapper.selectByUserId(userId),
+                technical, backtest, warningSource, horizonProfile.primaryCode()));
+        response.setDisclaimer(disclaimer(
+                asset, horizonProfile.primaryCode(), text(quality.get("datasetVersion"))
+        ));
         response.setBacktestSummary(backtest);
-        response.setAiExplanation(aiExplanation(snapshot, technical, fundamental, product));
+        response.setAiExplanation(aiExplanation(
+                snapshot, technical, fundamental, product,
+                horizonProfile.primaryCode()
+        ));
         response.setSourceStatus(sourceStatus);
         response.setAnalysisPreference(horizonService.describe(horizonProfile));
         Object series = ("MUTUAL_FUND".equals(product.getProductType()) ? fund : technical).get("series");
@@ -408,8 +459,11 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                         writeJson(technical), writeJson(fundamental), writeJson(actionMap));
             }
         }
-        List<Map<String, Object>> warnings = financialWarnings(asset, wealth, score,
-                financialProfileMapper.selectByUserId(userId));
+        List<Map<String, Object>> warnings = financialWarnings(
+                userId, asset, wealth, score,
+                financialProfileMapper.selectByUserId(userId),
+                technical, backtest, sourceStatus, horizonProfile.primaryCode()
+        );
         sourceStatus.putIfAbsent("analysisStatus", "READY");
         sourceStatus.put("cacheHit", cacheHit);
         sourceStatus.putIfAbsent("historicalCache", false);
@@ -421,14 +475,48 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         sourceStatus.put("dataState", reliableCache ? "STABLE_CACHE"
                 : qualityBlocked || "FAILED".equals(sourceStatus.get("analysisStatus"))
                 ? "PREPARING" : "READY");
+        String datasetVersion = text(sourceStatus.get("datasetVersion"));
+        String analysisVersion = snapshot == null
+                ? text(technical.get("strategyVersion"))
+                : snapshot.getStrategyVersion();
+        LocalDateTime calculatedAt = snapshot == null
+                ? LocalDateTime.now(runtimeZone())
+                : snapshot.getAnalyzedAt();
+        technical = withProvenance(
+                technical, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        fundamental = withProvenance(
+                fundamental, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        fund = withProvenance(
+                fund, asset, horizonProfile.primaryCode(),
+                datasetVersion, analysisVersion, calculatedAt,
+                "DETERMINISTIC_ANALYSIS"
+        );
+        actionMap.put("provenance", provenance(
+                asset, horizonProfile.primaryCode(), datasetVersion,
+                analysisVersion, calculatedAt, "RULE_CALCULATION"
+        ));
         InvestmentAssetDetailResponse response = new InvestmentAssetDetailResponse();
         response.setAsset(asset);
         response.setTechnicalAnalysis(technical);
         response.setFundamentalAnalysis(fundamental);
         response.setPersonalizedAction(actionMap);
         response.setFinancialWarnings(warnings);
+        response.setDisclaimer(disclaimer(
+                asset,
+                horizonProfile.primaryCode(),
+                text(sourceStatus.get("datasetVersion"))
+        ));
         response.setBacktestSummary(backtest);
-        response.setAiExplanation(aiExplanation(snapshot, technical, fundamental, product));
+        response.setAiExplanation(aiExplanation(
+                snapshot, technical, fundamental, product,
+                horizonProfile.primaryCode()
+        ));
         response.setSourceStatus(userSafeSourceStatus(sourceStatus));
         response.setAnalysisPreference(horizonService.describe(horizonProfile));
         Object series = ("MUTUAL_FUND".equals(product.getProductType()) ? fund : technical).get("series");
@@ -561,76 +649,289 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         return value == null ? null : new BigDecimal(String.valueOf(value));
     }
 
-    private List<Map<String, Object>> financialWarnings(InvestmentAssetView asset,
-                                                         WealthOverviewResponse wealth,
-                                                         BigDecimal technicalScore,
-                                                         FinancialProfile profile) {
-        List<Map<String, Object>> warnings = new ArrayList<>();
-        if (!wealth.isInitialized()) {
-            warnings.add(warning("WEALTH_NOT_INITIALIZED", "INFO", "尚未建立现金基准，数量建议仅按投资账户现金计算"));
-        }
-        if (profile != null && wealth.isInitialized() && profile.getFixedExpense() != null) {
-            BigDecimal reserveMonths = runtimeProperties.getRisk().getEmergencyReserveMonths();
-            BigDecimal reserveTarget = profile.getFixedExpense().multiply(reserveMonths);
-            if (wealth.getDailyCash().compareTo(reserveTarget) < 0) {
-                warnings.add(warning("RESERVE_LOW", "WARNING", "日常现金低于约 "
-                        + reserveMonths.stripTrailingZeros().toPlainString() + " 个月固定支出，请先关注备用金"));
-            }
-        }
-        if (wealth.getTotalAssets() != null && wealth.getTotalAssets().signum() > 0
-                && asset.getMarketValueCny() != null) {
-            BigDecimal concentration = asset.getMarketValueCny()
-                    .divide(wealth.getTotalAssets(), 6, RoundingMode.HALF_UP)
-                    .multiply(new BigDecimal("100"));
-            if (concentration.compareTo(runtimeProperties.getRisk()
-                    .getAssetConcentrationWarningPercent()) > 0) {
-                warnings.add(warning("CONCENTRATION_HIGH", "WARNING",
-                        "该资产约占总资产 " + concentration.setScale(1, RoundingMode.HALF_UP) + "%"));
-            }
-        }
-        if (profile != null && profile.getSavingsGoalAmount() != null && wealth.isInitialized()
-                && wealth.getTotalAssets().compareTo(profile.getSavingsGoalAmount()) < 0) {
-            warnings.add(warning("SAVINGS_GOAL", "INFO", "当前总资产尚未达到已设置的储蓄目标"));
-        }
-        if (technicalScore != null && profile != null && "CONSERVATIVE".equals(profile.getRiskPreference())
-                && technicalScore.compareTo(runtimeProperties.getRisk().getConservativeStrongScore()) >= 0) {
-            warnings.add(warning("RISK_PREFERENCE", "INFO", "技术条件较好，但你的风险偏好偏保守，请保持分批和仓位纪律"));
-        }
-        if (technicalScore != null && profile != null && "AGGRESSIVE".equals(profile.getRiskPreference())
-                && technicalScore.compareTo(runtimeProperties.getRisk().getAggressiveWeakScore()) < 0) {
-            warnings.add(warning("RISK_PREFERENCE", "WARNING", "风险偏好偏进取不会改变当前技术偏弱的结论"));
-        }
-        warnings.add(warning("REFERENCE_ONLY", "INFO", "结果仅作分析参考，不连接券商，也不会自动交易"));
-        return warnings;
-    }
-
-    private static Map<String, Object> warning(String code, String severity, String message) {
-        return warning(code, severity, message, false);
-    }
-
-    private static Map<String, Object> warning(String code, String severity, String message,
-                                               boolean affectsTechnicalAnalysis) {
-        return Map.of("code", code, "severity", severity, "message", message,
-                "affectsTechnicalAnalysis", affectsTechnicalAnalysis);
+    private List<Map<String, Object>> financialWarnings(
+            Long userId,
+            InvestmentAssetView asset,
+            WealthOverviewResponse wealth,
+            BigDecimal technicalScore,
+            FinancialProfile profile,
+            Map<String, Object> technical,
+            Map<String, Object> backtest,
+            Map<String, Object> source,
+            String horizonCode
+    ) {
+        QuantRiskContext model = quantRiskContext(
+                userId,
+                asset.getId(),
+                horizonCode
+        );
+        return warningEngine.evaluate(new InvestmentFinancialWarningEngine.Input(
+                asset.getId(),
+                asset.getName(),
+                asset.getMarketValueCny(),
+                asset.getTurnoverRate(),
+                wealth,
+                profile,
+                technicalScore,
+                decimalNumber(technical.get("annualizedVolatility")),
+                firstNumber(
+                        technical.get("maxDrawdown"),
+                        backtest.get("maxDrawdown")
+                ),
+                firstText(
+                        source.get("qualityDecision"),
+                        source.get("decision")
+                ),
+                model.driftStatus(),
+                horizonCode,
+                text(source.get("datasetVersion")),
+                model.modelVersion()
+        ));
     }
 
     private Map<String, Object> aiExplanation(InvestmentAnalysisSnapshot snapshot,
                                               Map<String, Object> technical,
                                               Map<String, Object> fundamental,
-                                              InvestmentProduct product) {
+                                              InvestmentProduct product,
+                                              String horizonCode) {
         if (snapshot != null && snapshot.getAiExplanation() != null && !snapshot.getAiExplanation().isBlank()) {
             Map<String, Object> result = new LinkedHashMap<>();
+            Map<String, Object> stored = readMap(snapshot.getAiExplanation());
+            boolean structured = stored.get("summary") instanceof String;
+            String summary = structured
+                    ? text(stored.get("summary"))
+                    : limitText(snapshot.getAiExplanation(), 80);
             result.put("status", "READY");
-            result.put("text", snapshot.getAiExplanation());
+            result.put("summary", summary);
+            result.put("reasons", structured
+                    ? listOfText(stored.get("reasons"))
+                    : List.of());
+            result.put("risks", structured
+                    ? listOfText(stored.get("risks"))
+                    : List.of());
+            result.put("technicalDetails", structured
+                    ? text(stored.get("technicalDetails"))
+                    : snapshot.getAiExplanation());
+            result.put("text", summary);
             result.put("updatedAt", snapshot.getAiUpdatedAt());
             result.put("cooldownMinutes", runtimeProperties.getAi().getCooldownMinutes());
+            result.put("sourceType", structured ? "AI_STRUCTURED" : "AI_LEGACY");
+            result.put("provenance", explanationProvenance(
+                    product, horizonCode, snapshot
+            ));
             return result;
         }
         String verdict = String.valueOf(technical.getOrDefault("verdict", technical.getOrDefault("action", "WAIT")));
-        String text = product.getName() + "当前结论为“" + verdict + "”。请结合页面中的周期分歧、支撑压力和风险警告分批判断。";
-        return Map.of("status", "PENDING", "text", text,
-                "cooldownMinutes", runtimeProperties.getAi().getCooldownMinutes(),
-                "isRuleFallback", true);
+        String summary = product.getName() + "当前结论为“" + verdict + "”";
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "PENDING");
+        result.put("summary", summary);
+        result.put("reasons", List.of("系统正在根据已保存的分析结果生成简短说明"));
+        result.put("risks", List.of());
+        result.put("technicalDetails", "");
+        result.put("text", summary);
+        result.put("cooldownMinutes", runtimeProperties.getAi().getCooldownMinutes());
+        result.put("isRuleFallback", true);
+        result.put("sourceType", "RULE_FALLBACK");
+        result.put("provenance", explanationProvenance(
+                product, horizonCode, snapshot
+        ));
+        return result;
+    }
+
+    private QuantRiskContext quantRiskContext(
+            Long userId,
+            Long assetId,
+            String horizonCode
+    ) {
+        QuantStrategyVersion strategy = quantStrategyMapper.selectOne(
+                new LambdaQueryWrapper<QuantStrategyVersion>()
+                        .eq(QuantStrategyVersion::getUserId, userId)
+                        .eq(QuantStrategyVersion::getAssetId, assetId)
+                        .eq(QuantStrategyVersion::getHorizonCode, horizonCode)
+                        .orderByDesc(QuantStrategyVersion::getActivatedAt)
+                        .orderByDesc(QuantStrategyVersion::getUpdatedAt)
+                        .last("LIMIT 1")
+        );
+        if (strategy == null || strategy.getModelVersion() == null) {
+            return new QuantRiskContext(null, "NOT_MONITORED");
+        }
+        QuantModelMonitor monitor = quantMonitorMapper.selectOne(
+                new LambdaQueryWrapper<QuantModelMonitor>()
+                        .eq(
+                                QuantModelMonitor::getModelVersion,
+                                strategy.getModelVersion()
+                        )
+                        .orderByDesc(QuantModelMonitor::getMonitoredOn)
+                        .orderByDesc(QuantModelMonitor::getCreatedAt)
+                        .last("LIMIT 1")
+        );
+        return new QuantRiskContext(
+                strategy.getModelVersion(),
+                monitor == null ? "NOT_MONITORED" : monitor.getDriftStatus()
+        );
+    }
+
+    private Map<String, Object> disclaimer(
+            InvestmentAssetView asset,
+            String horizonCode,
+            String datasetVersion
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("text", "结果仅用于辅助分析，不连接券商，也不会自动交易");
+        result.put("sourceType", "LEGAL_NOTICE");
+        result.put("assetId", asset.getId());
+        result.put("assetName", asset.getName());
+        result.put("horizonCode", horizonCode);
+        result.put("datasetVersion", datasetVersion);
+        result.put(
+                "calculatedAt",
+                LocalDateTime.now(runtimeZone())
+        );
+        return result;
+    }
+
+    private static Map<String, Object> withProvenance(
+            Map<String, Object> source,
+            InvestmentAssetView asset,
+            String horizonCode,
+            String datasetVersion,
+            String modelVersion,
+            LocalDateTime calculatedAt,
+            String sourceType
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>(
+                source == null ? Map.of() : source
+        );
+        result.put("provenance", provenance(
+                asset, horizonCode, datasetVersion, modelVersion,
+                calculatedAt, sourceType
+        ));
+        return result;
+    }
+
+    private static Map<String, Object> provenance(
+            InvestmentAssetView asset,
+            String horizonCode,
+            String datasetVersion,
+            String modelVersion,
+            LocalDateTime calculatedAt,
+            String sourceType
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("assetId", asset.getId());
+        result.put("assetName", asset.getName());
+        result.put("assetCode", asset.getCode());
+        result.put("horizonCode", horizonCode);
+        result.put("datasetVersion", datasetVersion);
+        result.put("modelVersion", modelVersion);
+        result.put("calculatedAt", calculatedAt);
+        result.put("sourceType", sourceType);
+        return result;
+    }
+
+    private Map<String, Object> explanationProvenance(
+            InvestmentProduct product,
+            String horizonCode,
+            InvestmentAnalysisSnapshot snapshot
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("assetName", product.getName());
+        result.put("assetCode", product.getCode());
+        result.put("horizonCode", horizonCode);
+        result.put(
+                "datasetVersion",
+                snapshot == null ? null : snapshot.getDatasetVersion()
+        );
+        result.put(
+                "modelVersion",
+                snapshot == null ? null : snapshot.getStrategyVersion()
+        );
+        result.put(
+                "calculatedAt",
+                snapshot == null ? LocalDateTime.now(
+                        runtimeZone()
+                ) : snapshot.getAiUpdatedAt()
+        );
+        return result;
+    }
+
+    private ZoneId runtimeZone() {
+        ZoneId zone = runtimeProperties.getMarket().getZone();
+        return zone == null ? ZoneId.systemDefault() : zone;
+    }
+
+    private static List<String> listOfText(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(Objects::nonNull)
+                .map(String::valueOf)
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .limit(3)
+                .toList();
+    }
+
+    private static String limitText(String value, int maximumCharacters) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= maximumCharacters
+                ? trimmed
+                : trimmed.substring(0, maximumCharacters);
+    }
+
+    private static String firstText(Object... values) {
+        for (Object value : values) {
+            String result = text(value);
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static String text(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String result = String.valueOf(value).trim();
+        return result.isBlank() || "null".equalsIgnoreCase(result)
+                ? null
+                : result;
+    }
+
+    private static Double firstNumber(Object... values) {
+        for (Object value : values) {
+            Double result = decimalNumber(value);
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static Double decimalNumber(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private record QuantRiskContext(
+            String modelVersion,
+            String driftStatus
+    ) {
     }
 
     private Map<String, Object> readMap(String json) {

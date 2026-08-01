@@ -93,7 +93,7 @@
                 </Badge>
               </CardTitle>
             </div>
-            <Button :disabled="training || !assetId" @click="retrain">
+            <Button :disabled="training || trainingSessionActive || !assetId" @click="retrain">
               <Loader2 v-if="training" class="size-4 animate-spin" />
               <RefreshCw v-else class="size-4" />
               立即重新训练
@@ -107,8 +107,32 @@
             <AlertDescription>{{ actionPlan.userMessage || '系统会在数据或模型更新后自动重新检查。' }}</AlertDescription>
           </Alert>
 
+          <div
+            v-if="management.technicalSignal"
+            class="space-y-3 rounded-lg border border-border bg-muted/20 p-4"
+          >
+            <div>
+              <p class="font-medium">当前技术信号</p>
+              <p class="mt-1 text-sm text-muted-foreground">
+                {{ management.technicalSignal.userMessage }}
+              </p>
+            </div>
+            <div v-if="predictionMetrics.length" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <PlanMetric label="技术方向" :value="technicalSignalLabel(management.technicalSignal.signal)" />
+              <PlanMetric label="盈利概率" :value="percent(management.technicalSignal.profitProbability)" />
+              <PlanMetric label="预计净收益" :value="percent(management.technicalSignal.expectedNetReturn)" />
+              <PlanMetric label="可能收益区间" :value="interval(management.technicalSignal.predictionInterval)" />
+            </div>
+            <p class="text-xs text-muted-foreground">
+              技术信号可用于判断当前强弱，但在交易模型通过严格验证前不会生成买卖金额。
+            </p>
+          </div>
+
           <template v-else>
-            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div
+              v-if="shouldShowExecutionPlan(actionPlan, management.technicalSignal)"
+              class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+            >
               <div v-for="metric in predictionMetrics" :key="metric.key" class="rounded-lg border bg-muted/20 p-3">
                 <p class="text-xs text-muted-foreground">{{ metric.label }}</p>
                 <p class="mt-1 text-lg font-semibold">{{ metricText(metric) }}</p>
@@ -187,7 +211,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BrainCircuit,
@@ -207,6 +231,7 @@ import {
   formatModelStatus,
   formatTrainingStatus,
   modelCanBeRestored,
+  shouldShowExecutionPlan,
   visiblePredictionMetrics,
 } from '@/lib/quantModelManagement'
 import {
@@ -229,9 +254,11 @@ const models = ref([])
 const loading = ref(false)
 const training = ref(false)
 const restoring = ref('')
-const historyOpen = ref(false)
+const historyOpen = ref(route.query.historyOpen === '1')
+let trainingPollTimer = null
 
 const trainingStatus = computed(() => formatTrainingStatus(management.value.training))
+const trainingSessionActive = computed(() => isTrainingActive(management.value.training))
 const trainingTime = computed(() => {
   const trainingItem = management.value.training
   if (!trainingItem?.createdAt) return '数据更新后会自动检查是否需要训练'
@@ -253,6 +280,7 @@ const PlanMetric = defineComponent({
 })
 
 onMounted(loadAll)
+onBeforeUnmount(stopTrainingPolling)
 
 watch(assetId, async value => {
   if (!value) return
@@ -280,9 +308,9 @@ async function loadAll() {
   }
 }
 
-async function loadManagement() {
+async function loadManagement(silent = false) {
   if (!assetId.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const [managementResponse, planResponse, modelsResponse] = await Promise.all([
       getQuantModelManagementAPI(assetId.value, horizonCode.value),
@@ -292,13 +320,20 @@ async function loadManagement() {
     management.value = managementResponse.data || {}
     actionPlan.value = planResponse.data || { status: 'PAUSED', action: 'PAUSE', stopConditions: [] }
     models.value = modelsResponse.data || []
+    if (trainingSessionActive.value) {
+      training.value = true
+      startTrainingPolling()
+    } else {
+      training.value = false
+      stopTrainingPolling()
+    }
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
 async function retrain() {
-  if (!assetId.value || training.value) return
+  if (!assetId.value || training.value || trainingSessionActive.value) return
   training.value = true
   try {
     const response = await startQuantTrainingSessionAPI(assetId.value, horizonCode.value)
@@ -307,9 +342,32 @@ async function retrain() {
       training: response.data || { status: 'QUEUED' },
     }
     feedback.success(response.data?.reused ? '已复用相同数据的自动训练任务' : '自动训练已开始')
-  } finally {
+    startTrainingPolling()
+  } catch (error) {
     training.value = false
+    throw error
   }
+}
+
+function startTrainingPolling() {
+  if (trainingPollTimer) return
+  trainingPollTimer = window.setInterval(async () => {
+    try {
+      await loadManagement(true)
+    } catch {
+      // Keep the active session state; the next poll will retry.
+    }
+  }, 3000)
+}
+
+function stopTrainingPolling() {
+  if (!trainingPollTimer) return
+  window.clearInterval(trainingPollTimer)
+  trainingPollTimer = null
+}
+
+function isTrainingActive(item) {
+  return ['QUEUED', 'RUNNING', 'PREPARING_DATA', 'OPTIMIZING'].includes(item?.status)
 }
 
 async function restoreModel(model) {
@@ -324,7 +382,15 @@ async function restoreModel(model) {
 }
 
 function openExpertMode() {
-  router.push({ path: '/quant-lab/expert', query: { assetId: assetId.value } })
+  router.push({
+    path: '/quant-lab/expert',
+    query: {
+      assetId: assetId.value,
+      horizonCode: horizonCode.value,
+      historyOpen: historyOpen.value ? '1' : '0',
+      returnScroll: String(Math.round(window.scrollY)),
+    },
+  })
 }
 
 function modelDescription(model, fallback) {
@@ -342,6 +408,14 @@ function roleLabel(role) {
 
 function horizonLabel(code) {
   return { SHORT: '短期', MEDIUM: '中期', LONG: '长期' }[code] || '未知周期'
+}
+
+function technicalSignalLabel(signal) {
+  return {
+    POSITIVE: '偏强',
+    NEGATIVE: '偏弱',
+    NEUTRAL: '不明确',
+  }[signal] || '不明确'
 }
 
 function metricText(metric) {

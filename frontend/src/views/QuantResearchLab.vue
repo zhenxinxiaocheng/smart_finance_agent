@@ -11,10 +11,16 @@
           配置、训练、比较并验证模型。只有 VALIDATED 模型才能生成金额、数量和模拟订单。
         </p>
       </div>
-      <Button variant="outline" :disabled="loading" @click="loadAll">
-        <RefreshCw :class="['size-4', loading && 'animate-spin']" />
-        刷新研究状态
-      </Button>
+      <div class="flex flex-wrap gap-2">
+        <Button variant="outline" @click="backToManagement">
+          <ArrowLeft class="size-4" />
+          返回模型管理
+        </Button>
+        <Button variant="outline" :disabled="loading" @click="loadAll">
+          <RefreshCw :class="['size-4', loading && 'animate-spin']" />
+          刷新研究状态
+        </Button>
+      </div>
     </header>
 
     <section class="grid gap-3 sm:grid-cols-3">
@@ -132,7 +138,7 @@
               <CardDescription>逐项展示实际值、要求值和失败原因。</CardDescription>
             </div>
             <Badge v-if="selected" :variant="statusVariant(selected.status)">
-              {{ selected.status }}
+              {{ experimentStatusLabel(selected) }}
             </Badge>
           </div>
         </CardHeader>
@@ -226,7 +232,9 @@
     <Card>
       <CardHeader>
         <CardTitle>实验对比</CardTitle>
-        <CardDescription>同一配置指纹只会创建一次任务。</CardDescription>
+        <CardDescription>
+          每行只与相同数据版本、周期和验证方法的前序实验比较。
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <div class="overflow-auto rounded-lg border">
@@ -237,9 +245,12 @@
                 <TableHead>资产</TableHead>
                 <TableHead>家族 / 算法</TableHead>
                 <TableHead>周期</TableHead>
-                <TableHead>任务</TableHead>
-                <TableHead>模型</TableHead>
-                <TableHead>失败原因</TableHead>
+                <TableHead>执行结果</TableHead>
+                <TableHead class="min-w-[220px]">参数变化</TableHead>
+                <TableHead>相对基准变化</TableHead>
+                <TableHead>回撤改善</TableHead>
+                <TableHead class="min-w-[180px]">当前瓶颈</TableHead>
+                <TableHead class="min-w-[220px]">下一轮建议</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -257,12 +268,19 @@
                   <p class="text-xs text-muted-foreground">{{ algorithmLabel(experiment.algorithm) }}</p>
                 </TableCell>
                 <TableCell>{{ horizonLabel(experiment.horizonCode) }}</TableCell>
-                <TableCell><Badge :variant="statusVariant(experiment.status)">{{ experiment.status }}</Badge></TableCell>
-                <TableCell>{{ experiment.validationReport?.lifecycle || '-' }}</TableCell>
-                <TableCell>{{ experiment.errorCode ? failureLabel(experiment.errorCode) : '-' }}</TableCell>
+                <TableCell>
+                  <Badge :variant="statusVariant(experiment.executionStatus || experiment.status)">
+                    {{ experimentStatusLabel(experiment) }}
+                  </Badge>
+                </TableCell>
+                <TableCell class="text-xs">{{ comparisonOf(experiment).parameterChange }}</TableCell>
+                <TableCell>{{ comparisonOf(experiment).netExcessChange }}</TableCell>
+                <TableCell>{{ comparisonOf(experiment).drawdownImprovement }}</TableCell>
+                <TableCell class="text-xs">{{ comparisonOf(experiment).bottleneck }}</TableCell>
+                <TableCell class="text-xs">{{ comparisonOf(experiment).nextSuggestion }}</TableCell>
               </TableRow>
               <TableRow v-if="!experiments.length">
-                <TableCell colspan="7" class="py-10 text-center text-muted-foreground">还没有量化实验。</TableCell>
+                <TableCell colspan="10" class="py-10 text-center text-muted-foreground">还没有量化实验。</TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -273,9 +291,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { FlaskConical, Loader2, Play, RefreshCw } from '@lucide/vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, FlaskConical, Loader2, Play, RefreshCw } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -287,6 +305,8 @@ import { feedback } from '@/lib/feedback'
 import {
   buildDefaultParameters,
   canPromoteExperiment,
+  experimentStatusLabel,
+  formatComparison,
   isExperimentTerminal,
   validationCheckRows
 } from '@/lib/quantResearch'
@@ -305,6 +325,7 @@ import {
 } from '@/api/investment'
 
 const route = useRoute()
+const router = useRouter()
 const assets = ref([])
 const families = ref([])
 const benchmarks = ref([])
@@ -320,7 +341,7 @@ const form = reactive({
   assetId: route.query.assetId ? String(route.query.assetId) : '',
   universeId: '',
   modelFamily: '',
-  horizonCode: '',
+  horizonCode: String(route.query.horizonCode || '').toUpperCase(),
   algorithm: '',
   parameters: {}
 })
@@ -377,6 +398,23 @@ function initializeForm() {
   if (!form.horizonCode) form.horizonCode = schema.value.horizons?.[0] || 'SHORT'
   if (!form.algorithm) form.algorithm = schema.value.algorithms?.[2] || schema.value.algorithms?.[0] || 'VALIDATED_ENSEMBLE'
   if (!Object.keys(form.parameters).length) resetParameters()
+}
+
+async function backToManagement() {
+  const returnScroll = Number(route.query.returnScroll || 0)
+  await router.push({
+    name: 'QuantModelManagement',
+    query: {
+      assetId: form.assetId || route.query.assetId,
+      horizonCode: form.horizonCode || route.query.horizonCode || 'MEDIUM',
+      historyOpen: route.query.historyOpen || '0',
+    },
+  })
+  await nextTick()
+  window.requestAnimationFrame(() => window.scrollTo({
+    top: Number.isFinite(returnScroll) ? returnScroll : 0,
+    behavior: 'instant',
+  }))
 }
 
 function selectAssetFamily() {
@@ -507,9 +545,15 @@ const assetName = id => {
 const horizonLabel = value => ({ SHORT: '短期', MEDIUM: '中期', LONG: '长期' }[value] || value)
 const algorithmLabel = value => ({
   ELASTIC_NET: 'ElasticNet / Logistic',
-  GRADIENT_BOOSTING: '梯度提升树',
-  VALIDATED_ENSEMBLE: '验证加权集成'
+  XGBOOST: 'XGBoost',
+  EXTRA_TREES: 'Extra Trees',
+  TREND_VOLATILITY: '趋势与波动率控制',
+  RISK_FILTERED_MEAN_REVERSION: '风险过滤均值回归',
+  REGIME_ENSEMBLE: '市场状态动态集成',
+  GRADIENT_BOOSTING: '梯度提升树（旧版）',
+  VALIDATED_ENSEMBLE: '验证加权集成（旧版）'
 }[value] || value || '-')
+const comparisonOf = experiment => formatComparison(experiment?.comparison)
 const failureLabel = value => ({
   JOB_FAILED: '训练任务执行失败',
   MODEL_REJECTED: '模型未通过严格验证',
@@ -542,7 +586,7 @@ const metricValue = value => value == null ? '-' : (typeof value === 'number' ? 
 const percent = value => `${(Number(value || 0) * 100).toFixed(0)}%`
 const statusVariant = status => status === 'FAILED'
   ? 'destructive'
-  : status === 'SUCCEEDED'
+  : ['SUCCEEDED', 'COMPLETED'].includes(status)
     ? 'default'
     : 'outline'
 </script>

@@ -28,6 +28,10 @@ export function formatModelStatus(model) {
 
 export function formatTrainingStatus(training) {
   if (!training) return TRAINING_STATUS_LABELS.NOT_STARTED
+  if (training.executionStatus === 'FAILED') return '自动训练执行失败'
+  if (training.trainingOutcome === 'DATA_BLOCKED') return '数据未准备完整，暂不启动正式训练'
+  if (training.trainingOutcome === 'VALIDATION_FAILED') return '执行完成、验证未通过；已保留风险参考'
+  if (training.trainingOutcome === 'VALIDATED') return '执行完成，模型已通过经济验证'
   if (training.errorCode) return '本次训练没有找到合格模型'
   if (training.status === 'SUCCEEDED') return '自动训练已完成'
   return TRAINING_STATUS_LABELS[training.status] || TRAINING_STATUS_LABELS.NOT_STARTED
@@ -45,6 +49,10 @@ export function visiblePredictionMetrics(plan) {
     { key: 'lossProbability', label: '未来亏损概率', value: plan.lossProbability, type: 'percent' },
     { key: 'predictionInterval', label: '可能收益区间', value: plan.predictionInterval, type: 'interval' },
   ]
+}
+
+export function shouldShowExecutionPlan(plan, technicalSignal) {
+  return plan?.status === 'READY' && technicalSignal?.economicRole !== 'RISK_REFERENCE'
 }
 
 export function modelCanBeRestored(model) {
