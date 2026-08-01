@@ -4,6 +4,7 @@ import math
 import unittest
 from datetime import date, timedelta
 
+import app.analysis as analysis_module
 from app.analysis import (
     analyze_fund,
     analyze_fundamentals,
@@ -197,6 +198,30 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertNotEqual(
             result["horizons"]["WAVE"]["evaluationDays"],
             result["horizons"]["POSITION"]["evaluationDays"],
+        )
+
+    def test_backtest_replays_same_direction_rule_as_live_outlook(self):
+        records = price_records(620)
+        technical = analyze_technical(records, {"WAVE": [7, 45]}, "WAVE")
+
+        replay = backtest_horizons(records, {"WAVE": [7, 45]})["horizons"]["WAVE"]
+
+        self.assertEqual(technical["outlook"]["direction"], replay["matchedDirection"])
+        self.assertEqual(replay["positiveRate"], replay["winRate"])
+        self.assertGreater(replay["occurrences"], 0)
+        self.assertLessEqual(replay["maximumAdverseExcursion"], 0)
+        self.assertIn("invalidationRate", replay)
+
+    def test_historical_outlook_does_not_read_later_prices(self):
+        records = price_records(320)
+        original = analysis_module.historical_outlook_at(records, 220, [7, 45])
+        changed = price_records(320)
+        for row in changed[221:]:
+            row.update({"open": "9999", "high": "9999", "low": "9999", "close": "9999"})
+
+        self.assertEqual(
+            original,
+            analysis_module.historical_outlook_at(changed, 220, [7, 45]),
         )
 
 

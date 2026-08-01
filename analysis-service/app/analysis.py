@@ -687,45 +687,151 @@ def analyze_fundamentals(periods: Iterable[Mapping[str, Any]]) -> dict[str, Any]
             "strategyVersion": STRATEGY.version}
 
 
-def backtest_signals(records: Iterable[Mapping[str, Any]], horizon_days: int) -> dict[str, Any]:
+def historical_outlook_at(
+    records: Iterable[Mapping[str, Any]],
+    as_of_index: int,
+    configured_bounds: Sequence[int],
+) -> dict[str, Any]:
+    """Evaluate one historical point with exactly the same rule as live analysis."""
+    rows = list(records)
+    if as_of_index < 0 or as_of_index >= len(rows):
+        raise IndexError("historical outlook index is outside the available records")
+    historical_code = "HISTORICAL"
+    result = analyze_technical(
+        rows[:as_of_index + 1],
+        {historical_code: configured_bounds},
+        historical_code,
+    )
+    if result.get("status") == "INSUFFICIENT":
+        raise ValueError("historical point does not contain enough data")
+    return dict(result["outlook"])
+
+
+def _invalidation_triggered(
+    invalidation: Mapping[str, Any] | None,
+    forward_prices: Sequence[float],
+) -> bool:
+    if not invalidation or not forward_prices:
+        return False
+    invalidation_type = invalidation.get("type")
+    if invalidation_type == "BELOW":
+        price = _number(invalidation.get("price"))
+        return price is not None and any(value < price for value in forward_prices)
+    if invalidation_type == "ABOVE":
+        price = _number(invalidation.get("price"))
+        return price is not None and any(value > price for value in forward_prices)
+    if invalidation_type == "OUTSIDE_RANGE":
+        lower = _number(invalidation.get("lower"))
+        upper = _number(invalidation.get("upper"))
+        return any(
+            (lower is not None and value < lower) or (upper is not None and value > upper)
+            for value in forward_prices
+        )
+    return False
+
+
+def _maximum_adverse_excursion(
+    direction: str,
+    entry_price: float,
+    forward_prices: Sequence[float],
+) -> float:
+    path_returns = [(price / entry_price - 1) * 100 for price in forward_prices]
+    if not path_returns:
+        return 0.0
+    if direction in {"BULLISH", "LEAN_BULLISH"}:
+        return min(0.0, min(path_returns))
+    if direction in {"BEARISH", "LEAN_BEARISH"}:
+        return min(0.0, -max(path_returns))
+    return min(0.0, -max(abs(value) for value in path_returns))
+
+
+def _backtest_outlook(
+    records: Iterable[Mapping[str, Any]],
+    configured_bounds: Sequence[int],
+    evaluation_days: int,
+) -> dict[str, Any]:
     quotes = _normalized_quotes(records)
     closes = [item["close"] for item in quotes]
-    minimum_history = STRATEGY.integer("backtest.minimum_history_days")
-    warmup_days = STRATEGY.integer("backtest.warmup_days")
-    if len(closes) < max(minimum_history, horizon_days + warmup_days):
-        return {"status": "INSUFFICIENT", "horizonDays": horizon_days, "occurrences": 0,
-                "winRate": None, "medianForwardReturn": None,
-                "maxDrawdown": _round(_maximum_drawdown(closes)[0], 2),
-                "strategyVersion": STRATEGY.version}
-    fast_period = STRATEGY.integer("backtest.fast_moving_average")
-    slow_period = STRATEGY.integer("backtest.slow_moving_average")
-    fast_average = _moving_average(closes, fast_period)
-    slow_average = _moving_average(closes, slow_period)
+    minimum_history = max(
+        STRATEGY.integer("technical.minimum_history_days"),
+        STRATEGY.integer("backtest.minimum_history_days"),
+    )
+    if len(closes) < minimum_history + evaluation_days:
+        return {
+            "status": "INSUFFICIENT", "horizonDays": evaluation_days,
+            "occurrences": 0, "matchedDirection": None,
+            "positiveRate": None, "negativeRate": None, "winRate": None,
+            "medianForwardReturn": None, "maximumAdverseExcursion": None,
+            "invalidationRate": None,
+            "maxDrawdown": _round(_maximum_drawdown(closes)[0], 2),
+            "strategyVersion": STRATEGY.version,
+        }
+
+    replay_rows = [{
+        "date": item["date"], "open": item["open"], "high": item["high"],
+        "low": item["low"], "close": item["close"], "volume": item["volume"],
+    } for item in quotes]
+    live = analyze_technical(
+        replay_rows,
+        {"CURRENT": configured_bounds},
+        "CURRENT",
+    )
+    matched_direction = str(live["outlook"]["direction"])
+    spacing = max(
+        STRATEGY.integer("backtest.minimum_signal_spacing_days"),
+        evaluation_days // 2,
+    )
     forward_returns: list[float] = []
-    last_signal = -horizon_days
-    # A signal is evaluated only with data available on that day. Forward prices
-    # are used solely to score the historical outcome, never to create a signal.
-    for index in range(warmup_days, len(closes) - horizon_days):
-        bullish = (fast_average[index] is not None and slow_average[index] is not None
-                   and fast_average[index] >= slow_average[index]
-                   and closes[index] >= slow_average[index])
-        if bullish and index - last_signal >= max(
-                STRATEGY.integer("backtest.minimum_signal_spacing_days"), horizon_days // 2):
-            forward_returns.append((closes[index + horizon_days] / closes[index] - 1) * 100)
-            last_signal = index
+    adverse_excursions: list[float] = []
+    invalidations = 0
+    for index in range(minimum_history - 1, len(quotes) - evaluation_days, spacing):
+        outlook = historical_outlook_at(replay_rows, index, configured_bounds)
+        if outlook["direction"] != matched_direction:
+            continue
+        entry_price = closes[index]
+        forward_prices = closes[index + 1:index + evaluation_days + 1]
+        forward_returns.append((forward_prices[-1] / entry_price - 1) * 100)
+        adverse_excursions.append(
+            _maximum_adverse_excursion(matched_direction, entry_price, forward_prices)
+        )
+        if _invalidation_triggered(outlook.get("invalidation"), forward_prices):
+            invalidations += 1
+
     occurrences = len(forward_returns)
-    win_rate = sum(value > 0 for value in forward_returns) / occurrences * 100 if occurrences else 0.0
+    positive_rate = (
+        sum(value > 0 for value in forward_returns) / occurrences * 100
+        if occurrences else 0.0
+    )
+    negative_rate = (
+        sum(value < 0 for value in forward_returns) / occurrences * 100
+        if occurrences else 0.0
+    )
     return {
-        "status": "READY" if occurrences else "NO_SIGNALS",
+        "status": "READY" if occurrences else "NO_MATCHING_HISTORY",
         "strategyVersion": STRATEGY.version,
-        "horizonDays": horizon_days,
+        "horizonDays": evaluation_days,
+        "matchedDirection": matched_direction,
         "occurrences": occurrences,
-        "winRate": _round(win_rate, 1),
-        "medianForwardReturn": _round(statistics.median(forward_returns), 2) if forward_returns else None,
+        "positiveRate": _round(positive_rate, 1),
+        "negativeRate": _round(negative_rate, 1),
+        "winRate": _round(positive_rate, 1),
+        "medianForwardReturn": (
+            _round(statistics.median(forward_returns), 2) if forward_returns else None
+        ),
+        "maximumAdverseExcursion": (
+            _round(min(adverse_excursions), 2) if adverse_excursions else None
+        ),
+        "invalidationRate": (
+            _round(invalidations / occurrences * 100, 1) if occurrences else None
+        ),
         "maxDrawdown": _round(_maximum_drawdown(closes)[0], 2),
         "sampleStart": quotes[0]["date"],
         "sampleEnd": quotes[-1]["date"],
     }
+
+
+def backtest_signals(records: Iterable[Mapping[str, Any]], horizon_days: int) -> dict[str, Any]:
+    return _backtest_outlook(records, [horizon_days, horizon_days], horizon_days)
 
 
 def backtest_horizons(
@@ -737,7 +843,7 @@ def backtest_horizons(
     for code, configured_bounds in horizons.items():
         minimum, maximum = int(configured_bounds[0]), int(configured_bounds[1])
         evaluation_days = (minimum + maximum) // 2
-        result = backtest_signals(rows, evaluation_days)
+        result = _backtest_outlook(rows, configured_bounds, evaluation_days)
         result.update({
             "minimumDays": minimum,
             "maximumDays": maximum,
