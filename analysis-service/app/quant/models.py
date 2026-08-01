@@ -104,6 +104,8 @@ class ModelArtifact:
     top_factor_count: int
     validation_as_of_indices: tuple[int, ...]
     validation_target_weights: tuple[float, ...]
+    selection_fold_returns: tuple[float, ...] = ()
+    materialized: bool = True
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,8 @@ def train_ensemble(
     data_fresh: bool = True,
     algorithm: str = "REGIME_ENSEMBLE",
     validation_series_id: str = "TARGET",
+    search_only: bool = False,
+    selection_pbo: float | None = None,
 ) -> ModelArtifact:
     minimum = config.integer("training.minimumSamples")
     if len(samples) < minimum:
@@ -195,7 +199,6 @@ def train_ensemble(
     drawdown_guard_fold_passes = 0
     fold_count = 0
     fold_rank_ics: list[float] = []
-    candidate_fold_returns: list[list[float]] = [[], [], []]
     strategy_fold_returns: list[float] = []
     for train_indices, test_indices in splits:
         if len(np.unique(y_class[train_indices])) < 2:
@@ -235,30 +238,6 @@ def train_ensemble(
             y_return[target_test_indices[fold_positions]],
             0.0,
         )
-        for candidate_index, candidate_weight in enumerate((
-            1.0,
-            0.0,
-            config.number("prediction.ensemble.linearWeight"),
-        )):
-            candidate_probability, candidate_expected = _raw_predict(
-                models,
-                x[target_test_indices],
-                candidate_weight,
-                algorithm,
-                feature_names,
-            )
-            candidate_signals = (
-                (candidate_probability[fold_positions] >= buy_threshold)
-                & (candidate_expected[fold_positions] >= minimum_expected)
-            )
-            candidate_returns = np.where(
-                candidate_signals,
-                y_return[target_test_indices[fold_positions]],
-                0.0,
-            )
-            candidate_fold_returns[candidate_index].append(
-                _compounded_return(candidate_returns)
-            )
         fold_return = _compounded_return(fold_returns)
         fold_buy_and_hold_return = _compounded_return(
             y_return[target_test_indices[fold_positions]]
@@ -510,9 +489,10 @@ def train_ensemble(
         "intervalCoverage": round(interval_coverage, 10),
         "pinballSkill": round(pinball_skill, 10),
         "deflatedSharpeProbability": round(deflated_sharpe_probability, 10),
-        "pbo": round(
-            _probability_of_backtest_overfitting(candidate_fold_returns),
-            10,
+        "pbo": (
+            None
+            if selection_pbo is None
+            else round(float(selection_pbo), 10)
         ),
         "costStressAnnualizedExcessReturn": round(cost_stress_return, 10),
         "costStressNetExcessVsStrongestBaseline": round(
@@ -553,17 +533,6 @@ def train_ensemble(
     metrics["economicRole"] = validation_report.economic_role.value
     metrics["diagnosticsPassed"] = validation_report.diagnostics_passed
     status = validation_report.lifecycle.value
-    final_models = _fit_models(
-        x,
-        y_class,
-        y_return,
-        config,
-        algorithm=algorithm,
-        feature_names=feature_names,
-    )
-    production_method = choose_calibration_method(len(out_of_sample_indices))
-    production_calibrator = _new_calibrator(production_method)
-    production_calibrator.fit(probabilities[out_of_sample_indices], y_class[out_of_sample_indices])
     interval = (
         residual_lower,
         residual_upper,
@@ -587,12 +556,66 @@ def train_ensemble(
     model_version = hashlib.sha256(
         json.dumps(version_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return ModelArtifact(
-        model_version=model_version,
-        config_version=config.version,
+    artifact_fields = {
+        "model_version": model_version,
+        "config_version": config.version,
+        "feature_names": feature_names,
+        "status": status,
+        "metrics": metrics,
+        "residual_interval": interval,
+        "action_thresholds": {
+            "buy": config.number("prediction.buyWatchProbability"),
+            "add": config.number("prediction.addProbability"),
+            "reduce": config.number("prediction.reduceProbability"),
+            "exit": config.number("prediction.exitProbability"),
+            "minimumExpected": config.number("prediction.minimumExpectedExcessReturn"),
+        },
+        "ensemble_linear_weight": linear_weight,
+        "confidence_thresholds": {
+            "highRatio": config.number("prediction.confidence.highWidthToExpectedRatio"),
+            "mediumRatio": config.number("prediction.confidence.mediumWidthToExpectedRatio"),
+            "minimumMagnitude": config.number("prediction.confidence.minimumExpectedMagnitude"),
+        },
+        "top_factor_count": config.integer("prediction.topFactorCount"),
+        "validation_as_of_indices": tuple(
+            samples[int(index)].as_of_index for index in evaluation_indices
+        ),
+        "validation_target_weights": tuple(
+            float(value) for value in event_target_weights
+        ),
+        "selection_fold_returns": tuple(
+            float(value) for value in strategy_fold_returns
+        ),
+    }
+    if search_only:
+        return ModelArtifact(
+            **artifact_fields,
+            linear_classifier=None,
+            linear_regressor=None,
+            tree_classifier=None,
+            tree_regressor=None,
+            quantile_lower_regressor=None,
+            quantile_upper_regressor=None,
+            calibrator=None,
+            materialized=False,
+        )
+
+    final_models = _fit_models(
+        x,
+        y_class,
+        y_return,
+        config,
+        algorithm=algorithm,
         feature_names=feature_names,
-        status=status,
-        metrics=metrics,
+    )
+    production_method = choose_calibration_method(len(out_of_sample_indices))
+    production_calibrator = _new_calibrator(production_method)
+    production_calibrator.fit(
+        probabilities[out_of_sample_indices],
+        y_class[out_of_sample_indices],
+    )
+    return ModelArtifact(
+        **artifact_fields,
         linear_classifier=final_models[0],
         linear_regressor=final_models[1],
         tree_classifier=final_models[2],
@@ -600,25 +623,7 @@ def train_ensemble(
         quantile_lower_regressor=final_models[4],
         quantile_upper_regressor=final_models[5],
         calibrator=production_calibrator,
-        residual_interval=interval,
-        action_thresholds={
-            "buy": config.number("prediction.buyWatchProbability"),
-            "add": config.number("prediction.addProbability"),
-            "reduce": config.number("prediction.reduceProbability"),
-            "exit": config.number("prediction.exitProbability"),
-            "minimumExpected": config.number("prediction.minimumExpectedExcessReturn"),
-        },
-        ensemble_linear_weight=linear_weight,
-        confidence_thresholds={
-            "highRatio": config.number("prediction.confidence.highWidthToExpectedRatio"),
-            "mediumRatio": config.number("prediction.confidence.mediumWidthToExpectedRatio"),
-            "minimumMagnitude": config.number("prediction.confidence.minimumExpectedMagnitude"),
-        },
-        top_factor_count=config.integer("prediction.topFactorCount"),
-        validation_as_of_indices=tuple(
-            samples[int(index)].as_of_index for index in evaluation_indices
-        ),
-        validation_target_weights=tuple(float(value) for value in event_target_weights),
+        materialized=True,
     )
 
 
@@ -1015,23 +1020,33 @@ def _fit_models(
     algorithm = _canonical_algorithm(algorithm)
     seed = config.integer("randomSeed")
     max_iter = config.integer("training.elasticNet.maximumIterations")
-    linear_classifier = Pipeline([
-        ("scale", StandardScaler()),
-        ("model", LogisticRegression(
-            penalty="elasticnet", solver="saga",
-            C=config.number("training.elasticNet.classificationC"),
-            l1_ratio=config.number("training.elasticNet.l1Ratio"),
-            max_iter=max_iter, random_state=seed,
-        )),
-    ])
-    linear_regressor = Pipeline([
-        ("scale", StandardScaler()),
-        ("model", ElasticNet(
-            alpha=config.number("training.elasticNet.regressionAlpha"),
-            l1_ratio=config.number("training.elasticNet.l1Ratio"),
-            max_iter=max_iter, random_state=seed,
-        )),
-    ])
+    needs_linear = include_quantiles or algorithm in {
+        "ELASTIC_NET",
+        "REGIME_ENSEMBLE",
+    }
+    linear_classifier = (
+        Pipeline([
+            ("scale", StandardScaler()),
+            ("model", LogisticRegression(
+                penalty="elasticnet", solver="saga",
+                C=config.number("training.elasticNet.classificationC"),
+                l1_ratio=config.number("training.elasticNet.l1Ratio"),
+                max_iter=max_iter, random_state=seed,
+            )),
+        ])
+        if needs_linear else None
+    )
+    linear_regressor = (
+        Pipeline([
+            ("scale", StandardScaler()),
+            ("model", ElasticNet(
+                alpha=config.number("training.elasticNet.regressionAlpha"),
+                l1_ratio=config.number("training.elasticNet.l1Ratio"),
+                max_iter=max_iter, random_state=seed,
+            )),
+        ])
+        if needs_linear else None
+    )
     xgboost_common = {
         "n_estimators": config.integer("training.xgboost.estimators"),
         "max_depth": config.integer("training.xgboost.maximumDepth"),
@@ -1044,7 +1059,10 @@ def _fit_models(
         "n_jobs": 1,
         "tree_method": "hist",
     }
-    if algorithm == "EXTRA_TREES":
+    if algorithm == "ELASTIC_NET":
+        tree_classifier = None
+        tree_regressor = None
+    elif algorithm == "EXTRA_TREES":
         tree_classifier = ExtraTreesClassifier(
             n_estimators=config.integer("training.extraTrees.estimators"),
             max_depth=config.integer("training.extraTrees.maximumDepth"),
@@ -1098,9 +1116,15 @@ def _fit_models(
             }
             tree_classifier.quant_regime_settings = regime_settings
             tree_regressor.quant_regime_settings = regime_settings
-    core_models = (
-        (linear_classifier, y_class), (linear_regressor, y_return),
-        (tree_classifier, y_class), (tree_regressor, y_return),
+    core_models = tuple(
+        (model, target)
+        for model, target in (
+            (linear_classifier, y_class),
+            (linear_regressor, y_return),
+            (tree_classifier, y_class),
+            (tree_regressor, y_return),
+        )
+        if model is not None
     )
     for model, target in core_models:
         model.fit(x, target)
@@ -1129,6 +1153,27 @@ def _raw_predict(
     if linear_weight != -1.0 and not 0 <= linear_weight <= 1:
         raise ValueError("prediction.ensemble.linearWeight must be between zero and one")
     linear_classifier, linear_regressor, tree_classifier, tree_regressor = models[:4]
+    if linear_weight == 1.0:
+        if linear_classifier is None or linear_regressor is None:
+            raise ValueError("linear quant models are not fitted")
+        return (
+            linear_classifier.predict_proba(x)[:, 1],
+            linear_regressor.predict(x),
+        )
+    if linear_weight == 0.0:
+        if tree_classifier is None or tree_regressor is None:
+            raise ValueError("tree or rule quant models are not fitted")
+        return (
+            tree_classifier.predict_proba(x)[:, 1],
+            tree_regressor.predict(x),
+        )
+    if (
+        linear_classifier is None
+        or linear_regressor is None
+        or tree_classifier is None
+        or tree_regressor is None
+    ):
+        raise ValueError("ensemble quant models are not fitted")
     if linear_weight == -1.0:
         settings = getattr(
             tree_classifier,
@@ -1292,7 +1337,7 @@ def _regime_linear_weights(
     return np.clip(weights, 0.1, 0.9)
 
 
-def _probability_of_backtest_overfitting(
+def probability_of_backtest_overfitting(
     candidate_fold_returns: Sequence[Sequence[float]],
 ) -> float:
     matrix = np.asarray(candidate_fold_returns, dtype=float)

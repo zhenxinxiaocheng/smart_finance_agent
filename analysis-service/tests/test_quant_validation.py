@@ -13,7 +13,7 @@ from app.quant.validation import (
 from app.quant.engine import TrainingSample
 from app.quant.models import _date_walk_forward_splits
 from app.quant.models import _drawdown_guard_fold_pass
-from app.quant.models import _probability_of_backtest_overfitting
+from app.quant.models import probability_of_backtest_overfitting
 
 
 def passing_metrics() -> dict[str, float]:
@@ -92,8 +92,8 @@ class QuantValidationTest(unittest.TestCase):
             [0.0, 0.0, 0.0, 1.0],
         ]
 
-        self.assertEqual(0.0, _probability_of_backtest_overfitting(stable))
-        self.assertGreater(_probability_of_backtest_overfitting(overfit), 0.2)
+        self.assertEqual(0.0, probability_of_backtest_overfitting(stable))
+        self.assertGreater(probability_of_backtest_overfitting(overfit), 0.2)
 
     def test_drawdown_guard_fold_treats_avoided_loss_as_success(self):
         self.assertTrue(_drawdown_guard_fold_pass(0.0, -0.10, 0.8))

@@ -5,12 +5,162 @@ import unittest
 from dataclasses import replace
 from types import SimpleNamespace
 
-from app.quant.auto_search import AutoSearchEngine
+import optuna
+
+from app.quant.auto_search import AutoSearchEngine, _AdaptiveStopper
 from app.quant.config import QuantConfig, load_quant_config
 from app.quant.engine import TrainingSample
 
 
 class QuantAutoSearchTest(unittest.TestCase):
+    def test_no_improvement_stopper_does_not_treat_pareto_ties_as_progress(self):
+        study = optuna.create_study(
+            directions=["maximize", "maximize", "minimize", "minimize", "minimize"],
+        )
+        stopper = _AdaptiveStopper(no_improvement_limit=2)
+
+        def objective(trial):
+            trial.set_user_attr("selectionRank", [0.0, 0.0, 0.0, -0.01])
+            return 0.01, 0.5, 0.1, 0.1, 0.1
+
+        study.optimize(objective, n_trials=10, callbacks=[stopper])
+
+        self.assertEqual(3, len(study.trials))
+        self.assertEqual("NO_IMPROVEMENT", stopper.reason)
+
+    def test_resumed_stopper_keeps_the_best_rank_from_prior_trials(self):
+        study = optuna.create_study(
+            directions=["maximize", "maximize", "minimize", "minimize", "minimize"],
+        )
+        study.add_trial(optuna.trial.create_trial(
+            values=[0.5, 0.5, 0.1, 0.1, 0.1],
+            user_attrs={"selectionRank": [1.0, 0.5, 0.5]},
+        ))
+        stopper = _AdaptiveStopper(no_improvement_limit=2)
+        stopper.restore(study)
+
+        def objective(trial):
+            trial.set_user_attr("selectionRank", [0.0, 0.0, 0.0])
+            return 0.1, 0.5, 0.1, 0.1, 0.1
+
+        study.optimize(objective, n_trials=10, callbacks=[stopper])
+
+        self.assertEqual(3, len(study.trials))
+        self.assertEqual("NO_IMPROVEMENT", stopper.reason)
+
+    def test_failure_routing_enqueues_each_diagnosis_algorithm_pair_once(self):
+        study = optuna.create_study(
+            directions=["maximize", "maximize", "minimize", "minimize", "minimize"],
+        )
+        stopper = _AdaptiveStopper(no_improvement_limit=100)
+
+        def objective(trial):
+            trial.set_user_attr("algorithm", "XGBOOST")
+            trial.set_user_attr("recommendedAlgorithm", "TREND_VOLATILITY")
+            trial.set_user_attr("failureDiagnosis", {"code": "COST_TOO_HIGH"})
+            trial.set_user_attr("selectionRank", [0.0, 0.0, float(trial.number)])
+            return float(trial.number), 0.5, 0.1, 0.1, 0.1
+
+        study.optimize(objective, n_trials=4, callbacks=[stopper])
+
+        routed = [
+            trial for trial in study.trials
+            if trial.user_attrs.get("routedFromTrial") is not None
+        ]
+        self.assertEqual(1, len(routed))
+
+    def test_search_only_materializes_the_selected_candidate_once(self):
+        data = copy.deepcopy(load_quant_config().data)
+        data["training"]["minimumSamples"] = 4
+        data["autoSearch"]["timeBudgetSeconds"] = 60
+        data["autoSearch"]["finalHoldoutFraction"] = 0.2
+        data["autoSearch"]["minimumFinalHoldoutSamples"] = 2
+        calls: list[bool] = []
+
+        def trainer(samples, config, *, search_only=False, **kwargs):
+            calls.append(search_only)
+            return SimpleNamespace(
+                model_version=f"candidate-{len(calls)}",
+                status="DRAFT",
+                materialized=not search_only,
+                metrics={
+                    "annualizedExcessReturn": -0.01,
+                    "netExcessVsStrongestBaseline": -0.01,
+                    "downsideProtection": 0.5,
+                    "maximumDrawdown": -0.1,
+                    "turnover": 0.1,
+                    "crossWindowVolatility": 0.1,
+                    "validationReport": {
+                        "passed": False,
+                        "failureCodes": ["MODEL_REJECTED"],
+                    },
+                },
+            )
+
+        result = AutoSearchEngine(
+            QuantConfig(data),
+            trainer=trainer,
+            final_evaluator=lambda artifact, samples, config, **kwargs: artifact,
+            maximum_trials_override=2,
+        ).search(samples=self.samples(10), benchmark_available=True)
+
+        self.assertEqual([True, True, False], calls)
+        self.assertTrue(result.artifact.materialized)
+
+    def test_selected_candidate_receives_pbo_from_all_search_trials(self):
+        data = copy.deepcopy(load_quant_config().data)
+        data["training"]["minimumSamples"] = 4
+        data["autoSearch"]["timeBudgetSeconds"] = 60
+        data["autoSearch"]["finalHoldoutFraction"] = 0.2
+        data["autoSearch"]["minimumFinalHoldoutSamples"] = 2
+        fold_returns = iter((
+            (0.4, 0.4, 0.4, 0.4),
+            (0.2, 0.2, 0.2, 0.2),
+            (-0.1, -0.1, -0.1, -0.1),
+        ))
+        received_pbo: list[float | None] = []
+
+        def trainer(
+            samples,
+            config,
+            *,
+            search_only=False,
+            selection_pbo=None,
+            **kwargs,
+        ):
+            if search_only:
+                returns = next(fold_returns)
+            else:
+                returns = (0.4, 0.4, 0.4, 0.4)
+                received_pbo.append(selection_pbo)
+            return SimpleNamespace(
+                model_version=f"candidate-{len(received_pbo)}-{returns[0]}",
+                status="DRAFT",
+                materialized=not search_only,
+                selection_fold_returns=returns,
+                metrics={
+                    "annualizedExcessReturn": returns[0],
+                    "netExcessVsStrongestBaseline": returns[0],
+                    "downsideProtection": 0.5,
+                    "maximumDrawdown": -0.1,
+                    "turnover": 0.1,
+                    "crossWindowVolatility": 0.1,
+                    "validationReport": {
+                        "passed": False,
+                        "failureCodes": ["MODEL_REJECTED"],
+                    },
+                },
+            )
+
+        AutoSearchEngine(
+            QuantConfig(data),
+            trainer=trainer,
+            final_evaluator=lambda artifact, samples, config, **kwargs: artifact,
+            maximum_trials_override=3,
+        ).search(samples=self.samples(10), benchmark_available=True)
+
+        self.assertEqual([0.0], received_pbo)
+
     def test_panel_training_uses_only_target_series_for_holdout(self):
         data = copy.deepcopy(load_quant_config().data)
         data["training"]["minimumSamples"] = 4
@@ -152,38 +302,6 @@ class QuantAutoSearchTest(unittest.TestCase):
         self.assertEqual(
             "本轮优化已完成，保留风险参考并等待新数据继续优化",
             result.summary["userMessage"],
-        )
-
-    def test_uses_full_current_batch_budget_when_no_candidate_validates(self):
-        data = copy.deepcopy(load_quant_config().data)
-        data["training"]["minimumSamples"] = 4
-        data["autoSearch"]["timeBudgetSeconds"] = 60
-        data["autoSearch"]["finalHoldoutFraction"] = 0.2
-        data["autoSearch"]["minimumFinalHoldoutSamples"] = 2
-        artifacts = iter([
-            self.artifact("draft-a", "DRAFT", -0.10, 0.1),
-            self.artifact("draft-b", "DRAFT", -0.20, 0.1),
-            self.artifact("draft-c", "DRAFT", -0.30, 0.1),
-        ])
-        calls: list[str] = []
-
-        def trainer(samples, config, **kwargs):
-            calls.append(kwargs["algorithm"])
-            return next(artifacts)
-
-        result = AutoSearchEngine(
-            QuantConfig(data),
-            trainer=trainer,
-            final_evaluator=lambda artifact, samples, config, **kwargs: artifact,
-            maximum_trials_override=3,
-        ).search(samples=self.samples(10), benchmark_available=False)
-
-        self.assertEqual(3, result.summary["evaluatedCandidates"])
-        self.assertEqual(3, len(calls))
-        self.assertTrue(result.summary["technicalSignalAvailable"])
-        self.assertEqual(
-            "CONTINUE_ON_NEW_DATA_OR_VERSION",
-            result.summary["nextAction"],
         )
 
     def test_failure_diagnosis_queues_a_scientific_next_algorithm(self):

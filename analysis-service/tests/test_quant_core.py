@@ -380,6 +380,24 @@ class QuantCoreTest(unittest.TestCase):
 
         self.assertEqual("sigmoid", artifact.metrics["calibrationMethod"])
 
+    def test_search_only_training_skips_deployment_model_materialization(self):
+        def search_fit(*args, **kwargs):
+            if kwargs.get("include_quantiles", True):
+                raise AssertionError("search candidate must not fit deployment models")
+            return self.fake_fitted_models(*args, **kwargs)
+
+        with patch("app.quant.models._fit_models", side_effect=search_fit), \
+                patch("app.quant.models._raw_predict", side_effect=self.fake_raw_predictions):
+            artifact = train_ensemble(
+                self.synthetic_training_samples(),
+                self.fast_model_config(),
+                search_only=True,
+            )
+
+        self.assertFalse(artifact.materialized)
+        self.assertIsNone(artifact.linear_classifier)
+        self.assertIsNone(artifact.quantile_lower_regressor)
+
     def test_training_reports_single_class_labels_as_insufficient_data(self):
         samples = [
             TrainingSample(
@@ -527,8 +545,24 @@ class QuantCoreTest(unittest.TestCase):
                 algorithm=algorithm,
                 feature_names=feature_names,
             )
-            probabilities = models[2].predict_proba(rows[:5])[:, 1]
-            expected = models[3].predict(rows[:5])
+            if algorithm == "ELASTIC_NET":
+                self.assertIsNone(models[2], algorithm)
+            elif algorithm == "REGIME_ENSEMBLE":
+                self.assertIsNotNone(models[0], algorithm)
+                self.assertIsNotNone(models[2], algorithm)
+            else:
+                self.assertIsNone(models[0], algorithm)
+            weight = {
+                "ELASTIC_NET": 1.0,
+                "REGIME_ENSEMBLE": -1.0,
+            }.get(algorithm, 0.0)
+            probabilities, expected = quant_models._raw_predict(
+                models,
+                rows[:5],
+                weight,
+                algorithm,
+                feature_names,
+            )
             self.assertEqual((5,), probabilities.shape, algorithm)
             self.assertEqual((5,), expected.shape, algorithm)
             self.assertTrue(np.isfinite(probabilities).all(), algorithm)

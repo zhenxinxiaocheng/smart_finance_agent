@@ -30,6 +30,23 @@ class _AdaptiveStopper:
         self.no_improvement_limit = no_improvement_limit
         self.no_improvement_count = 0
         self.reason: str | None = None
+        self.best_rank: tuple[float, ...] | None = None
+        self.routed_recommendations: set[tuple[str, str]] = set()
+
+    def restore(self, study: optuna.study.Study) -> None:
+        for prior in study.trials:
+            rank = self._selection_rank(prior)
+            if rank is not None and (
+                self.best_rank is None or rank > self.best_rank
+            ):
+                self.best_rank = rank
+            route = str(prior.user_attrs.get("failureRouteKey") or "")
+            if ":" in route:
+                diagnosis_code, recommended = route.split(":", 1)
+                if recommended:
+                    self.routed_recommendations.add(
+                        (diagnosis_code, recommended)
+                    )
 
     def __call__(
         self,
@@ -40,26 +57,59 @@ class _AdaptiveStopper:
             self.reason = "VALIDATED"
             study.stop()
             return
-        recommended = trial.user_attrs.get("recommendedAlgorithm")
-        current = trial.user_attrs.get("algorithm")
-        if (
-            isinstance(recommended, str)
-            and recommended
-            and recommended != current
-            and not trial.user_attrs.get("dataBlocked")
+        rank = self._selection_rank(trial)
+        if rank is not None and (
+            self.best_rank is None or rank > self.best_rank
         ):
-            study.enqueue_trial(
-                {"algorithm": recommended},
-                user_attrs={"routedFromTrial": trial.number},
-            )
-        pareto_numbers = {item.number for item in study.best_trials}
-        if trial.state == optuna.trial.TrialState.COMPLETE and trial.number in pareto_numbers:
+            self.best_rank = rank
             self.no_improvement_count = 0
         else:
             self.no_improvement_count += 1
         if self.no_improvement_count >= self.no_improvement_limit:
             self.reason = "NO_IMPROVEMENT"
             study.stop()
+            return
+
+        recommended = trial.user_attrs.get("recommendedAlgorithm")
+        current = trial.user_attrs.get("algorithm")
+        diagnosis = trial.user_attrs.get("failureDiagnosis")
+        diagnosis_code = (
+            str(diagnosis.get("code") or "")
+            if isinstance(diagnosis, Mapping)
+            else ""
+        )
+        route_key = (diagnosis_code, str(recommended or ""))
+        if (
+            isinstance(recommended, str)
+            and recommended
+            and recommended != current
+            and not trial.user_attrs.get("dataBlocked")
+            and route_key not in self.routed_recommendations
+        ):
+            self.routed_recommendations.add(route_key)
+            study.enqueue_trial(
+                {"algorithm": recommended},
+                user_attrs={
+                    "routedFromTrial": trial.number,
+                    "failureRouteKey": ":".join(route_key),
+                },
+            )
+
+    @staticmethod
+    def _selection_rank(
+        trial: optuna.trial.FrozenTrial,
+    ) -> tuple[float, ...] | None:
+        raw_rank = trial.user_attrs.get("selectionRank")
+        if (
+            trial.state != optuna.trial.TrialState.COMPLETE
+            or not isinstance(raw_rank, Sequence)
+            or isinstance(raw_rank, (str, bytes))
+        ):
+            return None
+        try:
+            return tuple(float(value) for value in raw_rank)
+        except (TypeError, ValueError):
+            return None
 
 
 class AutoSearchEngine:
@@ -180,6 +230,7 @@ class AutoSearchEngine:
                     benchmark_available=benchmark_available,
                     data_fresh=data_fresh,
                     algorithm=candidate.algorithm,
+                    search_only=True,
                 )
             except Exception as error:
                 trial.set_user_attr("errorType", type(error).__name__)
@@ -196,6 +247,7 @@ class AutoSearchEngine:
                 return (-1e12, -1e12, 1e12, 1e12, 1e12)
 
             values = self._objectives(artifact)
+            selection_rank = self._rank(artifact)
             artifacts[trial.number] = artifact
             configs[trial.number] = candidate_config
             algorithms[trial.number] = candidate.algorithm
@@ -203,6 +255,11 @@ class AutoSearchEngine:
             trial.set_user_attr("modelVersion", artifact.model_version)
             trial.set_user_attr("modelStatus", artifact.status)
             trial.set_user_attr("validated", validated)
+            trial.set_user_attr("selectionRank", list(selection_rank))
+            trial.set_user_attr(
+                "selectionFoldReturns",
+                list(getattr(artifact, "selection_fold_returns", ())),
+            )
             trial.set_user_attr("failureCodes", self._failure_codes(artifact))
             diagnosis = diagnose_failure(
                 artifact.metrics,
@@ -232,11 +289,12 @@ class AutoSearchEngine:
                 "failureCodes": self._failure_codes(artifact),
                 "failureDiagnosis": diagnosis.as_dict(),
                 "objectives": list(values),
-                "score": list(self._rank(artifact)),
+                "score": list(selection_rank),
             })
             return values
 
         stopper = _AdaptiveStopper(budget.no_improvement_limit)
+        stopper.restore(study)
         started_at = self.clock()
         if remaining_trials:
             study.optimize(
@@ -281,6 +339,17 @@ class AutoSearchEngine:
         best_config = configs[selected_trial]
         best_algorithm = algorithms[selected_trial]
         selected_diagnosis = diagnoses[selected_trial]
+        selection_pbo = self._selection_pbo(study)
+        if not getattr(best_artifact, "materialized", True):
+            best_artifact = self.trainer(
+                selection_samples,
+                best_config,
+                benchmark_available=benchmark_available,
+                data_fresh=data_fresh,
+                algorithm=best_algorithm,
+                search_only=False,
+                selection_pbo=selection_pbo,
+            )
         final_holdout_evaluated = best_artifact.status == "VALIDATED"
         if final_holdout_evaluated:
             best_artifact = self.final_evaluator(
@@ -318,6 +387,7 @@ class AutoSearchEngine:
                 "selectedAlgorithm": best_algorithm,
                 "selectedModelVersion": best_artifact.model_version,
                 "selectedStatus": best_artifact.status,
+                "selectionPbo": selection_pbo,
                 "economicRole": best_artifact.metrics.get("economicRole"),
                 "failureDiagnosis": (
                     None if qualified else selected_diagnosis.as_dict()
@@ -398,6 +468,34 @@ class AutoSearchEngine:
         if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
             return []
         return [str(item) for item in raw]
+
+    @staticmethod
+    def _selection_pbo(study: optuna.study.Study) -> float:
+        rows: list[tuple[float, ...]] = []
+        width: int | None = None
+        for trial in study.trials:
+            raw = trial.user_attrs.get("selectionFoldReturns")
+            if (
+                trial.state != optuna.trial.TrialState.COMPLETE
+                or not isinstance(raw, Sequence)
+                or isinstance(raw, (str, bytes))
+            ):
+                continue
+            try:
+                row = tuple(float(value) for value in raw)
+            except (TypeError, ValueError):
+                continue
+            if len(row) < 4:
+                continue
+            if width is None:
+                width = len(row)
+            if len(row) == width:
+                rows.append(row)
+        if len(rows) < 2:
+            return 1.0
+        from .models import probability_of_backtest_overfitting
+
+        return probability_of_backtest_overfitting(rows)
 
 
 def _panel_selection_before_holdout(
