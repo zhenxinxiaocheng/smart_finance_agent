@@ -173,9 +173,7 @@
   },
   "backtest": {
     "minimum_history_days": 40,
-    "warmup_days": 20,
-    "fast_moving_average": 5,
-    "slow_moving_average": 20,
-    "minimum_signal_spacing_days": 5
+    "minimum_signal_spacing_days": 5,
+    "maximum_evaluations_per_horizon": 24
   }
 }

@@ -760,6 +760,7 @@ def _backtest_outlook(
         return {
             "status": "INSUFFICIENT", "horizonDays": evaluation_days,
             "occurrences": 0, "matchedDirection": None,
+            "evaluatedPoints": 0,
             "positiveRate": None, "negativeRate": None, "winRate": None,
             "medianForwardReturn": None, "maximumAdverseExcursion": None,
             "invalidationRate": None,
@@ -777,14 +778,22 @@ def _backtest_outlook(
         "CURRENT",
     )
     matched_direction = str(live["outlook"]["direction"])
+    available_evaluations = len(quotes) - evaluation_days - (minimum_history - 1)
+    sampling_spacing = math.ceil(
+        available_evaluations
+        / STRATEGY.integer("backtest.maximum_evaluations_per_horizon")
+    )
     spacing = max(
         STRATEGY.integer("backtest.minimum_signal_spacing_days"),
         evaluation_days // 2,
+        sampling_spacing,
     )
     forward_returns: list[float] = []
     adverse_excursions: list[float] = []
     invalidations = 0
+    evaluated_points = 0
     for index in range(minimum_history - 1, len(quotes) - evaluation_days, spacing):
+        evaluated_points += 1
         outlook = historical_outlook_at(replay_rows, index, configured_bounds)
         if outlook["direction"] != matched_direction:
             continue
@@ -811,6 +820,7 @@ def _backtest_outlook(
         "strategyVersion": STRATEGY.version,
         "horizonDays": evaluation_days,
         "matchedDirection": matched_direction,
+        "evaluatedPoints": evaluated_points,
         "occurrences": occurrences,
         "positiveRate": _round(positive_rate, 1),
         "negativeRate": _round(negative_rate, 1),

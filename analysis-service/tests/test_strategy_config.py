@@ -12,7 +12,7 @@ class StrategyConfigTest(unittest.TestCase):
         self.assertEqual("technical-strategy-v3", strategy.version)
         self.assertEqual([5, 10, 20, 60, 120, 250],
                          strategy.integer_list("technical.moving_average_periods"))
-        self.assertEqual(20, strategy.integer("backtest.warmup_days"))
+        self.assertGreater(strategy.integer("backtest.maximum_evaluations_per_horizon"), 0)
         weights = strategy.value("technical.outlook.weights")
         self.assertEqual(
             {"trend", "momentum", "volumePrice", "volatility", "structure"},

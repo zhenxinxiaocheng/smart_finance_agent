@@ -209,6 +209,10 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertEqual(technical["outlook"]["direction"], replay["matchedDirection"])
         self.assertEqual(replay["positiveRate"], replay["winRate"])
         self.assertGreater(replay["occurrences"], 0)
+        self.assertLessEqual(
+            replay["evaluatedPoints"],
+            analysis_module.STRATEGY.integer("backtest.maximum_evaluations_per_horizon"),
+        )
         self.assertLessEqual(replay["maximumAdverseExcursion"], 0)
         self.assertIn("invalidationRate", replay)
 
