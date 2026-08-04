@@ -125,11 +125,11 @@ public class AgentScheduleServiceImpl implements AgentScheduleService {
     @Transactional
     public void delete(Long userId, Long scheduleId) {
         AgentSchedule schedule = loadOwned(userId, scheduleId);
-        schedule.setDeleted(1);
         schedule.setEnabled(0);
         schedule.setNextRunAt(null);
         schedule.setLockUntil(null);
         scheduleMapper.updateById(schedule);
+        scheduleMapper.deleteById(scheduleId);
     }
 
     @Override

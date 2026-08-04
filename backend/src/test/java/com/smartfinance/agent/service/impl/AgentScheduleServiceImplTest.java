@@ -133,12 +133,11 @@ class AgentScheduleServiceImplTest {
 
         service.delete(1L, 8L);
 
-        assertThat(existing.getDeleted()).isEqualTo(1);
         assertThat(existing.getEnabled()).isZero();
         assertThat(existing.getNextRunAt()).isNull();
         assertThat(existing.getLockUntil()).isNull();
         verify(scheduleMapper).updateById(existing);
-        verify(scheduleMapper, never()).deleteById(any(Long.class));
+        verify(scheduleMapper).deleteById(8L);
     }
 
 }

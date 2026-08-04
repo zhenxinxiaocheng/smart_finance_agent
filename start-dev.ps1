@@ -114,10 +114,7 @@ function Stop-PortListeners {
 
     Write-Host "Closing $Name port ${Port}: PID $($listenerIds -join ', ')"
     foreach ($processId in $listenerIds) {
-        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        if ($null -ne $process) {
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        }
+        Stop-ProcessTree -Id $processId
     }
 
     if (-not (Wait-PortReleased -Port $Port)) {
@@ -168,11 +165,10 @@ $PythonCommand = if (Test-Path $VenvPython) { $VenvPython } else {
 }
 
 Write-Host "Starting analysis service on port $ActualAnalysisPort..."
-$AnalysisShell = if (Get-Command "pwsh" -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
-$AnalysisCommand = "`$env:ANALYSIS_INTERNAL_TOKEN='$AnalysisToken'; & '$PythonCommand' -m uvicorn app.main:app --host 127.0.0.1 --port $ActualAnalysisPort"
+$env:ANALYSIS_INTERNAL_TOKEN = $AnalysisToken
 $AnalysisProcess = Start-Process `
-    -FilePath $AnalysisShell `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $AnalysisCommand) `
+    -FilePath $PythonCommand `
+    -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", $ActualAnalysisPort) `
     -WorkingDirectory $AnalysisDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $AnalysisOut `
@@ -198,11 +194,10 @@ $BackendProcess = Start-Process `
     -PassThru
 
 Write-Host "Starting frontend on port $ActualFrontendPort..."
-$FrontendShell = if (Get-Command "pwsh" -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
-$FrontendCommand = "`$env:VITE_API_TARGET='$ApiTarget'; npm run dev -- --host 127.0.0.1 --port $ActualFrontendPort --strictPort"
+$env:VITE_API_TARGET = $ApiTarget
 $FrontendProcess = Start-Process `
-    -FilePath $FrontendShell `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $FrontendCommand) `
+    -FilePath "npm.cmd" `
+    -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1", "--port", $ActualFrontendPort, "--strictPort") `
     -WorkingDirectory $FrontendDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $FrontendOut `
@@ -215,7 +210,11 @@ while ((Get-Date) -lt $startupDeadline -and
     if ($BackendProcess.HasExited -or $FrontendProcess.HasExited) { break }
     Start-Sleep -Milliseconds 500
 }
-if (-not (Test-PortInUse -Port $ActualBackendPort) -or -not (Test-PortInUse -Port $ActualFrontendPort)) {
+$BackendProcess.Refresh()
+$FrontendProcess.Refresh()
+if ($BackendProcess.HasExited -or $FrontendProcess.HasExited -or
+    -not (Test-PortInUse -Port $ActualBackendPort) -or
+    -not (Test-PortInUse -Port $ActualFrontendPort)) {
     foreach ($process in @($AnalysisProcess, $BackendProcess, $FrontendProcess)) {
         Stop-ProcessTree -Id $process.Id
     }

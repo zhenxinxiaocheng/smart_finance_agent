@@ -44,6 +44,9 @@ Assert-Contains $start '-StartupTimeoutSeconds $StartupTimeoutSeconds' $startFil
 Assert-Contains $startDev '[int]$StartupTimeoutSeconds = 240' 'start-dev.ps1'
 Assert-Contains $startDev '.AddSeconds($StartupTimeoutSeconds)' 'start-dev.ps1'
 Assert-Contains $startDev 'Stop-ProcessTree -Id $process.Id' 'start-dev.ps1'
+Assert-Contains $startDev 'Stop-ProcessTree -Id $processId' 'start-dev.ps1'
+Assert-Contains $startDev '$BackendProcess.Refresh()' 'start-dev.ps1'
+Assert-Contains $startDev '$FrontendProcess.Refresh()' 'start-dev.ps1'
 
 Assert-Contains $stop 'BackendPort=8088' $stopFile
 Assert-Contains $stop 'FrontendPort=3000' $stopFile

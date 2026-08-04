@@ -42,6 +42,7 @@ class InvestmentHorizonSettingMapperIntegrationTest {
         setting.setSortOrder(1);
         setting.setMinHoldingDays(5);
         setting.setMaxHoldingDays(20);
+        setting.setTargetHoldingDays(10);
         setting.setPrimary(true);
         settingMapper.insert(setting);
 
