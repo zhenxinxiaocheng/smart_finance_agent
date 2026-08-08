@@ -8,7 +8,7 @@
             {{ plan.enabled === 1 ? '执行中' : '已暂停' }}
           </span>
         </div>
-        <p class="mt-1 text-xs text-muted-foreground">按计划日净值自动更新模拟持仓，不会向真实券商下单</p>
+        <p class="mt-1 text-xs text-muted-foreground">按计划日净值自动更新模拟持仓，不会自动下单</p>
       </div>
       <Switch
         v-if="plan"
@@ -20,7 +20,7 @@
     </div>
 
     <div class="rounded-lg bg-muted/40 p-3">
-      <div class="text-xs text-muted-foreground">当前持仓成本</div>
+      <div class="text-xs text-muted-foreground">当前实际投入</div>
       <div class="mt-1 text-xl font-semibold">{{ money(investedAmount) }}</div>
     </div>
 

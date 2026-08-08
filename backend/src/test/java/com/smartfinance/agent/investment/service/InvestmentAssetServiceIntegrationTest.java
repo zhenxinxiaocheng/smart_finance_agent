@@ -46,7 +46,8 @@ import static org.mockito.Mockito.when;
         "investment.runtime.market.stock-refresh-end=23:59"
 })
 @Import({com.smartfinance.agent.investment.service.InvestmentAssetServiceImpl.class,
-        com.smartfinance.agent.investment.service.InvestmentDataJobService.class})
+        com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
+        com.smartfinance.agent.investment.service.FundClassificationService.class})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class InvestmentAssetServiceIntegrationTest {
 
@@ -117,19 +118,22 @@ class InvestmentAssetServiceIntegrationTest {
                         InvestmentDataJob::getJobType,
                         InvestmentDataJob::getStatus,
                         InvestmentDataJob::getForceRefresh)
-                .containsExactly(7L, asset.getProductId(), "STOCK_HISTORY", "QUEUED", false);
+                .containsExactly(7L, asset.getProductId(), "STOCK_HISTORY", "QUEUED", true);
         verify(analysisServiceClient).realtimeQuote("600519", "SSE");
     }
 
     @Test
-    void createFund_shouldImmediatelyResolveLatestNavAgain() {
+    void createFund_shouldUseResolvedNavWithoutRepeatedMetadataFetch() {
         when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "000001"))
-                .thenReturn(resolvedProduct("MUTUAL_FUND", "000001", "华夏成长", "CN", null))
-                .thenReturn(resolvedProduct("MUTUAL_FUND", "000001", "华夏成长", "CN", "1.2345"));
+                .thenReturn(resolvedFundProduct(
+                        "000001", "华夏成长", "CN", "1.2345",
+                        "混合型-偏股", "HYBRID_FUND"));
 
         var asset = assetService.create(7L, createRequest("FUND", "000001"));
 
         assertThat(asset.getLatestPrice()).isEqualByComparingTo("1.2345");
+        assertThat(asset.getFundTypeRaw()).isEqualTo("混合型-偏股");
+        assertThat(asset.getFundCategory()).isEqualTo("HYBRID_FUND");
         assertThat(asset.getSyncStatus()).isEqualTo("SUCCESS");
         InvestmentDataJob job = jobFor(asset.getId());
         assertThat(job).isNotNull();
@@ -139,8 +143,8 @@ class InvestmentAssetServiceIntegrationTest {
                         InvestmentDataJob::getJobType,
                         InvestmentDataJob::getStatus,
                         InvestmentDataJob::getForceRefresh)
-                .containsExactly(7L, asset.getProductId(), "FUND_NAV_HISTORY", "QUEUED", false);
-        verify(analysisServiceClient, times(2)).resolveProduct("MUTUAL_FUND", "000001");
+                .containsExactly(7L, asset.getProductId(), "FUND_NAV_HISTORY", "QUEUED", true);
+        verify(analysisServiceClient, times(1)).resolveProduct("MUTUAL_FUND", "000001");
     }
 
     @Test
@@ -367,6 +371,18 @@ class InvestmentAssetServiceIntegrationTest {
         return new AnalysisServiceClient.ResolvedProduct(
                 type, code, name, market, "CNY", "AKSHARE",
                 price == null ? null : LocalDate.of(2026, 7, 22), price, List.of());
+    }
+
+    private static AnalysisServiceClient.ResolvedProduct resolvedFundProduct(
+            String code, String name, String market, String latestPrice,
+            String rawType, String category) {
+        BigDecimal price = latestPrice == null ? null : new BigDecimal(latestPrice);
+        return new AnalysisServiceClient.ResolvedProduct(
+                "MUTUAL_FUND", code, name, market, "CNY", "AKSHARE",
+                price == null ? null : LocalDate.of(2026, 7, 22), price,
+                null, null, null, null, null, null, null, null, null, null, null,
+                List.of(), null, rawType, category,
+                "AKSHARE_FUND_NAME_EM", "fund-classification-v1");
     }
 
     private static AnalysisServiceClient.RealtimeQuote realtimeQuote(LocalDateTime fetchedAt) {

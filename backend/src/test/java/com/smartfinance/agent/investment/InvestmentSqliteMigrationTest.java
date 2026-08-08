@@ -75,6 +75,12 @@ class InvestmentSqliteMigrationTest {
                         .isTrue();
                 assertThat(columnExists(connection, "quant_job", "metrics_json"))
                         .isTrue();
+                assertThat(columnExists(connection, "investment_product", "fund_category"))
+                        .isTrue();
+                assertThat(columnExists(connection, "investment_product", "classification_source"))
+                        .isTrue();
+                assertThat(columnExists(connection, "investment_product", "classification_version"))
+                        .isTrue();
                 assertThat(columnExists(connection, "quant_job", "estimated_duration_seconds"))
                         .isTrue();
                 assertThat(columnExists(connection, "quant_experiment", "training_mode"))
@@ -123,7 +129,7 @@ class InvestmentSqliteMigrationTest {
                 assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
                         .isTrue();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("24");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("25");
         } finally {
             Files.deleteIfExists(database);
         }
@@ -173,7 +179,54 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("24");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("25");
+        } finally {
+            Files.deleteIfExists(database);
+        }
+    }
+
+    @Test
+    void versionTwentyFiveBackfillsKnownFundClassificationFromBenchmarkProfile() throws Exception {
+        Path database = Files.createTempFile("smart-finance-fund-classification-", ".db");
+        try {
+            String url = "jdbc:sqlite:" + database.toAbsolutePath();
+            Flyway.configure()
+                    .dataSource(url, null, null)
+                    .locations("classpath:db/migration/sqlite")
+                    .target("24")
+                    .load()
+                    .migrate();
+
+            try (var connection = DriverManager.getConnection(url);
+                 var statement = connection.prepareStatement("""
+                         INSERT INTO investment_product
+                             (product_type, market, code, name, currency, status)
+                         VALUES ('MUTUAL_FUND', 'CN', '000218', 'existing fund', 'CNY', 'ACTIVE')
+                         """)) {
+                statement.executeUpdate();
+            }
+
+            Flyway.configure()
+                    .dataSource(url, null, null)
+                    .locations("classpath:db/migration/sqlite")
+                    .load()
+                    .migrate();
+
+            try (var connection = DriverManager.getConnection(url);
+                 var statement = connection.prepareStatement("""
+                         SELECT fund_category, classification_source, classification_version, classified_at
+                         FROM investment_product
+                         WHERE product_type = 'MUTUAL_FUND' AND code = '000218'
+                         """);
+                 var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getString("fund_category")).isEqualTo("COMMODITY_FUND");
+                assertThat(result.getString("classification_source"))
+                        .isEqualTo("CURATED_BENCHMARK_PROFILE");
+                assertThat(result.getString("classification_version"))
+                        .isEqualTo("OFFICIAL-PRODUCT");
+                assertThat(result.getString("classified_at")).isNotBlank();
+            }
         } finally {
             Files.deleteIfExists(database);
         }

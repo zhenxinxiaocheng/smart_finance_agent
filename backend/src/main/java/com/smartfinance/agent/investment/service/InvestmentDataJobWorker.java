@@ -8,12 +8,15 @@ import com.smartfinance.agent.investment.quant.QuantBenchmarkPreparationService;
 import com.smartfinance.agent.investment.quant.QuantResearchUniversePreparationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -81,6 +84,18 @@ public class InvestmentDataJobWorker {
         }
     }
 
+    @EventListener(ApplicationReadyEvent.class)
+    public void requeueIncompleteHistoryJobs() {
+        try {
+            int requeued = jobService.requeueIncompleteHistoryJobs();
+            if (requeued > 0) {
+                log.info("Requeued {} incomplete asset history jobs for full backfill", requeued);
+            }
+        } catch (RuntimeException exception) {
+            log.warn("Incomplete asset history backfill scan failed: {}", exception.getMessage());
+        }
+    }
+
     private void run(InvestmentDataJob job) {
         LocalDateTime claimTime = LocalDateTime.now(clock);
         String leaseToken = UUID.randomUUID().toString();
@@ -129,6 +144,10 @@ public class InvestmentDataJobWorker {
                 return;
             }
             if (recordCount >= minimum) {
+                if (historyResult != null && Boolean.TRUE.equals(claimedJob.getForceRefresh())) {
+                    requireFreshAnalysis(claimedJob);
+                    completionTime = LocalDateTime.now(clock);
+                }
                 boolean completed = jobService.markSucceeded(
                         claimedJob.getId(),
                         leaseToken,
@@ -149,6 +168,17 @@ public class InvestmentDataJobWorker {
             String message = exception.getMessage();
             retryOrFail(claimedJob, leaseToken, LocalDateTime.now(clock),
                     message == null || message.isBlank() ? exception.getClass().getSimpleName() : message);
+        }
+    }
+
+    private void requireFreshAnalysis(InvestmentDataJob job) {
+        InvestmentAssetDetailResponse detail = analysisService.refresh(job.getUserId(), job.getAssetId());
+        Map<String, Object> sourceStatus = detail == null ? null : detail.getSourceStatus();
+        boolean ready = sourceStatus != null
+                && "READY".equals(sourceStatus.get("dataState"))
+                && !Boolean.TRUE.equals(sourceStatus.get("historicalCache"));
+        if (!ready) {
+            throw new IllegalStateException("历史数据已更新，但尚未生成新分析结果");
         }
     }
 

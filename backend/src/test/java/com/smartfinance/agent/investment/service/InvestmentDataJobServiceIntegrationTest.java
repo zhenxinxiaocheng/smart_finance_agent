@@ -66,8 +66,7 @@ class InvestmentDataJobServiceIntegrationTest {
     void expiredWorkerTokenCannotFinishJobAfterReclaim() {
         InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
         LocalDateTime now = LocalDateTime.now().withNano(0);
-        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "stale-worker")).isTrue();
-        service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+        assertThat(service.claim(job.getId(), now, now.plusSeconds(30), "stale-worker")).isTrue();
         assertThat(service.claim(job.getId(), now.plusMinutes(1), now.plusMinutes(6), "fresh-worker")).isTrue();
 
         assertThat(service.markSucceeded(job.getId(), "stale-worker", 20, now)).isFalse();

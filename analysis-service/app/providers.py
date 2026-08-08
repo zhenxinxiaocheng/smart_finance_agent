@@ -17,6 +17,7 @@ from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from .data_quality.models import AdjustType, DataSnapshotContext, ProductType
+from .fund_classification import FundClassification, classify_fund_type
 from .strategy_config import load_strategy_config
 
 
@@ -33,6 +34,7 @@ class _FundSnapshotCacheEntry:
 
 
 _FUND_SNAPSHOT_CACHE: WeakKeyDictionary[Any, _FundSnapshotCacheEntry] = WeakKeyDictionary()
+_FUND_CATALOG_CACHE: WeakKeyDictionary[Any, _FundSnapshotCacheEntry] = WeakKeyDictionary()
 _FUND_SNAPSHOT_CACHE_CONDITION = threading.Condition(threading.RLock())
 
 
@@ -48,16 +50,23 @@ def _clear_fund_snapshot_cache() -> None:
     """Clear the process cache so provider tests do not share global state."""
     with _FUND_SNAPSHOT_CACHE_CONDITION:
         _FUND_SNAPSHOT_CACHE.clear()
+        _FUND_CATALOG_CACHE.clear()
         _FUND_SNAPSHOT_CACHE_CONDITION.notify_all()
 
 
-def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], ...]:
+def _cached_fund_records(
+    cache: WeakKeyDictionary[Any, _FundSnapshotCacheEntry],
+    ak_module: Any,
+    loader,
+    ttl_ms: int,
+    clock=None,
+) -> tuple[dict[str, Any], ...]:
     cache_clock = monotonic if clock is None else clock
     with _FUND_SNAPSHOT_CACHE_CONDITION:
-        entry = _FUND_SNAPSHOT_CACHE.get(ak_module)
+        entry = cache.get(ak_module)
         if entry is None:
             entry = _FundSnapshotCacheEntry()
-            _FUND_SNAPSHOT_CACHE[ak_module] = entry
+            cache[ak_module] = entry
         while True:
             if entry.expires_at > cache_clock():
                 if entry.error_type is not None:
@@ -74,7 +83,7 @@ def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], 
     error_type: str | None = None
     error_message: str | None = None
     try:
-        records = tuple(ak_module.fund_open_fund_daily_em().to_dict("records"))
+        records = tuple(loader().to_dict("records"))
     except Exception as exc:
         error_type = type(exc).__name__
         error_message = str(exc)
@@ -83,13 +92,33 @@ def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], 
         entry.records = records
         entry.error_type = error_type
         entry.error_message = error_message
-        entry.expires_at = cache_clock() + _provider_integer("fund_snapshot_cache_ttl_ms") / 1000
+        entry.expires_at = cache_clock() + ttl_ms / 1000
         entry.loading = False
         _FUND_SNAPSHOT_CACHE_CONDITION.notify_all()
 
     if error_type is not None:
         raise ProviderUnavailable(f"{error_type}: {error_message or ''}") from None
     return records or ()
+
+
+def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], ...]:
+    return _cached_fund_records(
+        _FUND_SNAPSHOT_CACHE,
+        ak_module,
+        ak_module.fund_open_fund_daily_em,
+        _provider_integer("fund_snapshot_cache_ttl_ms"),
+        clock,
+    )
+
+
+def _fund_catalog_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], ...]:
+    return _cached_fund_records(
+        _FUND_CATALOG_CACHE,
+        ak_module,
+        ak_module.fund_name_em,
+        _provider_integer("fund_snapshot_cache_ttl_ms"),
+        clock,
+    )
 
 
 @dataclass(frozen=True)
@@ -385,6 +414,10 @@ def normalize_resolved_product(
     turnover_rate: Any = None,
     volume_ratio: Any = None,
     amplitude: Any = None,
+    fund_type_raw: str | None = None,
+    fund_category: str | None = None,
+    classification_source: str | None = None,
+    classification_version: str | None = None,
 ) -> dict[str, Any]:
     price = _decimal(latest_price)
     return {
@@ -409,6 +442,10 @@ def normalize_resolved_product(
         "volumeRatio": _decimal_string(_decimal(volume_ratio)),
         "amplitude": _decimal_string(_decimal(amplitude)),
         "warnings": list(warnings or []),
+        "fundTypeRaw": fund_type_raw,
+        "fundCategory": fund_category,
+        "classificationSource": classification_source,
+        "classificationVersion": classification_version,
     }
 
 
@@ -465,6 +502,9 @@ def resolve_product_metadata(
 
     warnings: list[str] = []
     fund_records: list[dict[str, Any]] = []
+    fund_catalog_records: tuple[dict[str, Any], ...] = ()
+    fund_catalog_match: dict[str, Any] | None = None
+    fund_classification = classify_fund_type(None)
     inception_date: date | None = None
     if normalized_type == "STOCK":
         records = ak_module.stock_info_a_code_name().to_dict("records")
@@ -489,6 +529,20 @@ def resolve_product_metadata(
     else:
         market = "FUND_CN"
         try:
+            fund_catalog_records = _fund_catalog_records(ak_module, clock=cache_clock)
+        except Exception as exc:
+            warnings.append(f"AKSHARE 基金类型获取失败: {exc}")
+        else:
+            fund_catalog_match = next(
+                (item for item in fund_catalog_records
+                 if str(item.get("基金代码", "")).strip().zfill(6) == normalized_code),
+                None,
+            )
+            if fund_catalog_match is None:
+                warnings.append(f"AKSHARE 基金类型未找到基金代码 {normalized_code}")
+            else:
+                fund_classification = classify_fund_type(fund_catalog_match.get("基金类型"))
+        try:
             snapshot_records = _fund_snapshot_records(ak_module, clock=cache_clock)
         except Exception as exc:
             warnings.append(f"AKSHARE 基金快照获取失败: {exc}")
@@ -501,13 +555,14 @@ def resolve_product_metadata(
             if snapshot_match is None:
                 warnings.append(f"AKSHARE 基金快照未找到基金代码 {normalized_code}")
             else:
-                snapshot_result = _resolved_fund_snapshot(snapshot_match, normalized_code)
+                snapshot_result = _resolved_fund_snapshot(
+                    snapshot_match, normalized_code, fund_classification)
                 if snapshot_result is not None:
+                    snapshot_result["warnings"] = warnings
                     return snapshot_result
                 warnings.append(f"AKSHARE 基金快照未返回有效净值 {normalized_code}")
 
-        records = ak_module.fund_name_em().to_dict("records")
-        match = next((item for item in records if str(item.get("基金代码", "")).zfill(6) == normalized_code), None)
+        match = fund_catalog_match
         if match is None:
             raise ProviderUnavailable(f"AKSHARE: 未找到基金代码 {normalized_code}")
         name = str(match.get("基金简称", "")).strip()
@@ -557,6 +612,12 @@ def resolve_product_metadata(
         low_price=None if latest is None else latest.low,
         volume=None if latest is None else latest.volume,
         warnings=warnings,
+        fund_type_raw=fund_classification.raw_type,
+        fund_category=fund_classification.category,
+        classification_source=(
+            "AKSHARE_FUND_NAME_EM" if fund_classification.raw_type is not None else None
+        ),
+        classification_version=fund_classification.version,
     )
 
 
@@ -678,7 +739,11 @@ def _matches_fund_name_exclusion(name: str, pattern: str) -> bool:
     return normalized.casefold() in name.casefold()
 
 
-def _resolved_fund_snapshot(row: dict[str, Any], code: str) -> dict[str, Any] | None:
+def _resolved_fund_snapshot(
+    row: dict[str, Any],
+    code: str,
+    classification: FundClassification,
+) -> dict[str, Any] | None:
     dated_navs: list[tuple[date, Decimal]] = []
     for column, value in row.items():
         column_text = str(column)
@@ -716,6 +781,12 @@ def _resolved_fund_snapshot(row: dict[str, Any], code: str) -> dict[str, Any] | 
         previous_close=previous_nav,
         change_amount=change_amount,
         change_percent=change_percent,
+        fund_type_raw=classification.raw_type,
+        fund_category=classification.category,
+        classification_source=(
+            "AKSHARE_FUND_NAME_EM" if classification.raw_type is not None else None
+        ),
+        classification_version=classification.version,
     )
 
 

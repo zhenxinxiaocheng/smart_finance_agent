@@ -1,7 +1,11 @@
 package com.smartfinance.agent.investment.service;
 
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
+import com.smartfinance.agent.investment.entity.InvestmentAsset;
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
+import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
+import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -9,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -18,12 +23,21 @@ import static org.mockito.Mockito.*;
 class InvestmentDataJobServiceTest {
 
     private InvestmentDataJobMapper mapper;
+    private InvestmentProductMapper productMapper;
+    private InvestmentAssetMapper assetMapper;
     private InvestmentDataJobService service;
 
     @BeforeEach
     void setUp() {
         mapper = mock(InvestmentDataJobMapper.class);
-        service = new InvestmentDataJobService(mapper);
+        productMapper = mock(InvestmentProductMapper.class);
+        assetMapper = mock(InvestmentAssetMapper.class);
+        InvestmentProduct product = new InvestmentProduct();
+        product.setId(21L);
+        product.setProductType("STOCK");
+        product.setHistoryCoverageComplete(true);
+        when(productMapper.selectById(21L)).thenReturn(product);
+        service = new InvestmentDataJobService(mapper, productMapper, assetMapper);
     }
 
     @Test
@@ -159,6 +173,97 @@ class InvestmentDataJobServiceTest {
     }
 
     @Test
+    void forcedRefreshNeverResetsAnActiveRecoveryJob() {
+        InvestmentDataJob existing = job("RUNNING", "STOCK_HISTORY");
+        existing.setAttemptCount(1);
+        existing.setLeaseToken("active-worker");
+        existing.setLeaseUntil(LocalDateTime.of(2026, 7, 22, 10, 5));
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+
+        assertThat(job.getStatus()).isEqualTo("RUNNING");
+        assertThat(job.getLeaseToken()).isEqualTo("active-worker");
+        assertThat(job.getAttemptCount()).isEqualTo(1);
+        verify(mapper, never()).updateById(any());
+    }
+
+    @Test
+    void automaticRecoveryDoesNotLoopAFailedJob() {
+        InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
+        existing.setAttemptCount(3);
+        existing.setErrorMessage("quality remains blocked");
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+
+        assertThat(job.getStatus()).isEqualTo("FAILED");
+        assertThat(job.getAttemptCount()).isEqualTo(3);
+        verify(mapper, never()).updateById(any());
+    }
+
+    @Test
+    void automaticRecoveryRequeuesACompletedJobWithFreshDataEnabled() {
+        InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
+        existing.setRecordCount(526);
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+
+        assertThat(job.getStatus()).isEqualTo("QUEUED");
+        assertThat(job.getForceRefresh()).isTrue();
+        assertThat(job.getRecordCount()).isZero();
+        verify(mapper).updateById(existing);
+    }
+
+    @Test
+    void incompleteCoverageResetsTerminalJobForFullBackfillEvenWithoutManualForce() {
+        InvestmentProduct product = new InvestmentProduct();
+        product.setId(21L);
+        product.setProductType("STOCK");
+        product.setHistoryCoverageComplete(false);
+        when(productMapper.selectById(21L)).thenReturn(product);
+        InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
+        existing.setId(91L);
+        existing.setRecordCount(526);
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+
+        assertThat(job.getStatus()).isEqualTo("QUEUED");
+        assertThat(job.getForceRefresh()).isTrue();
+        assertThat(job.getAttemptCount()).isZero();
+        verify(mapper).updateById(existing);
+    }
+
+    @Test
+    void requeueIncompleteHistoryJobsCoversEveryIncompleteAsset() {
+        InvestmentProduct stock = product(21L, "STOCK", false);
+        InvestmentProduct fund = product(31L, "MUTUAL_FUND", false);
+        InvestmentProduct complete = product(41L, "STOCK", true);
+        when(productMapper.selectById(21L)).thenReturn(stock);
+        when(productMapper.selectById(31L)).thenReturn(fund);
+        when(productMapper.selectById(41L)).thenReturn(complete);
+        InvestmentAsset stockAsset = asset(7L, 11L, 21L);
+        InvestmentAsset fundAsset = asset(7L, 12L, 31L);
+        InvestmentAsset completeAsset = asset(8L, 13L, 41L);
+        when(assetMapper.selectList(null)).thenReturn(List.of(stockAsset, fundAsset, completeAsset));
+        when(mapper.insert(any())).thenAnswer(invocation -> {
+            InvestmentDataJob job = invocation.getArgument(0);
+            job.setId(job.getProductId() + 100L);
+            return 1;
+        });
+
+        int requeued = service.requeueIncompleteHistoryJobs();
+
+        assertThat(requeued).isEqualTo(2);
+        verify(mapper).insert(argThat(job -> "STOCK_HISTORY".equals(job.getJobType())
+                && Boolean.TRUE.equals(job.getForceRefresh())));
+        verify(mapper).insert(argThat(job -> "FUND_NAV_HISTORY".equals(job.getJobType())
+                && Boolean.TRUE.equals(job.getForceRefresh())));
+    }
+
+    @Test
     void anotherUserCannotReadAssetJobStatus() {
         when(mapper.selectOne(any())).thenReturn(null);
 
@@ -239,5 +344,21 @@ class InvestmentDataJobServiceTest {
         job.setAttemptCount(0);
         job.setRecordCount(0);
         return job;
+    }
+
+    private static InvestmentProduct product(Long id, String productType, boolean coverageComplete) {
+        InvestmentProduct product = new InvestmentProduct();
+        product.setId(id);
+        product.setProductType(productType);
+        product.setHistoryCoverageComplete(coverageComplete);
+        return product;
+    }
+
+    private static InvestmentAsset asset(Long userId, Long assetId, Long productId) {
+        InvestmentAsset asset = new InvestmentAsset();
+        asset.setId(assetId);
+        asset.setUserId(userId);
+        asset.setProductId(productId);
+        return asset;
     }
 }

@@ -122,7 +122,7 @@ class AnalysisEngineTest(unittest.TestCase):
         records = price_records(260, step=0.04)
         records[180]["close"] = "16.0"
 
-        result = analyze_fund(records)
+        result = analyze_fund(records, fund_category="INDEX_FUND")
 
         self.assertEqual(
             ["ONE_MONTH", "THREE_MONTHS", "ONE_YEAR"],
@@ -130,10 +130,11 @@ class AnalysisEngineTest(unittest.TestCase):
         )
         self.assertGreater(result["annualizedVolatility"], 0)
         self.assertLess(result["maxDrawdown"], 0)
-        self.assertIn(result["action"], {"ACCUMULATE", "HOLD", "PAUSE", "TAKE_PROFIT"})
-        self.assertGreaterEqual(result["score"], 0)
-        self.assertLessEqual(result["score"], 100)
-        self.assertIn(result["verdict"], {"FAVORABLE", "WAIT", "WEAK"})
+        self.assertEqual("WAIT", result["action"])
+        self.assertIsNone(result["score"])
+        self.assertEqual("WAIT", result["verdict"])
+        self.assertEqual("UNAVAILABLE", result["adviceStatus"])
+        self.assertEqual("CATEGORY_STRATEGY_UNVALIDATED", result["reasonCode"])
         self.assertIsNotNone(result["series"][-1]["ma20"])
 
     def test_fund_analysis_accepts_canonical_nav_records(self):
@@ -145,11 +146,71 @@ class AnalysisEngineTest(unittest.TestCase):
             for item in price_records(260, step=0.04)
         ]
 
-        result = analyze_fund(records)
+        result = analyze_fund(records, fund_category="INDEX_FUND")
 
         self.assertEqual("READY", result["status"])
         self.assertEqual(260, len(result["series"]))
-        self.assertGreater(result["score"], 0)
+        self.assertIsNone(result["score"])
+
+    def test_fund_analysis_without_classification_fails_closed(self):
+        result = analyze_fund(
+            price_records(260, step=0.04),
+            {"SHORT": {"minDays": 5, "maxDays": 20, "targetDays": 10}},
+            "SHORT",
+        )
+
+        self.assertEqual("INSUFFICIENT", result["status"])
+        self.assertEqual("FUND_CATEGORY_UNAVAILABLE", result["reasonCode"])
+        self.assertEqual("WAIT", result["action"])
+        self.assertEqual("UNAVAILABLE", result["adviceStatus"])
+
+    def test_fund_analysis_with_short_history_still_blocks_advice(self):
+        result = analyze_fund(
+            price_records(5, step=0.04),
+            fund_category="INDEX_FUND",
+        )
+
+        self.assertEqual("INSUFFICIENT", result["status"])
+        self.assertEqual("INSUFFICIENT_HISTORY", result["reasonCode"])
+        self.assertEqual("WAIT", result["action"])
+        self.assertEqual("UNAVAILABLE", result["adviceStatus"])
+
+    def test_fund_analysis_separates_full_history_from_user_horizons(self):
+        records = price_records(620, step=0.04)
+        records[-200]["close"] = "200.0"
+        result = analyze_fund(
+            records,
+            {
+                "SHORT": {"minDays": 5, "maxDays": 20, "targetDays": 10},
+                "CUSTOM_LONG": {"minDays": 120, "maxDays": 300, "targetDays": 250},
+            },
+            "SHORT",
+            fund_category="INDEX_FUND",
+        )
+
+        self.assertEqual({"SHORT", "CUSTOM_LONG"}, set(result["horizons"]))
+        self.assertEqual("SHORT", result["primaryHorizon"])
+        self.assertLess(result["fullHistory"]["maxDrawdown"], 0)
+        self.assertIsNotNone(result["fullHistory"]["windowReturn"])
+        self.assertNotIn("inceptionReturn", result["fullHistory"])
+        self.assertIn("currentDrawdown", result["fullHistory"])
+        self.assertIn(result["fullHistory"]["drawdownStatus"], {
+            "RECOVERED",
+            "RECOVERING",
+            "IN_DRAWDOWN",
+        })
+        self.assertEqual(620, result["fullHistory"]["recordCount"])
+        self.assertEqual("VALIDATED_ANALYSIS_WINDOW", result["fullHistory"]["scope"])
+        self.assertEqual(620, len(result["series"]))
+        self.assertEqual("WAIT", result["horizons"]["SHORT"]["action"])
+        self.assertNotIn("trendVerdict", result["horizons"]["SHORT"])
+        self.assertEqual(250, result["horizons"]["CUSTOM_LONG"]["targetDays"])
+        self.assertGreater(
+            result["horizons"]["SHORT"]["maxDrawdown"],
+            result["horizons"]["CUSTOM_LONG"]["maxDrawdown"],
+        )
+        self.assertIn("currentDrawdown", result["horizons"]["SHORT"])
+        self.assertIn("drawdownStatus", result["horizons"]["CUSTOM_LONG"])
 
     def test_fundamental_analysis_requires_three_periods_and_four_dimensions(self):
         insufficient = analyze_fundamentals([

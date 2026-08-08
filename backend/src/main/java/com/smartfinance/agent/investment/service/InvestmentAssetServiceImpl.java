@@ -36,6 +36,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final InvestmentDataJobService dataJobService;
     private final InvestmentRuntimeProperties runtimeProperties;
     private final ChinaTradingCalendarService tradingCalendar;
+    private final FundClassificationService classificationService;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -49,7 +50,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentService investmentService,
                                       InvestmentDataJobService dataJobService,
                                       InvestmentRuntimeProperties runtimeProperties,
-                                      ChinaTradingCalendarService tradingCalendar) {
+                                      ChinaTradingCalendarService tradingCalendar,
+                                      FundClassificationService classificationService) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -60,6 +62,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.dataJobService = dataJobService;
         this.runtimeProperties = runtimeProperties;
         this.tradingCalendar = tradingCalendar;
+        this.classificationService = classificationService;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -90,7 +93,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         asset.setDeleted(0);
         assetMapper.insert(asset);
         saveResolvedQuote(product, resolved);
-        refreshAsset(asset, true);
+        refreshAsset(asset, true, resolved);
         if (request.getQuantity() != null || request.getAverageCost() != null) {
             replaceHolding(userId, asset, request.getQuantity(), request.getAverageCost(), asset.getNote());
         }
@@ -180,6 +183,12 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     private void refreshAsset(InvestmentAsset asset, boolean force) {
+        refreshAsset(asset, force, null);
+    }
+
+    private void refreshAsset(InvestmentAsset asset,
+                              boolean force,
+                              AnalysisServiceClient.ResolvedProduct alreadyResolved) {
         InvestmentProduct currentProduct = productMapper.selectById(asset.getProductId());
         if (currentProduct == null) {
             applyOutcome(asset, new RefreshOutcome("FAILED", "投资产品不存在"));
@@ -202,7 +211,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
 
         try {
-            RefreshOutcome outcome = fetchLatest(currentProduct);
+            RefreshOutcome outcome = fetchLatest(currentProduct, alreadyResolved);
             LocalDateTime completedAt = LocalDateTime.now(runtimeProperties.getMarket().getZone());
             refreshOutcomes.put(productKey, new CachedRefreshOutcome(outcome, completedAt));
             applyOutcome(asset, outcome);
@@ -219,6 +228,11 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     private RefreshOutcome fetchLatest(InvestmentProduct product) {
+        return fetchLatest(product, null);
+    }
+
+    private RefreshOutcome fetchLatest(InvestmentProduct product,
+                                       AnalysisServiceClient.ResolvedProduct alreadyResolved) {
         try {
             if ("STOCK".equals(product.getProductType())) {
                 AnalysisServiceClient.RealtimeQuote quote = analysisClient.realtimeQuote(
@@ -226,8 +240,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 saveRealtimeQuote(product, quote);
                 return new RefreshOutcome("SUCCESS", joinWarnings(quote.warnings()));
             }
-            AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
-                    product.getProductType(), product.getCode());
+            AnalysisServiceClient.ResolvedProduct resolved = alreadyResolved != null
+                    ? alreadyResolved
+                    : analysisClient.resolveProduct(product.getProductType(), product.getCode());
             InvestmentProduct resolvedProduct = upsertProduct(resolved);
             saveResolvedQuote(resolvedProduct, resolved);
             return new RefreshOutcome(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS",
@@ -370,6 +385,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         if (product.getHistoryCoverageComplete() == null) {
             product.setHistoryCoverageComplete(false);
         }
+        classificationService.applyResolved(product, resolved);
         if (product.getId() == null) productMapper.insert(product); else productMapper.updateById(product);
         return product;
     }
@@ -454,6 +470,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         view.setAccountId(asset.getAccountId());
         view.setProductId(asset.getProductId());
         view.setProductType(product.getProductType());
+        view.setFundTypeRaw(product.getFundTypeRaw());
+        view.setFundCategory(product.getFundCategory());
+        view.setClassificationSource(product.getClassificationSource());
+        view.setClassificationVersion(product.getClassificationVersion());
         view.setCode(product.getCode());
         view.setName(product.getName());
         view.setMarket(product.getMarket());

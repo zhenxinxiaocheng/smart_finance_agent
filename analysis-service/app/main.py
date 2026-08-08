@@ -179,6 +179,31 @@ class FundamentalAnalysisRequest(AnalysisRequest):
 
 class FundAnalysisRequest(AnalysisRequest):
     records: list[dict[str, Any]]
+    fund_category: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("fund_category", "fundCategory"),
+        serialization_alias="fundCategory",
+        min_length=1,
+        max_length=40,
+    )
+    horizons: dict[str, dict[str, Any]] | None = None
+    primary_horizon: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("primary_horizon", "primaryHorizon"),
+        serialization_alias="primaryHorizon",
+    )
+
+    @model_validator(mode="after")
+    def validate_horizons(self) -> "FundAnalysisRequest":
+        if self.horizons:
+            if self.primary_horizon not in self.horizons:
+                raise ValueError("primaryHorizon must exist in horizons")
+            for config in self.horizons.values():
+                minimum = int(config.get("minDays", config.get("minimumDays")))
+                maximum = int(config.get("maxDays", config.get("maximumDays")))
+                if minimum < 1 or maximum < minimum:
+                    raise ValueError("fund horizon days must be positive and ordered")
+        return self
 
 
 class BacktestRequest(AnalysisRequest):
@@ -538,7 +563,12 @@ def fundamental_analysis(request: FundamentalAnalysisRequest):
 
 @app.post("/internal/v1/analysis/fund", dependencies=[Depends(internal_auth)])
 def fund_analysis(request: FundAnalysisRequest):
-    return analyze_fund(request.records)
+    return analyze_fund(
+        request.records,
+        request.horizons,
+        request.primary_horizon,
+        request.fund_category,
+    )
 
 
 @app.post("/internal/v1/analysis/backtest", dependencies=[Depends(internal_auth)])

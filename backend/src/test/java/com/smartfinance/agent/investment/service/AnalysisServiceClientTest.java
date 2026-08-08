@@ -160,6 +160,37 @@ class AnalysisServiceClientTest {
     }
 
     @Test
+    void fundAnalysis_shouldSendClassificationAndValidatedRecords() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(
+                builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/analysis/fund"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json("""
+                        {"records":[{"data_date":"2026-08-06","nav":"1.2345"}],
+                         "fundCategory":"QDII_INDEX_FUND",
+                         "horizons":{"SHORT":{"minDays":5,"maxDays":20,"targetDays":10}},
+                         "primaryHorizon":"SHORT"}
+                        """))
+                .andRespond(withSuccess("""
+                        {"status":"READY","analysisMode":"DESCRIPTIVE_ONLY",
+                         "adviceStatus":"UNAVAILABLE","action":"WAIT"}
+                        """, MediaType.APPLICATION_JSON));
+
+        Map<String, Object> result = client.fundAnalysis(
+                List.of(Map.of("data_date", "2026-08-06", "nav", "1.2345")),
+                "QDII_INDEX_FUND",
+                Map.of("SHORT", Map.of("minDays", 5, "maxDays", 20, "targetDays", 10)),
+                "SHORT");
+
+        assertThat(result)
+                .containsEntry("analysisMode", "DESCRIPTIVE_ONLY")
+                .containsEntry("action", "WAIT");
+        server.verify();
+    }
+
+    @Test
     void backtest_shouldSendEveryConfiguredHorizonWithoutLegacyFixedDays() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -236,6 +267,35 @@ class AnalysisServiceClientTest {
         assertThat(result.changeAmount()).isEqualByComparingTo("14.98");
         assertThat(result.changePercent()).isEqualByComparingTo("1.2588");
         assertThat(result.inceptionDate()).isEqualTo(LocalDate.of(2001, 8, 27));
+        server.verify();
+    }
+
+    @Test
+    void resolveFund_shouldMapProviderClassificationMetadata() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(
+                builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/products/resolve"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json(
+                        "{\"product_type\":\"MUTUAL_FUND\",\"code\":\"000834\"}"))
+                .andRespond(withSuccess("""
+                        {"productType":"MUTUAL_FUND","code":"000834","name":"纳指联接",
+                         "market":"FUND_CN","currency":"CNY","provider":"AKSHARE",
+                         "dataDate":"2026-08-06","latestPrice":"1.2345","warnings":[],
+                         "fundTypeRaw":"指数型-海外股票","fundCategory":"QDII_INDEX_FUND",
+                         "classificationSource":"AKSHARE_FUND_NAME_EM",
+                         "classificationVersion":"fund-classification-v1"}
+                        """, MediaType.APPLICATION_JSON));
+
+        AnalysisServiceClient.ResolvedProduct result =
+                client.resolveProduct("MUTUAL_FUND", "000834");
+
+        assertThat(result.fundTypeRaw()).isEqualTo("指数型-海外股票");
+        assertThat(result.fundCategory()).isEqualTo("QDII_INDEX_FUND");
+        assertThat(result.classificationSource()).isEqualTo("AKSHARE_FUND_NAME_EM");
+        assertThat(result.classificationVersion()).isEqualTo("fund-classification-v1");
         server.verify();
     }
 }

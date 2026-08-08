@@ -2,7 +2,11 @@ package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
+import com.smartfinance.agent.investment.entity.InvestmentAsset;
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
+import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
+import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,18 +22,29 @@ public class InvestmentDataJobService {
     private static final ZoneId RUNTIME_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final InvestmentDataJobMapper mapper;
+    private final InvestmentProductMapper productMapper;
+    private final InvestmentAssetMapper assetMapper;
 
-    public InvestmentDataJobService(InvestmentDataJobMapper mapper) {
+    public InvestmentDataJobService(InvestmentDataJobMapper mapper,
+                                    InvestmentProductMapper productMapper,
+                                    InvestmentAssetMapper assetMapper) {
         this.mapper = mapper;
+        this.productMapper = productMapper;
+        this.assetMapper = assetMapper;
     }
 
     @Transactional
     public InvestmentDataJob ensureQueued(Long userId, Long assetId, Long productId,
                                            String productType, boolean forceRefresh) {
         String jobType = jobTypeFor(productType);
+        boolean requiresCompleteHistory = isAssetHistoryJob(jobType)
+                && !Boolean.TRUE.equals(historyCoverageComplete(productId));
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing != null) {
-            if (forceRefresh) {
+            if (isActive(existing)) {
+                return existing;
+            }
+            if (forceRefresh || requiresCompleteHistory) {
                 resetForRefresh(existing);
                 mapper.updateById(existing);
             }
@@ -42,7 +57,7 @@ public class InvestmentDataJobService {
         job.setProductId(productId);
         job.setJobType(jobType);
         job.setStatus("QUEUED");
-        job.setForceRefresh(forceRefresh);
+        job.setForceRefresh(forceRefresh || requiresCompleteHistory);
         job.setRecordCount(0);
         job.setAttemptCount(0);
         try {
@@ -55,6 +70,49 @@ public class InvestmentDataJobService {
             throw duplicateKey;
         }
         return job;
+    }
+
+    @Transactional
+    public InvestmentDataJob ensureRecoveryQueued(Long userId, Long assetId, Long productId,
+                                                   String productType) {
+        String jobType = jobTypeFor(productType);
+        InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
+        if (existing == null) {
+            return ensureQueued(userId, assetId, productId, productType, true);
+        }
+        if (isActive(existing) || "FAILED".equals(existing.getStatus())) {
+            return existing;
+        }
+        resetForRefresh(existing);
+        mapper.updateById(existing);
+        return existing;
+    }
+
+    @Transactional
+    public int requeueIncompleteHistoryJobs() {
+        int requeued = 0;
+        for (InvestmentAsset asset : assetMapper.selectList(null)) {
+            InvestmentProduct product = productMapper.selectById(asset.getProductId());
+            if (product == null || !isAssetHistoryProduct(product)
+                    || Boolean.TRUE.equals(product.getHistoryCoverageComplete())) {
+                continue;
+            }
+            String jobType = jobTypeFor(product.getProductType());
+            InvestmentDataJob existing = findByAssetAndType(asset.getId(), jobType);
+            if (existing != null
+                    && List.of("QUEUED", "RUNNING", "RETRY_WAIT").contains(existing.getStatus())) {
+                continue;
+            }
+            ensureQueued(
+                    asset.getUserId(),
+                    asset.getId(),
+                    product.getId(),
+                    product.getProductType(),
+                    true
+            );
+            requeued++;
+        }
+        return requeued;
     }
 
     @Transactional
@@ -202,6 +260,27 @@ public class InvestmentDataJobService {
         return mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
                 .eq(InvestmentDataJob::getAssetId, assetId)
                 .eq(InvestmentDataJob::getJobType, jobType));
+    }
+
+    private Boolean historyCoverageComplete(Long productId) {
+        InvestmentProduct product = productMapper.selectById(productId);
+        return product == null ? Boolean.FALSE : product.getHistoryCoverageComplete();
+    }
+
+    private static boolean isAssetHistoryJob(String jobType) {
+        return "STOCK_HISTORY".equals(jobType) || "FUND_NAV_HISTORY".equals(jobType);
+    }
+
+    private static boolean isActive(InvestmentDataJob job) {
+        return job != null && List.of("QUEUED", "RUNNING", "RETRY_WAIT")
+                .contains(job.getStatus());
+    }
+
+    private static boolean isAssetHistoryProduct(InvestmentProduct product) {
+        String productType = product.getProductType();
+        return "STOCK".equalsIgnoreCase(productType)
+                || "FUND".equalsIgnoreCase(productType)
+                || "MUTUAL_FUND".equalsIgnoreCase(productType);
     }
 
     private static void resetForRefresh(InvestmentDataJob job) {

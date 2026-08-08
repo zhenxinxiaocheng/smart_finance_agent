@@ -16,6 +16,11 @@ public class InvestmentProduct {
     @TableId(type = IdType.AUTO)
     private Long id;
     private String productType;
+    private String fundTypeRaw;
+    private String fundCategory;
+    private String classificationSource;
+    private String classificationVersion;
+    private LocalDateTime classifiedAt;
     private String market;
     private String code;
     private String name;

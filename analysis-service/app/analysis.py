@@ -5,6 +5,7 @@ import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from .fund_classification import is_known_fund_category
 from .strategy_config import StrategyConfig, load_strategy_config
 from .technical_outlook import TechnicalObservation, evaluate_outlook
 
@@ -477,14 +478,74 @@ def _maximum_drawdown(values: Sequence[float]) -> tuple[float, int, int]:
     return worst * 100, worst_peak_index, trough_index
 
 
-def analyze_fund(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def _current_drawdown(values: Sequence[float]) -> tuple[float, int]:
+    if not values:
+        return 0.0, 0
+    peak_index = max(range(len(values)), key=lambda index: values[index])
+    peak = values[peak_index]
+    drawdown = (values[-1] / peak - 1) * 100 if peak else 0.0
+    return drawdown, peak_index
+
+
+def _drawdown_status(current_drawdown: float, max_drawdown: float) -> str:
+    rounded = _round(current_drawdown, 2)
+    if rounded is not None and rounded >= -0.01:
+        return "RECOVERED"
+    if current_drawdown > max_drawdown:
+        return "RECOVERING"
+    return "IN_DRAWDOWN"
+
+
+def _annualized_volatility(values: Sequence[float]) -> float:
+    daily_returns = [
+        values[index] / values[index - 1] - 1
+        for index in range(1, len(values))
+        if values[index - 1]
+    ]
+    if len(daily_returns) > 1:
+        return statistics.stdev(daily_returns) * math.sqrt(
+            STRATEGY.integer("fund.annualization_days")
+        ) * 100
+    return 0.0
+
+
+def analyze_fund(
+    records: Iterable[Mapping[str, Any]],
+    horizons: Mapping[str, Mapping[str, Any]] | None = None,
+    primary_horizon: str | None = None,
+    fund_category: str | None = None,
+) -> dict[str, Any]:
+    normalized_category = str(fund_category).strip() if fund_category is not None else ""
+    if not is_known_fund_category(normalized_category):
+        return {
+            "status": "INSUFFICIENT",
+            "strategyVersion": STRATEGY.version,
+            "analysisMode": "DESCRIPTIVE_ONLY",
+            "adviceStatus": "UNAVAILABLE",
+            "reasonCode": "FUND_CATEGORY_UNAVAILABLE",
+            "reason": "基金类型尚未完成可靠分类，已停止生成操作建议",
+            "fundCategory": normalized_category or None,
+            "score": None,
+            "verdict": "WAIT",
+            "action": "WAIT",
+            "horizons": {},
+            "series": [],
+        }
     quotes = _normalized_quotes(records)
     minimum_history = STRATEGY.integer("fund.minimum_history_days")
     if len(quotes) < minimum_history:
         return {
             "status": "INSUFFICIENT", "series": [],
             "strategyVersion": STRATEGY.version,
+            "analysisMode": "DESCRIPTIVE_ONLY",
+            "adviceStatus": "UNAVAILABLE",
+            "reasonCode": "INSUFFICIENT_HISTORY",
             "reason": "可用历史数据不足以启动当前基金策略",
+            "fundCategory": normalized_category,
+            "score": None,
+            "verdict": "WAIT",
+            "action": "WAIT",
+            "horizons": {},
             "availableHistoryDays": len(quotes),
             "requiredHistoryDays": minimum_history,
         }
@@ -494,56 +555,30 @@ def analyze_fund(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     ma_periods = sorted(set(STRATEGY.integer_list("fund.moving_average_periods")
                             + [fast_average_period, slow_average_period]))
     ma = {period: _moving_average(values, period) for period in ma_periods}
-    daily_returns = [values[index] / values[index - 1] - 1 for index in range(1, len(values)) if values[index - 1]]
-    annualized_volatility = statistics.stdev(daily_returns) * math.sqrt(
-        STRATEGY.integer("fund.annualization_days")) * 100 if len(daily_returns) > 1 else 0.0
+    annualized_volatility = _annualized_volatility(values)
     max_drawdown, peak_index, trough_index = _maximum_drawdown(values)
     recovered = values[-1] >= values[peak_index] if peak_index < len(values) else False
-    latest_fast_average = ma[fast_average_period][-1] or values[-1]
-    latest_slow_average = ma[slow_average_period][-1]
-    return_metrics = []
-    returns_by_code: dict[str, float | None] = {}
-    for configured_period in STRATEGY.object_list("fund.return_periods"):
-        code = str(configured_period["code"])
-        days = int(configured_period["days"])
-        value = _period_return(values, days)
-        returns_by_code[code] = value
-        return_metrics.append({
-            "code": code,
-            "displayName": str(configured_period["display_name"]),
-            "days": days,
-            "value": _round(value, 2),
-        })
-    short_return = returns_by_code.get(STRATEGY.text("fund.short_return_code"))
-    medium_return = returns_by_code.get(STRATEGY.text("fund.medium_return_code"))
-    long_return = returns_by_code.get(STRATEGY.text("fund.long_return_code"))
-    score = STRATEGY.number("fund.score.base")
-    short_clip = STRATEGY.number("fund.score.short_return_clip")
-    medium_clip = STRATEGY.number("fund.score.medium_return_clip")
-    score += max(-short_clip, min(short_clip, (short_return or 0)
-                                  * STRATEGY.number("fund.score.short_return_weight")))
-    score += max(-medium_clip, min(medium_clip, (medium_return or 0)
-                                   * STRATEGY.number("fund.score.medium_return_weight")))
-    average_adjustment = STRATEGY.number("fund.score.above_average_adjustment")
-    score += average_adjustment if values[-1] >= latest_fast_average else -average_adjustment
-    score -= max(0, min(
-        STRATEGY.number("fund.score.drawdown_penalty_cap"),
-        abs(max_drawdown) - STRATEGY.number("fund.score.drawdown_penalty_start"),
-    ))
-    score = _score_clamp(score)
-    if (max_drawdown <= STRATEGY.number("fund.actions.pause_drawdown_maximum")
-            and values[-1] < latest_fast_average):
-        action = "PAUSE"
-    elif (long_return is not None
-          and long_return >= STRATEGY.number("fund.actions.take_profit_long_return_minimum")
-          and values[-1] > latest_fast_average
-          * STRATEGY.number("fund.actions.take_profit_price_to_average_ratio")):
-        action = "TAKE_PROFIT"
-    elif (values[-1] >= latest_fast_average
-          and (latest_slow_average is None or latest_fast_average >= latest_slow_average)):
-        action = "ACCUMULATE"
-    else:
-        action = "HOLD"
+    current_drawdown, current_peak_index = _current_drawdown(values)
+    current_drawdown_rounded = _round(current_drawdown, 2)
+    drawdown_status = _drawdown_status(current_drawdown, max_drawdown)
+    full_history = {
+        "scope": "VALIDATED_ANALYSIS_WINDOW",
+        "recordCount": len(quotes),
+        "startDate": quotes[0]["date"],
+        "endDate": quotes[-1]["date"],
+        "windowReturn": _round(
+            (values[-1] / values[0] - 1) * 100 if values[0] else None,
+            2,
+        ),
+        "annualizedVolatility": _round(annualized_volatility, 2),
+        "maxDrawdown": _round(max_drawdown, 2),
+        "drawdownRecovered": recovered,
+        "drawdownPeakDate": quotes[peak_index]["date"],
+        "drawdownTroughDate": quotes[trough_index]["date"],
+        "currentDrawdown": current_drawdown_rounded,
+        "currentDrawdownPeakDate": quotes[current_peak_index]["date"],
+        "drawdownStatus": drawdown_status,
+    }
     series: list[dict[str, Any]] = []
     for index, quote in enumerate(quotes):
         item = {
@@ -553,19 +588,115 @@ def analyze_fund(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         for period in ma:
             item[f"ma{period}"] = _round(ma[period][index])
         series.append(item)
+    if not horizons:
+        return_metrics = []
+        returns_by_code: dict[str, float | None] = {}
+        for configured_period in STRATEGY.object_list("fund.return_periods"):
+            code = str(configured_period["code"])
+            days = int(configured_period["days"])
+            value = _period_return(values, days)
+            returns_by_code[code] = value
+            return_metrics.append({
+                "code": code,
+                "displayName": str(configured_period["display_name"]),
+                "days": days,
+                "value": _round(value, 2),
+            })
+        return {
+            "status": "READY",
+            "analysisMode": "DESCRIPTIVE_ONLY",
+            "adviceStatus": "UNAVAILABLE",
+            "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
+            "reason": "该基金类型尚无通过验证的专属策略，仅展示历史统计",
+            "fundCategory": normalized_category,
+            "strategyVersion": STRATEGY.version,
+            "indicatorPeriods": {"movingAverages": ma_periods},
+            "fullHistory": full_history,
+            "score": None,
+            "verdict": "WAIT",
+            "returnMetrics": return_metrics,
+            "annualizedVolatility": _round(annualized_volatility, 2),
+            "maxDrawdown": _round(max_drawdown, 2),
+            "drawdownRecovered": recovered,
+            "drawdownPeakDate": quotes[peak_index]["date"],
+            "drawdownTroughDate": quotes[trough_index]["date"],
+            "action": "WAIT",
+            "series": series,
+        }
+
+    period_results: dict[str, dict[str, Any]] = {}
+    return_metrics = []
+    for code, configured in horizons.items():
+        min_days = int(configured.get("minDays", configured.get("minimumDays")))
+        max_days = int(configured.get("maxDays", configured.get("maximumDays")))
+        target_days = int(configured.get(
+            "targetDays",
+            configured.get("targetHoldingDays", (min_days + max_days) // 2),
+        ))
+        target_days = max(1, target_days)
+        complete = len(values) > target_days
+        period_values = values[-(target_days + 1):] if complete else values
+        period_quotes = quotes[-len(period_values):]
+        period_return = _period_return(values, target_days)
+        period_volatility = _annualized_volatility(period_values)
+        period_max_drawdown, period_peak_index, period_trough_index = _maximum_drawdown(
+            period_values
+        )
+        period_current_drawdown, period_current_peak_index = _current_drawdown(period_values)
+        direction = (
+            "POSITIVE"
+            if period_return is not None and period_return > 0
+            else "NEGATIVE"
+            if period_return is not None and period_return < 0
+            else "NEUTRAL"
+        )
+        period_results[code] = {
+            "status": "READY" if complete and period_return is not None else "LIMITED",
+            "minimumDays": min_days,
+            "maximumDays": max_days,
+            "targetDays": target_days,
+            "availableHistoryDays": len(values),
+            "requiredHistoryDays": target_days,
+            "return": _round(period_return, 2),
+            "annualizedVolatility": _round(period_volatility, 2),
+            "maxDrawdown": _round(period_max_drawdown, 2),
+            "drawdownPeakDate": period_quotes[period_peak_index]["date"],
+            "drawdownTroughDate": period_quotes[period_trough_index]["date"],
+            "currentDrawdown": _round(period_current_drawdown, 2),
+            "currentDrawdownPeakDate": period_quotes[period_current_peak_index]["date"],
+            "drawdownStatus": _drawdown_status(
+                period_current_drawdown, period_max_drawdown
+            ),
+            "direction": direction,
+            "verdict": "WAIT",
+            "action": "WAIT",
+            "adviceStatus": "UNAVAILABLE",
+            "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
+        }
+        return_metrics.append({
+            "code": code,
+            "displayName": code,
+            "days": target_days,
+            "value": _round(period_return, 2),
+        })
+
+    primary_code = primary_horizon if primary_horizon in period_results else next(iter(period_results))
     return {
         "status": "READY",
+        "analysisMode": "DESCRIPTIVE_ONLY",
+        "adviceStatus": "UNAVAILABLE",
+        "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
+        "reason": "该基金类型尚无通过验证的专属策略，仅展示历史统计",
+        "fundCategory": normalized_category,
         "strategyVersion": STRATEGY.version,
         "indicatorPeriods": {"movingAverages": ma_periods},
-        "score": _round(score, 1),
-        "verdict": _verdict(score),
+        "fullHistory": full_history,
+        "horizons": period_results,
+        "primaryHorizon": primary_code,
+        "score": None,
+        "verdict": "WAIT",
+        "action": "WAIT",
         "returnMetrics": return_metrics,
-        "annualizedVolatility": _round(annualized_volatility, 2),
-        "maxDrawdown": _round(max_drawdown, 2),
-        "drawdownRecovered": recovered,
-        "drawdownPeakDate": quotes[peak_index]["date"],
-        "drawdownTroughDate": quotes[trough_index]["date"],
-        "action": action,
         "series": series,
     }
 

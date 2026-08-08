@@ -27,7 +27,23 @@ public class AnalysisServiceClient {
                                   BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
                                   BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
                                   BigDecimal volumeRatio, BigDecimal amplitude,
-                                  List<String> warnings, LocalDate inceptionDate) {
+                                  List<String> warnings, LocalDate inceptionDate,
+                                  String fundTypeRaw, String fundCategory,
+                                  String classificationSource, String classificationVersion) {
+        public ResolvedProduct(String productType, String code, String name, String market,
+                               String currency, String provider, LocalDate dataDate,
+                               BigDecimal latestPrice, BigDecimal previousClose,
+                               BigDecimal changeAmount, BigDecimal changePercent,
+                               BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
+                               BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
+                               BigDecimal volumeRatio, BigDecimal amplitude,
+                               List<String> warnings, LocalDate inceptionDate) {
+            this(productType, code, name, market, currency, provider, dataDate, latestPrice,
+                    previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
+                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, inceptionDate,
+                    null, null, null, null);
+        }
+
         public ResolvedProduct(String productType, String code, String name, String market,
                                String currency, String provider, LocalDate dataDate,
                                BigDecimal latestPrice, BigDecimal previousClose,
@@ -38,14 +54,16 @@ public class AnalysisServiceClient {
                                List<String> warnings) {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
                     previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
-                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, null);
+                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, null,
+                    null, null, null, null);
         }
 
         public ResolvedProduct(String productType, String code, String name, String market,
                                String currency, String provider, LocalDate dataDate,
                                BigDecimal latestPrice, List<String> warnings) {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
-                    null, null, null, null, null, null, null, null, null, null, null, warnings, null);
+                    null, null, null, null, null, null, null, null, null, null, null, warnings, null,
+                    null, null, null, null);
         }
     }
 
@@ -168,7 +186,27 @@ public class AnalysisServiceClient {
     }
 
     public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records) {
-        return postAnalysis("/internal/v1/analysis/fund", Map.of("records", records));
+        return fundAnalysis(records, null, Map.of(), null);
+    }
+
+    public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records,
+                                            Map<String, Map<String, Integer>> horizons,
+                                            String primaryHorizon) {
+        return fundAnalysis(records, null, horizons, primaryHorizon);
+    }
+
+    public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records,
+                                            String fundCategory,
+                                            Map<String, Map<String, Integer>> horizons,
+                                            String primaryHorizon) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("records", records);
+        if (fundCategory != null && !fundCategory.isBlank()) {
+            body.put("fundCategory", fundCategory);
+        }
+        body.put("horizons", horizons);
+        body.put("primaryHorizon", primaryHorizon);
+        return postAnalysis("/internal/v1/analysis/fund", body);
     }
 
     public Map<String, Object> backtest(List<? extends Map<String, ?>> records,
@@ -325,8 +363,19 @@ public class AnalysisServiceClient {
                 response.get("warnings") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of(),
                 response.get("inceptionDate") == null
                         ? null
-                        : LocalDate.parse(String.valueOf(response.get("inceptionDate")))
+                        : LocalDate.parse(String.valueOf(response.get("inceptionDate"))),
+                text(response, "fundTypeRaw"),
+                text(response, "fundCategory"),
+                text(response, "classificationSource"),
+                text(response, "classificationVersion")
         );
+    }
+
+    private static String text(Map<String, Object> response, String key) {
+        Object value = response.get(key);
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
     }
 
     @SuppressWarnings("unchecked")

@@ -53,11 +53,11 @@ test('股票中性结论无确认歧义且基金使用专用动作布局', () =>
   assert.doesNotMatch(pageSource, /等待确认/)
   assert.match(pageSource, /近期表现与风险概览/)
   assert.match(pageSource, /v-if="asset\.productType === 'MUTUAL_FUND'" class="space-y-2\.5"/)
-  assert.match(pageSource, /v-if="asset\.productType !== 'MUTUAL_FUND'" class="space-y-3"/)
+  assert.match(pageSource, /v-if="asset\.productType !== 'MUTUAL_FUND'" class="[^"]*space-y-3"/)
 })
 
 test('平板改为上下布局且手机端压缩关键指标和图表高度', () => {
-  assert.match(pageSource, /<section class="grid gap-4 xl:grid-cols-12">\s*<Card class="gap-0 py-4 shadow-sm xl:col-span-9">/)
+  assert.match(pageSource, /<section class="[^"]*xl:grid-cols-12">\s*<Card class="gap-0 py-4 shadow-sm xl:col-span-9">/)
   assert.match(pageSource, /text-\[15px\].*sm:text-xl/)
   assert.match(chartSource, /h-\[360px\].*sm:h-\[420px\].*md:h-\[500px\]/)
 })
@@ -82,9 +82,14 @@ test('只解释专业指标且说明用户如何阅读结果', () => {
 })
 
 test('基金收益窗口由策略结果动态渲染', () => {
-  assert.match(pageSource, /technical\.value\.returnMetrics/)
-  assert.match(pageSource, /v-for="metric in fundReturnMetrics"/)
-  assert.doesNotMatch(pageSource, /oneMonthReturn|threeMonthReturn|oneYearReturn/)
+  assert.match(pageSource, /activeFundPeriod/)
+  assert.match(pageSource, /fundFullHistoryMetrics/)
+  assert.match(pageSource, /周期最大回撤/)
+  assert.match(pageSource, /分析数据区间最大回撤/)
+  assert.doesNotMatch(pageSource, /成立以来/)
+  assert.match(pageSource, /当前回撤/)
+  assert.match(pageSource, /drawdownStatusLabel/)
+  assert.doesNotMatch(pageSource, /fundReturnMetrics|oneMonthReturn|threeMonthReturn|oneYearReturn/)
 })
 
 test('基本面数据要求与 AI 冷却时间由后端结果动态展示', () => {
@@ -135,4 +140,10 @@ test('只有存在可用模型时才把量化结果作为独立次级模块展�
   assert.doesNotMatch(pageSource, /topFactors/)
   assert.match(pageSource, /NO_TRADE/)
   assert.match(horizonDialogSource, /targetHoldingDays/)
+})
+
+test('详情页自动分析且不提供手动刷新分析按钮', () => {
+  assert.doesNotMatch(pageSource, /刷新分析/)
+  assert.doesNotMatch(pageSource, /refreshInvestmentAssetAnalysisAPI/)
+  assert.doesNotMatch(pageSource, /async function refreshAnalysis/)
 })

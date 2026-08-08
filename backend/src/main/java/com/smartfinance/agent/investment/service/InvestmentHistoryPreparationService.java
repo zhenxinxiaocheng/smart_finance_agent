@@ -34,6 +34,7 @@ public class InvestmentHistoryPreparationService {
     private final ProductDailyQuoteMapper quoteMapper;
     private final InvestmentDataQualityService dataQualityService;
     private final InvestmentSyncWorker syncWorker;
+    private final FundClassificationService classificationService;
     private final Clock clock;
 
     @Autowired
@@ -41,8 +42,9 @@ public class InvestmentHistoryPreparationService {
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker) {
-        this(productMapper, quoteMapper, dataQualityService, syncWorker,
+            InvestmentSyncWorker syncWorker,
+            FundClassificationService classificationService) {
+        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService,
                 Clock.system(RUNTIME_ZONE));
     }
 
@@ -51,11 +53,13 @@ public class InvestmentHistoryPreparationService {
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
             InvestmentSyncWorker syncWorker,
+            FundClassificationService classificationService,
             Clock clock) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.dataQualityService = dataQualityService;
         this.syncWorker = syncWorker;
+        this.classificationService = classificationService;
         this.clock = clock;
     }
 
@@ -68,6 +72,7 @@ public class InvestmentHistoryPreparationService {
         if (product == null) {
             throw new IllegalStateException("历史任务对应的产品不存在");
         }
+        product = classificationService.enrichIfMissing(product);
 
         boolean initialLoad = !Boolean.TRUE.equals(product.getHistoryCoverageComplete())
                 || product.getHistoryEndDate() == null;

@@ -7,7 +7,9 @@ import com.smartfinance.agent.investment.domain.HorizonSetting;
 import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.dto.InvestmentAssetDetailResponse;
 import com.smartfinance.agent.investment.dto.InvestmentAssetView;
+import com.smartfinance.agent.investment.entity.InvestmentAnalysisSnapshot;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
+import com.smartfinance.agent.investment.entity.InvestmentDataQualitySnapshot;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentAnalysisSnapshotMapper;
@@ -33,6 +35,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -70,6 +73,13 @@ class InvestmentDataJobWorkerTest {
                 .thenReturn(true);
         InvestmentHorizonProperties horizonProperties = new InvestmentHorizonProperties();
         horizonProperties.setMinimumHistoryTradingDays(20);
+        horizonProperties.setMaxHistoryTradingDays(2500);
+        horizonProperties.setHistoryMultiplier(3);
+        horizonProperties.setInteractiveHistoryMultiplier(1);
+        horizonProperties.setIndicatorWarmupTradingDays(250);
+        horizonProperties.setCalendarDaysPerYear(365);
+        horizonProperties.setTradingDaysPerYear(240);
+        horizonProperties.setCalendarBufferDays(30);
         clock = new MutableClock(Instant.parse("2026-07-22T02:00:00Z"), SHANGHAI);
         worker = new InvestmentDataJobWorker(
                 jobService,
@@ -177,13 +187,32 @@ class InvestmentDataJobWorkerTest {
                 .thenReturn(true);
         when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
         when(analysisService.retryData(7L, 11L)).thenReturn(detailWithQuotes(20));
+        when(analysisService.refresh(7L, 11L)).thenReturn(detailWithState("READY"));
 
         worker.scan();
 
         verify(analysisService).retryData(7L, 11L);
-        verify(analysisService, never()).refresh(any(), any());
+        verify(analysisService).refresh(7L, 11L);
         verify(jobService).markSucceeded(eq(91L), anyString(), eq(20), eq(NOW));
         verify(quantAutomationService).onDataReady(7L, 11L);
+    }
+
+    @Test
+    void forcedHistoryJobRetriesWhenNewAnalysisWasNotProduced() {
+        InvestmentDataJob job = job(true, 0, "QUEUED");
+        job.setJobType("FUND_NAV_HISTORY");
+        when(jobService.pendingJobs(2)).thenReturn(List.of(job));
+        when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
+        when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
+        when(analysisService.retryData(7L, 11L)).thenReturn(detailWithQuotes(20));
+        when(analysisService.refresh(7L, 11L)).thenReturn(detailWithState("STABLE_CACHE"));
+
+        worker.scan();
+
+        verify(jobService).markRetryWait(eq(91L), anyString(), eq(1),
+                eq(NOW.plusSeconds(60)), contains("新分析"), eq(NOW));
+        verify(jobService, never()).markSucceeded(any(), anyString(), anyInt(), any());
+        verify(quantAutomationService, never()).onDataReady(any(), any());
     }
 
     @Test
@@ -412,25 +441,23 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void readOnlyDetailQueuesLegacyAssetOnceAndExposesHistoryJobWithoutExternalCalls() {
+    void detailAutoAnalyzesAndQueuesHistoryWhenDataInsufficient() {
         ReadOnlyFixture fixture = readOnlyFixture(5);
         Map<String, Object> queued = Map.of(
                 "status", "QUEUED", "recordCount", 0, "attemptCount", 0);
         when(fixture.jobService().statusForAsset(7L, 11L))
-                .thenReturn(Map.of(), queued, queued);
+                .thenReturn(Map.of(), queued);
 
         InvestmentAssetDetailResponse first = fixture.service().detail(7L, 11L);
-        InvestmentAssetDetailResponse second = fixture.service().detail(7L, 11L);
 
         assertThat(first.getSourceStatus()).containsEntry("historyJob", queued);
-        assertThat(second.getSourceStatus()).containsEntry("historyJob", queued);
+        verify(fixture.analysisClient(), times(1)).technicalAnalysis(any(), any(), anyString(), any());
         verify(fixture.jobService(), times(1))
                 .ensureQueued(7L, 11L, 21L, "STOCK", false);
-        verifyNoInteractions(fixture.analysisClient(), fixture.syncWorker());
     }
 
     @Test
-    void readOnlyDetailDoesNotQueueLegacyAssetWithEnoughHistory() {
+    void detailAutoAnalyzesAndKeepsHistoryJobWhenEnoughHistory() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
 
@@ -438,9 +465,109 @@ class InvestmentDataJobWorkerTest {
 
         assertThat(detail.getSourceStatus()).containsEntry("historyJob", Map.of());
         assertThat(detail.getPersonalizedAction()).isEmpty();
+        verify(fixture.analysisClient()).technicalAnalysis(any(), any(), anyString(), any());
         verify(fixture.jobService(), never())
                 .ensureQueued(any(), any(), any(), anyString(), anyBoolean());
-        verifyNoInteractions(fixture.analysisClient(), fixture.syncWorker());
+    }
+
+    @Test
+    void blockedQualityNeverReturnsHistoricalAnalysisSnapshot() throws Exception {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        InvestmentAnalysisSnapshot snapshot = historicalSnapshot();
+        when(fixture.snapshotMapper().selectOne(any())).thenReturn(snapshot);
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "blocked-dataset",
+                "qualityRuleSetVersion", "quality-v1",
+                "status", "BLOCKED",
+                "decision", "BLOCK"
+        ));
+        when(fixture.dataQualityService().resolve(any(), any(), any(), anyBoolean()))
+                .thenReturn(blockedEvaluation());
+        when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
+
+        InvestmentAssetDetailResponse detail = fixture.service().detail(7L, 11L);
+
+        assertThat(detail.getTechnicalAnalysis())
+                .containsEntry("status", "BLOCKED")
+                .doesNotContainKeys("score", "verdict", "outlook", "action");
+        assertThat(detail.getBacktestSummary())
+                .containsEntry("status", "BLOCKED")
+                .doesNotContainKey("occurrences");
+        assertThat(detail.getAiExplanation()).isEmpty();
+        assertThat(detail.getSourceStatus())
+                .containsEntry("dataState", "BLOCKED")
+                .containsEntry("historicalCache", false);
+        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+        verify(fixture.analysisClient(), never())
+                .technicalAnalysis(any(), any(), anyString(), any());
+    }
+
+    @Test
+    void qualityServiceFailureIsWaitingAndNeverMasqueradesAsDataBlock() throws Exception {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        InvestmentAnalysisSnapshot snapshot = historicalSnapshot();
+        when(fixture.snapshotMapper().selectOne(any())).thenReturn(snapshot);
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "previous-dataset",
+                "qualityRuleSetVersion", "quality-v1",
+                "status", "PASS",
+                "decision", "ALLOW"
+        ));
+        when(fixture.dataQualityService().resolve(any(), any(), any(), anyBoolean()))
+                .thenThrow(new IllegalStateException("provider timeout"));
+        when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
+
+        InvestmentAssetDetailResponse detail = fixture.service().detail(7L, 11L);
+
+        assertThat(detail.getTechnicalAnalysis())
+                .containsEntry("status", "UNAVAILABLE")
+                .doesNotContainKeys("score", "verdict", "outlook", "action");
+        assertThat(detail.getAiExplanation()).isEmpty();
+        assertThat(detail.getSourceStatus())
+                .containsEntry("dataState", "WAITING")
+                .containsEntry("qualityStatus", "UNAVAILABLE")
+                .containsEntry("qualityDecision", "WAITING")
+                .containsEntry("historicalCache", false);
+        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+    }
+
+    @Test
+    void recoveredQualityRecomputesAndReplacesHistoricalSnapshot() throws Exception {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        InvestmentAnalysisSnapshot snapshot = historicalSnapshot();
+        when(fixture.snapshotMapper().selectOne(any())).thenReturn(snapshot);
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(
+                Map.of(
+                        "datasetVersion", "blocked-dataset",
+                        "qualityRuleSetVersion", "quality-v1",
+                        "status", "BLOCKED",
+                        "decision", "BLOCK"
+                ),
+                Map.of(
+                        "datasetVersion", "dataset-v2",
+                        "qualityRuleSetVersion", "quality-v1",
+                        "status", "PASS",
+                        "decision", "ALLOW"
+                )
+        );
+        when(fixture.dataQualityService().resolve(any(), any(), any(), anyBoolean()))
+                .thenReturn(blockedEvaluation(), allowEvaluation(20));
+        when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
+
+        InvestmentAssetDetailResponse blocked = fixture.service().detail(7L, 11L);
+        InvestmentAssetDetailResponse recovered = fixture.service().detail(7L, 11L);
+
+        assertThat(blocked.getTechnicalAnalysis()).containsEntry("status", "BLOCKED");
+        assertThat(recovered.getTechnicalAnalysis())
+                .containsEntry("status", "READY")
+                .containsEntry("score", 60);
+        assertThat(recovered.getSourceStatus())
+                .containsEntry("dataState", "READY")
+                .containsEntry("historicalCache", false);
+        assertThat(snapshot.getTechnicalJson()).contains("\"score\":60").doesNotContain("\"score\":88");
+        verify(fixture.analysisClient(), times(1))
+                .technicalAnalysis(any(), any(), anyString(), any());
+        verify(fixture.snapshotMapper(), atLeastOnce()).updateById(snapshot);
     }
 
     private static InvestmentDataJob job(boolean forceRefresh, int attempts, String status) {
@@ -462,6 +589,12 @@ class InvestmentDataJobWorkerTest {
         return detail;
     }
 
+    private static InvestmentAssetDetailResponse detailWithState(String dataState) {
+        InvestmentAssetDetailResponse detail = new InvestmentAssetDetailResponse();
+        detail.setSourceStatus(Map.of("dataState", dataState, "historicalCache", false));
+        return detail;
+    }
+
     private static ReadOnlyFixture readOnlyFixture(int quoteCount) {
         InvestmentAssetService assetService = mock(InvestmentAssetService.class);
         InvestmentProductMapper productMapper = mock(InvestmentProductMapper.class);
@@ -469,11 +602,20 @@ class InvestmentDataJobWorkerTest {
         InvestmentHorizonService horizonService = mock(InvestmentHorizonService.class);
         InvestmentHorizonProperties horizonProperties = new InvestmentHorizonProperties();
         horizonProperties.setMinimumHistoryTradingDays(20);
+        horizonProperties.setMaxHistoryTradingDays(2500);
+        horizonProperties.setHistoryMultiplier(3);
+        horizonProperties.setInteractiveHistoryMultiplier(1);
+        horizonProperties.setIndicatorWarmupTradingDays(250);
+        horizonProperties.setCalendarDaysPerYear(365);
+        horizonProperties.setTradingDaysPerYear(240);
+        horizonProperties.setCalendarBufferDays(30);
         horizonProperties.setAnalysisRuleVersion("rule-test");
         InvestmentRuntimeProperties runtimeProperties = new InvestmentRuntimeProperties();
+        runtimeProperties.getMarket().setZone(ZoneId.of("Asia/Shanghai"));
         runtimeProperties.getDataQuality().setStockAdjustType("QFQ");
         runtimeProperties.getDataQuality().setFundAdjustType("NONE");
         runtimeProperties.getAi().setCooldownMinutes(30);
+        runtimeProperties.getAnalysis().setStrategyVersion("technical-strategy-v3");
         InvestmentAnalysisSnapshotMapper snapshotMapper = mock(InvestmentAnalysisSnapshotMapper.class);
         AnalysisServiceClient analysisClient = mock(AnalysisServiceClient.class);
         InvestmentDataQualityService dataQualityService = mock(InvestmentDataQualityService.class);
@@ -510,23 +652,149 @@ class InvestmentDataJobWorkerTest {
         when(horizonService.resolve(7L, 11L)).thenReturn(profile);
         when(quoteMapper.selectList(any())).thenReturn(quotes);
         when(snapshotMapper.selectOne(any())).thenReturn(null);
-        when(dataQualityService.latestStatus(product)).thenReturn(Map.of());
         when(wealthService.overview(7L)).thenReturn(new WealthOverviewResponse());
+        when(dataQualityService.resolve(eq(product), any(), any(), anyBoolean()))
+                .thenReturn(allowEvaluation(quoteCount));
+        List<Map<String, Object>> records = allowEvaluation(quoteCount).records();
+        Map<String, Object> technical = new LinkedHashMap<>();
+        technical.put("status", "READY");
+        technical.put("strategyVersion", "technical-strategy-v3");
+        technical.put("score", 60);
+        technical.put("series", records);
+        technical.put("horizons", Map.of("SHORT", Map.of("status", "READY")));
+        technical.put("outlook", Map.of("direction", "BULLISH", "confidence", "MEDIUM"));
+        when(analysisClient.technicalAnalysis(any(), any(), anyString(), any()))
+                .thenReturn(technical);
+        when(analysisClient.fundamentalAnalysis(anyString(), anyString()))
+                .thenReturn(Map.of(
+                        "status", "READY",
+                        "verdict", "FAIR",
+                        "strategyVersion", "technical-strategy-v3"
+                ));
+        when(analysisClient.backtest(any(), any()))
+                .thenReturn(Map.of(
+                        "status", "READY",
+                        "strategyVersion", "technical-strategy-v3",
+                        "horizons", Map.of()
+                ));
+        InvestmentFinancialWarningEngine warningEngine = mock(InvestmentFinancialWarningEngine.class);
+        when(warningEngine.evaluate(any())).thenReturn(List.of());
 
         InvestmentAnalysisServiceImpl service = new InvestmentAnalysisServiceImpl(
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
                 runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
                 wealthService, financialProfileMapper, aiExplanationService,
                 new ObjectMapper(), jobService,
-                new InvestmentFinancialWarningEngine(runtimeProperties),
+                warningEngine,
                 strategyMapper, monitorMapper);
-        return new ReadOnlyFixture(service, jobService, analysisClient, syncWorker);
+        return new ReadOnlyFixture(
+                service,
+                jobService,
+                analysisClient,
+                syncWorker,
+                snapshotMapper,
+                dataQualityService
+        );
+    }
+
+    private static InvestmentAnalysisSnapshot historicalSnapshot() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        InvestmentAnalysisSnapshot snapshot = new InvestmentAnalysisSnapshot();
+        snapshot.setId(31L);
+        snapshot.setUserId(7L);
+        snapshot.setAssetId(11L);
+        snapshot.setRuleVersion("rule-test");
+        snapshot.setAnalysisStatus("READY");
+        snapshot.setTechnicalJson(objectMapper.writeValueAsString(Map.of(
+                "status", "READY",
+                "score", 88,
+                "verdict", "FAVORABLE",
+                "outlook", Map.of("direction", "BULLISH")
+        )));
+        snapshot.setFundamentalJson(objectMapper.writeValueAsString(Map.of(
+                "status", "READY",
+                "verdict", "ATTRACTIVE"
+        )));
+        snapshot.setFundJson("{}");
+        snapshot.setBacktestJson(objectMapper.writeValueAsString(Map.of(
+                "status", "READY",
+                "occurrences", 42
+        )));
+        snapshot.setSourceStatusJson("{}");
+        snapshot.setAiExplanation(objectMapper.writeValueAsString(Map.of(
+                "summary", "旧分析结论"
+        )));
+        return snapshot;
+    }
+
+    private static InvestmentDataQualityService.Evaluation blockedEvaluation() {
+        InvestmentDataQualitySnapshot snapshot = new InvestmentDataQualitySnapshot();
+        snapshot.setDatasetVersion("blocked-dataset");
+        snapshot.setQualityStatus("BLOCKED");
+        snapshot.setQualityRuleSetVersion("quality-v1");
+        snapshot.setDecision("BLOCK");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("records", List.of());
+        response.put("manifest", Map.of("provider", "TEST", "adapterVersion", "v1"));
+        response.put("qualityReport", Map.of(
+                "status", "BLOCKED",
+                "decision", "BLOCK",
+                "qualityRuleSetVersion", "quality-v1",
+                "issues", List.of(Map.of(
+                        "ruleCode", "COMMON_POSITIVE_VALUES",
+                        "severity", "CRITICAL",
+                        "outcome", "FAIL",
+                        "message", "净值必须为正数"
+                ))
+        ));
+        response.put("secondaryDatasetVersions", List.of());
+        return new InvestmentDataQualityService.Evaluation(
+                snapshot,
+                response,
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static InvestmentDataQualityService.Evaluation allowEvaluation(int recordCount) {
+        List<Map<String, Object>> records = IntStream.range(0, recordCount).mapToObj(index -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("data_date", LocalDate.of(2026, 6, 1).plusDays(index).toString());
+            row.put("open", "1");
+            row.put("high", "1");
+            row.put("low", "1");
+            row.put("close", "1");
+            row.put("volume", "1");
+            return row;
+        }).toList();
+        InvestmentDataQualitySnapshot snapshot = new InvestmentDataQualitySnapshot();
+        snapshot.setDatasetVersion("dataset-v2");
+        snapshot.setQualityStatus("PASS");
+        snapshot.setQualityRuleSetVersion("quality-v1");
+        snapshot.setDecision("ALLOW");
+        snapshot.setRequestedStartDate(LocalDate.of(2026, 6, 1));
+        snapshot.setRequestedEndDate(LocalDate.of(2026, 6, 1).plusDays(recordCount - 1L));
+        snapshot.setSampleStartDate(snapshot.getRequestedStartDate());
+        snapshot.setSampleEndDate(snapshot.getRequestedEndDate());
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("records", records);
+        response.put("manifest", Map.of("provider", "TEST", "adapterVersion", "v1"));
+        response.put("qualityReport", Map.of(
+                "status", "PASS",
+                "decision", "ALLOW",
+                "qualityRuleSetVersion", "quality-v1",
+                "issues", List.of()
+        ));
+        response.put("secondaryDatasetVersions", List.of());
+        return new InvestmentDataQualityService.Evaluation(snapshot, response, records, List.of());
     }
 
     private record ReadOnlyFixture(InvestmentAnalysisServiceImpl service,
                                    InvestmentDataJobService jobService,
                                    AnalysisServiceClient analysisClient,
-                                   InvestmentSyncWorker syncWorker) {
+                                   InvestmentSyncWorker syncWorker,
+                                   InvestmentAnalysisSnapshotMapper snapshotMapper,
+                                   InvestmentDataQualityService dataQualityService) {
     }
 
     private static final class MutableClock extends Clock {

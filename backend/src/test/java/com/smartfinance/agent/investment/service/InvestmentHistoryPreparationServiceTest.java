@@ -31,6 +31,7 @@ class InvestmentHistoryPreparationServiceTest {
     private ProductDailyQuoteMapper quoteMapper;
     private InvestmentDataQualityService dataQualityService;
     private InvestmentSyncWorker syncWorker;
+    private FundClassificationService classificationService;
     private InvestmentHistoryPreparationService service;
 
     @BeforeEach
@@ -39,9 +40,13 @@ class InvestmentHistoryPreparationServiceTest {
         quoteMapper = mock(ProductDailyQuoteMapper.class);
         dataQualityService = mock(InvestmentDataQualityService.class);
         syncWorker = mock(InvestmentSyncWorker.class);
+        classificationService = mock(FundClassificationService.class);
+        when(classificationService.enrichIfMissing(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         Clock clock = Clock.fixed(Instant.parse("2026-07-30T02:00:00Z"), SHANGHAI);
         service = new InvestmentHistoryPreparationService(
-                productMapper, quoteMapper, dataQualityService, syncWorker, clock);
+                productMapper, quoteMapper, dataQualityService, syncWorker,
+                classificationService, clock);
     }
 
     @Test
@@ -63,6 +68,7 @@ class InvestmentHistoryPreparationServiceTest {
         assertThat(result.sampleStartDate()).isEqualTo(LocalDate.of(2001, 8, 27));
         assertThat(result.sampleEndDate()).isEqualTo(LocalDate.of(2026, 7, 29));
         assertThat(result.coverageComplete()).isTrue();
+        verify(classificationService).enrichIfMissing(product);
         verify(dataQualityService).claim(evaluation);
         verify(syncWorker).persistDailyQuotes(product, evaluation.response());
         verify(productMapper).updateById(product);

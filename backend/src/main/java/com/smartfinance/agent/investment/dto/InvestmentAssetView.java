@@ -12,6 +12,10 @@ public class InvestmentAssetView {
     private Long accountId;
     private Long productId;
     private String productType;
+    private String fundTypeRaw;
+    private String fundCategory;
+    private String classificationSource;
+    private String classificationVersion;
     private String code;
     private String name;
     private String market;

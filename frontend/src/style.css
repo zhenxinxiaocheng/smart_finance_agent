@@ -145,6 +145,33 @@ a { text-decoration: none; color: inherit; }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
+.detail-fade-in {
+  animation: detail-fade-rise 0.28s cubic-bezier(0.22, 0.68, 0.36, 1) both;
+}
+
+.detail-delay-1 { animation-delay: 0.04s; }
+.detail-delay-2 { animation-delay: 0.08s; }
+.detail-delay-3 { animation-delay: 0.12s; }
+.detail-delay-4 { animation-delay: 0.16s; }
+.detail-delay-5 { animation-delay: 0.2s; }
+
+@keyframes detail-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-fade-in {
+    animation: none;
+  }
+}
+
 .page-container {
   max-width: 1400px;
   margin: 0 auto;

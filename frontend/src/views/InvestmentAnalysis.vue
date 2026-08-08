@@ -125,7 +125,7 @@ const refreshAssets = createPrioritizedRefreshRunner(async (force = false, silen
 })
 
 onMounted(() => {
-  refreshAssets(true).catch(() => loadAssets().catch(() => {}))
+  loadAssets().catch(() => {})
   loadHorizonProfile()
   stopRealtimePolling = startInvestmentRealtimePolling(force => refreshAssets(force, true))
   window.addEventListener('focus', refreshOnFocus)
@@ -172,7 +172,7 @@ async function saveHorizonProfile(payload) {
   }
 }
 
-function refreshOnFocus() { refreshAssets(true, true).catch(() => {}) }
+function refreshOnFocus() { refreshAssets(true, true).catch(() => loadAssets().catch(() => {})) }
 
 function refreshAfterAssetChange() { refreshAssets(true, true, true).catch(() => {}) }
 

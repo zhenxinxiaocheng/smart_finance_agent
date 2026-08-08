@@ -144,6 +144,13 @@
       "pause_drawdown_maximum": -20,
       "take_profit_long_return_minimum": 30,
       "take_profit_price_to_average_ratio": 1.08
+    },
+    "period": {
+      "favorable_return_percent": 5.0,
+      "weak_return_percent": -3.0,
+      "pause_return_percent": -5.0,
+      "high_volatility_percent": 30.0,
+      "return_weight": 1.0
     }
   },
   "fundamental": {

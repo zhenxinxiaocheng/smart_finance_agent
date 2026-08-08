@@ -202,7 +202,10 @@ class AnalysisEndpointsTest(unittest.TestCase):
              "netMargin": 10, "operatingCashFlow": 12, "debtRatio": 39, "currentRatio": 1.7,
              "pe": 20, "pb": 2.4, "dividendYield": 1.8},
         ]))
-        fund = fund_analysis(FundAnalysisRequest(records=price_records(260, step=0.03)))
+        fund = fund_analysis(FundAnalysisRequest(
+            records=price_records(260, step=0.03),
+            fundCategory="INDEX_FUND",
+        ))
         backtest = backtest_analysis(BacktestRequest(
             records=price_records(300),
             horizons={"WAVE": [7, 45], "PERSONAL_LONG": [120, 900]},
@@ -212,6 +215,38 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual("READY", fund["status"])
         self.assertGreater(backtest["horizons"]["WAVE"]["occurrences"], 0)
         self.assertEqual(510, backtest["horizons"]["PERSONAL_LONG"]["evaluationDays"])
+
+    def test_fund_endpoint_accepts_user_horizons_and_returns_full_history(self):
+        fund = fund_analysis(FundAnalysisRequest(
+            records=price_records(520, step=0.03),
+            horizons={
+                "SHORT": {"minDays": 5, "maxDays": 20, "targetDays": 10},
+                "MEDIUM": {"minDays": 20, "maxDays": 120, "targetDays": 60},
+            },
+            primaryHorizon="MEDIUM",
+            fundCategory="QDII_INDEX_FUND",
+        ))
+
+        self.assertEqual("READY", fund["status"])
+        self.assertEqual("MEDIUM", fund["primaryHorizon"])
+        self.assertIn("fullHistory", fund)
+        self.assertIn("horizons", fund)
+        self.assertEqual({"SHORT", "MEDIUM"}, set(fund["horizons"]))
+        self.assertEqual("QDII_INDEX_FUND", fund["fundCategory"])
+        self.assertEqual("UNAVAILABLE", fund["adviceStatus"])
+
+    def test_fund_endpoint_without_category_fails_closed(self):
+        fund = fund_analysis(FundAnalysisRequest(
+            records=price_records(260, step=0.03),
+            horizons={
+                "SHORT": {"minDays": 5, "maxDays": 20, "targetDays": 10},
+            },
+            primaryHorizon="SHORT",
+        ))
+
+        self.assertEqual("INSUFFICIENT", fund["status"])
+        self.assertEqual("FUND_CATEGORY_UNAVAILABLE", fund["reasonCode"])
+        self.assertEqual("WAIT", fund["action"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+{
+  "version": "fund-classification-v1",
+  "unknownCategory": "UNKNOWN",
+  "additionalCategories": [
+    "COMMODITY_FUND",
+    "ACTIVE_FUND"
+  ],
+  "exactMappings": {
+    "货币型": "MONEY_MARKET_FUND"
+  },
+  "prefixMappings": [
+    {"prefix": "指数型-海外", "category": "QDII_INDEX_FUND"},
+    {"prefix": "指数型-股票", "category": "INDEX_FUND"},
+    {"prefix": "指数型-其他", "category": "OTHER_INDEX_FUND"},
+    {"prefix": "股票型", "category": "ACTIVE_EQUITY_FUND"},
+    {"prefix": "混合型", "category": "HYBRID_FUND"},
+    {"prefix": "债券型", "category": "BOND_FUND"},
+    {"prefix": "货币型", "category": "MONEY_MARKET_FUND"},
+    {"prefix": "QDII", "category": "QDII_FUND"}
+  ]
+}

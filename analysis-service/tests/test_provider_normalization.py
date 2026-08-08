@@ -76,7 +76,11 @@ class FakeAkshare:
         ])
 
     def fund_name_em(self):
-        return FakeFrame([{"基金代码": "000001", "基金简称": "华夏成长混合"}])
+        return FakeFrame([{
+            "基金代码": "000001",
+            "基金简称": "华夏成长混合",
+            "基金类型": "混合型-偏股",
+        }])
 
     def fund_open_fund_info_em(self, **kwargs):
         return FakeFrame([
@@ -117,8 +121,8 @@ class FakeFundSnapshotAkshare:
     def fund_name_em(self):
         self.name_calls += 1
         return FakeFrame([
-            {"基金代码": "000001", "基金简称": "历史名称 A"},
-            {"基金代码": "000002", "基金简称": "历史名称 B"},
+            {"基金代码": "000001", "基金简称": "历史名称 A", "基金类型": "指数型-股票"},
+            {"基金代码": "000002", "基金简称": "历史名称 B", "基金类型": "指数型-海外股票"},
         ])
 
     def fund_open_fund_info_em(self, **kwargs):
@@ -392,6 +396,10 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("0.027", result["changeAmount"])
         self.assertEqual("1.80", result["changePercent"])
         self.assertEqual("2026-07-09", result["inceptionDate"])
+        self.assertEqual("混合型-偏股", result["fundTypeRaw"])
+        self.assertEqual("HYBRID_FUND", result["fundCategory"])
+        self.assertEqual("AKSHARE_FUND_NAME_EM", result["classificationSource"])
+        self.assertEqual("fund-classification-v1", result["classificationVersion"])
 
     def test_resolve_domestic_fund_prefers_latest_valued_dynamic_snapshot_column(self):
         provider = FakeFundSnapshotAkshare([{
@@ -407,7 +415,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         result = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=provider)
 
         self.assertEqual(1, provider.snapshot_calls)
-        self.assertEqual(0, provider.name_calls)
+        self.assertEqual(1, provider.name_calls)
         self.assertEqual(0, provider.history_calls)
         self.assertEqual("快照名称 A", result["name"])
         self.assertEqual("2026-07-18", result["dataDate"])
@@ -415,6 +423,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("1.570", result["previousClose"])
         self.assertEqual("0.030", result["changeAmount"])
         self.assertEqual("1.91", result["changePercent"])
+        self.assertEqual("INDEX_FUND", result["fundCategory"])
         self.assertEqual([], result["warnings"])
 
     def test_fund_snapshot_is_reused_for_multiple_codes_within_configured_ttl(self):
@@ -432,6 +441,7 @@ class ProviderNormalizationTest(unittest.TestCase):
 
         self.assertEqual(30000, providers._provider_integer("fund_snapshot_cache_ttl_ms"))
         self.assertEqual(1, provider.snapshot_calls)
+        self.assertEqual(1, provider.name_calls)
         self.assertEqual("1.600", first["latestPrice"])
         self.assertEqual("2.100", second["latestPrice"])
 
