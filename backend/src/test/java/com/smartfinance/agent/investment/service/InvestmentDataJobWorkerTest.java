@@ -17,6 +17,8 @@ import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import com.smartfinance.agent.investment.quant.QuantAutomationService;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkPreparationService;
+import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
+import com.smartfinance.agent.investment.quant.BenchmarkProfile;
 import com.smartfinance.agent.investment.quant.QuantResearchUniversePreparationService;
 import com.smartfinance.agent.investment.quant.QuantModelMonitorMapper;
 import com.smartfinance.agent.investment.quant.QuantStrategyVersionMapper;
@@ -570,6 +572,62 @@ class InvestmentDataJobWorkerTest {
         verify(fixture.snapshotMapper(), atLeastOnce()).updateById(snapshot);
     }
 
+    @Test
+    void indexFundAnalysisPassesTheExistingCachedBenchmarkThroughTheMainAnalysisRequest() {
+        ReadOnlyFixture fixture = readOnlyFixture(30, "MUTUAL_FUND");
+        List<Map<String, Object>> benchmarkRecords = IntStream.range(0, 30)
+                .mapToObj(index -> Map.<String, Object>of(
+                        "data_date", LocalDate.of(2026, 6, 1).plusDays(index).toString(),
+                        "close", 100 + index
+                ))
+                .toList();
+        BenchmarkProfile profile = new BenchmarkProfile();
+        profile.setProductCode("010736");
+        profile.setModelFamily("INDEX_FUND");
+        when(fixture.benchmarkProfileService().configuration(
+                eq("MUTUAL_FUND"), eq("010736"), any(LocalDate.class)
+        )).thenReturn(profile);
+        when(fixture.benchmarkProfileService().resolveCached(
+                eq("MUTUAL_FUND"),
+                eq("010736"),
+                any(LocalDate.class),
+                any(LocalDate.class),
+                any(LocalDate.class)
+        )).thenReturn(new QuantBenchmarkProfileService.ResolvedBenchmark(
+                true,
+                "CSI300",
+                "INDEX_FUND",
+                "a".repeat(64),
+                benchmarkRecords,
+                null,
+                null
+        ));
+        when(fixture.analysisClient().fundAnalysis(
+                any(), eq("INDEX_FUND"), any(), eq("SHORT"), any()
+        )).thenReturn(Map.of(
+                "status", "READY",
+                "strategyVersion", "technical-strategy-v4",
+                "adviceStatus", "UNAVAILABLE",
+                "reasonCode", "CATEGORY_STRATEGY_UNVALIDATED",
+                "series", List.of(),
+                "horizons", Map.of("SHORT", Map.of("status", "READY"))
+        ));
+        when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
+
+        fixture.service().detail(7L, 11L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> benchmarkCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(fixture.analysisClient()).fundAnalysis(
+                any(), eq("INDEX_FUND"), any(), eq("SHORT"), benchmarkCaptor.capture()
+        );
+        assertThat(benchmarkCaptor.getValue())
+                .containsEntry("status", "READY")
+                .containsEntry("code", "CSI300")
+                .containsEntry("sourceVersion", "a".repeat(64))
+                .containsEntry("records", benchmarkRecords);
+    }
+
     private static InvestmentDataJob job(boolean forceRefresh, int attempts, String status) {
         InvestmentDataJob job = new InvestmentDataJob();
         job.setId(91L);
@@ -596,6 +654,10 @@ class InvestmentDataJobWorkerTest {
     }
 
     private static ReadOnlyFixture readOnlyFixture(int quoteCount) {
+        return readOnlyFixture(quoteCount, "STOCK");
+    }
+
+    private static ReadOnlyFixture readOnlyFixture(int quoteCount, String productType) {
         InvestmentAssetService assetService = mock(InvestmentAssetService.class);
         InvestmentProductMapper productMapper = mock(InvestmentProductMapper.class);
         ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
@@ -615,7 +677,7 @@ class InvestmentDataJobWorkerTest {
         runtimeProperties.getDataQuality().setStockAdjustType("QFQ");
         runtimeProperties.getDataQuality().setFundAdjustType("NONE");
         runtimeProperties.getAi().setCooldownMinutes(30);
-        runtimeProperties.getAnalysis().setStrategyVersion("technical-strategy-v3");
+        runtimeProperties.getAnalysis().setStrategyVersion("technical-strategy-v4");
         InvestmentAnalysisSnapshotMapper snapshotMapper = mock(InvestmentAnalysisSnapshotMapper.class);
         AnalysisServiceClient analysisClient = mock(AnalysisServiceClient.class);
         InvestmentDataQualityService dataQualityService = mock(InvestmentDataQualityService.class);
@@ -626,15 +688,22 @@ class InvestmentDataJobWorkerTest {
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
         QuantStrategyVersionMapper strategyMapper = mock(QuantStrategyVersionMapper.class);
         QuantModelMonitorMapper monitorMapper = mock(QuantModelMonitorMapper.class);
+        QuantBenchmarkProfileService benchmarkProfileService = mock(QuantBenchmarkProfileService.class);
 
         InvestmentAssetView asset = new InvestmentAssetView();
         asset.setId(11L);
         asset.setProductId(21L);
-        asset.setProductType("STOCK");
+        asset.setProductType(productType);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
-        product.setProductType("STOCK");
-        product.setName("测试股票");
+        product.setProductType(productType);
+        product.setCode("MUTUAL_FUND".equals(productType) ? "010736" : "600000");
+        product.setName("MUTUAL_FUND".equals(productType) ? "测试指数基金" : "测试股票");
+        if ("MUTUAL_FUND".equals(productType)) {
+            product.setFundCategory("INDEX_FUND");
+            product.setClassificationSource("OFFICIAL_PROFILE");
+            product.setClassificationVersion("fund-classification-v1");
+        }
         ResolvedHorizonProfile profile = new ResolvedHorizonProfile(
                 "template:test", "test",
                 List.of(new HorizonSetting("SHORT", "短线", 1, 5, 20, true, "TEMPLATE")),
@@ -643,7 +712,7 @@ class InvestmentDataJobWorkerTest {
             ProductDailyQuote quote = new ProductDailyQuote();
             quote.setProductId(21L);
             quote.setTradeDate(java.time.LocalDate.of(2026, 6, 1).plusDays(index));
-            quote.setAdjustType("QFQ");
+            quote.setAdjustType("MUTUAL_FUND".equals(productType) ? "NONE" : "QFQ");
             quote.setClosePrice(java.math.BigDecimal.TEN);
             return quote;
         }).toList();
@@ -658,7 +727,7 @@ class InvestmentDataJobWorkerTest {
         List<Map<String, Object>> records = allowEvaluation(quoteCount).records();
         Map<String, Object> technical = new LinkedHashMap<>();
         technical.put("status", "READY");
-        technical.put("strategyVersion", "technical-strategy-v3");
+        technical.put("strategyVersion", "technical-strategy-v4");
         technical.put("score", 60);
         technical.put("series", records);
         technical.put("horizons", Map.of("SHORT", Map.of("status", "READY")));
@@ -669,12 +738,12 @@ class InvestmentDataJobWorkerTest {
                 .thenReturn(Map.of(
                         "status", "READY",
                         "verdict", "FAIR",
-                        "strategyVersion", "technical-strategy-v3"
+                        "strategyVersion", "technical-strategy-v4"
                 ));
         when(analysisClient.backtest(any(), any()))
                 .thenReturn(Map.of(
                         "status", "READY",
-                        "strategyVersion", "technical-strategy-v3",
+                        "strategyVersion", "technical-strategy-v4",
                         "horizons", Map.of()
                 ));
         InvestmentFinancialWarningEngine warningEngine = mock(InvestmentFinancialWarningEngine.class);
@@ -686,14 +755,16 @@ class InvestmentDataJobWorkerTest {
                 wealthService, financialProfileMapper, aiExplanationService,
                 new ObjectMapper(), jobService,
                 warningEngine,
-                strategyMapper, monitorMapper);
+                strategyMapper, monitorMapper,
+                benchmarkProfileService);
         return new ReadOnlyFixture(
                 service,
                 jobService,
                 analysisClient,
                 syncWorker,
                 snapshotMapper,
-                dataQualityService
+                dataQualityService,
+                benchmarkProfileService
         );
     }
 
@@ -794,7 +865,8 @@ class InvestmentDataJobWorkerTest {
                                    AnalysisServiceClient analysisClient,
                                    InvestmentSyncWorker syncWorker,
                                    InvestmentAnalysisSnapshotMapper snapshotMapper,
-                                   InvestmentDataQualityService dataQualityService) {
+                                   InvestmentDataQualityService dataQualityService,
+                                   QuantBenchmarkProfileService benchmarkProfileService) {
     }
 
     private static final class MutableClock extends Clock {

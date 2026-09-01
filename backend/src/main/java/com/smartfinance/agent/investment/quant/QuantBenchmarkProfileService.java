@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import org.springframework.stereotype.Service;
 
@@ -38,6 +39,51 @@ public class QuantBenchmarkProfileService {
         this.objectMapper = objectMapper;
     }
 
+    public boolean configureImportedFundBenchmark(
+            InvestmentProduct product,
+            AnalysisServiceClient.ResolvedProduct resolved) {
+        if (!"MUTUAL_FUND".equals(product.getProductType())
+                || resolved.benchmarkCode() == null
+                || resolved.benchmarkCode().isBlank()) {
+            return false;
+        }
+        BenchmarkProfile profile = benchmarkMapper.selectOne(
+                new LambdaQueryWrapper<BenchmarkProfile>()
+                        .eq(BenchmarkProfile::getProductType, product.getProductType())
+                        .eq(BenchmarkProfile::getProductCode, product.getCode())
+                        .eq(BenchmarkProfile::getActive, true)
+                        .orderByDesc(BenchmarkProfile::getEffectiveFrom)
+                        .last("LIMIT 1")
+        );
+        if (profile == null) {
+            profile = new BenchmarkProfile();
+            profile.setProductType(product.getProductType());
+            profile.setProductCode(product.getCode());
+            profile.setActive(true);
+        }
+        profile.setEffectiveFrom(product.getInceptionDate() == null
+                ? LocalDate.now()
+                : product.getInceptionDate());
+        profile.setModelFamily(product.getFundCategory() == null
+                ? resolved.fundCategory()
+                : product.getFundCategory());
+        profile.setBenchmarkCode(resolved.benchmarkCode());
+        profile.setDisplayName(resolved.trackingTarget() == null
+                ? resolved.benchmarkName()
+                : resolved.trackingTarget());
+        profile.setCompositionJson(writeJson(Map.of(resolved.benchmarkCode(), 1.0d)));
+        profile.setCurrency(product.getCurrency());
+        profile.setFxRule("NONE");
+        profile.setSourceUri(resolved.benchmarkSourceUri());
+        profile.setSourceVersion(resolved.benchmarkSourceVersion());
+        if (profile.getId() == null) {
+            benchmarkMapper.insert(profile);
+        } else {
+            benchmarkMapper.updateById(profile);
+        }
+        return true;
+    }
+
     public ResolvedBenchmark resolveCached(String productType,
                                            String productCode,
                                            LocalDate asOfDate,
@@ -47,7 +93,15 @@ public class QuantBenchmarkProfileService {
         if (profile == null) {
             return ResolvedBenchmark.unavailable("未配置当前资产的版本化官方基准");
         }
-        QuantBenchmarkSnapshot cached = cachedSnapshot(profile.getId(), startDate, endDate);
+        String contractIssue = benchmarkContractIssue(profile);
+        if (contractIssue != null) {
+            return ResolvedBenchmark.unavailable(
+                    profile,
+                    "BENCHMARK_INCOMPLETE",
+                    contractIssue
+            );
+        }
+        QuantBenchmarkSnapshot cached = cachedSnapshot(profile, startDate, endDate);
         if (cached == null) {
             return ResolvedBenchmark.unavailable(
                     profile,
@@ -66,7 +120,15 @@ public class QuantBenchmarkProfileService {
         if (profile == null) {
             return ResolvedBenchmark.unavailable("未配置当前资产的版本化官方基准");
         }
-        QuantBenchmarkSnapshot cached = cachedSnapshot(profile.getId(), startDate, endDate);
+        String contractIssue = benchmarkContractIssue(profile);
+        if (contractIssue != null) {
+            return ResolvedBenchmark.unavailable(
+                    profile,
+                    "BENCHMARK_INCOMPLETE",
+                    contractIssue
+            );
+        }
+        QuantBenchmarkSnapshot cached = cachedSnapshot(profile, startDate, endDate);
         if (cached != null) {
             return resolved(profile, cached, readRecords(cached.getRecordsJson()), startDate, endDate);
         }
@@ -109,12 +171,13 @@ public class QuantBenchmarkProfileService {
                         .orElse(null));
     }
 
-    private QuantBenchmarkSnapshot cachedSnapshot(Long profileId,
+    private QuantBenchmarkSnapshot cachedSnapshot(BenchmarkProfile profile,
                                                    LocalDate startDate,
                                                    LocalDate endDate) {
         return snapshotMapper.selectOne(
                 new LambdaQueryWrapper<QuantBenchmarkSnapshot>()
-                        .eq(QuantBenchmarkSnapshot::getBenchmarkProfileId, profileId)
+                        .eq(QuantBenchmarkSnapshot::getBenchmarkProfileId, profile.getId())
+                        .eq(QuantBenchmarkSnapshot::getBenchmarkCode, profile.getBenchmarkCode())
                         .le(QuantBenchmarkSnapshot::getSampleStartDate, startDate)
                         .ge(QuantBenchmarkSnapshot::getSampleEndDate, endDate)
                         .orderByDesc(QuantBenchmarkSnapshot::getFetchedAt)
@@ -218,6 +281,40 @@ public class QuantBenchmarkProfileService {
         }
     }
 
+    private String benchmarkContractIssue(BenchmarkProfile profile) {
+        String compositionJson = profile.getCompositionJson();
+        if (compositionJson == null || compositionJson.isBlank()) {
+            return "官方基准缺少可执行的成分合同";
+        }
+        try {
+            Map<String, Object> composition = objectMapper.readValue(
+                    compositionJson,
+                    new TypeReference<>() { }
+            );
+            if (composition.isEmpty()) {
+                return "官方基准成分合同为空";
+            }
+            boolean legacyWeights = composition.values().stream()
+                    .allMatch(Number.class::isInstance);
+            if (!legacyWeights) {
+                return "官方基准成分合同尚未被当前适配器完整执行";
+            }
+            double weightSum = composition.values().stream()
+                    .map(Number.class::cast)
+                    .mapToDouble(Number::doubleValue)
+                    .sum();
+            if (Math.abs(weightSum - 1.0d) > 0.000001d) {
+                return "官方基准成分权重之和不等于1";
+            }
+            if (composition.size() > 1) {
+                return "复合基准缺少全部成分的独立收益和来源版本";
+            }
+            return null;
+        } catch (JsonProcessingException exception) {
+            return "官方基准成分合同无法解析";
+        }
+    }
+
     private static LocalDate recordDate(Map<String, Object> record) {
         Object value = record.get("data_date");
         if (value == null) value = record.get("date");
@@ -273,13 +370,19 @@ public class QuantBenchmarkProfileService {
 
         private static ResolvedBenchmark unavailable(BenchmarkProfile profile,
                                                      String summary) {
+            return unavailable(profile, "BENCHMARK_UNAVAILABLE", summary);
+        }
+
+        private static ResolvedBenchmark unavailable(BenchmarkProfile profile,
+                                                     String failureCode,
+                                                     String summary) {
             return new ResolvedBenchmark(
                     false,
                     profile.getBenchmarkCode(),
                     profile.getModelFamily(),
                     null,
                     List.of(),
-                    "BENCHMARK_UNAVAILABLE",
+                    failureCode,
                     summary
             );
         }

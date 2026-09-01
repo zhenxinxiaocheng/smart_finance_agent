@@ -22,14 +22,14 @@ class QuantBenchmarkProfileServiceTest {
         QuantBenchmarkSnapshotMapper snapshotMapper = mock(QuantBenchmarkSnapshotMapper.class);
         AnalysisServiceClient client = mock(AnalysisServiceClient.class);
         BenchmarkProfile fallback = profile(null, "INDEX_FUND", "CSI300");
-        BenchmarkProfile exact = profile("010736", "INDEX_FUND", "CSI300_95_CASH_5");
+        BenchmarkProfile exact = profile("010736", "INDEX_FUND", "CSI300");
         when(mapper.selectList(any())).thenReturn(List.of(fallback, exact));
         when(client.benchmarkHistory(
-                "CSI300_95_CASH_5",
+                "CSI300",
                 LocalDate.parse("2024-01-01"),
                 LocalDate.parse("2026-07-24")
         )).thenReturn(Map.of(
-                "benchmarkCode", "CSI300_95_CASH_5",
+                "benchmarkCode", "CSI300",
                 "provider", "TEST",
                 "adapterVersion", "1",
                 "records", List.of(
@@ -53,7 +53,7 @@ class QuantBenchmarkProfileServiceTest {
                 );
 
         assertThat(resolved.available()).isTrue();
-        assertThat(resolved.benchmarkCode()).isEqualTo("CSI300_95_CASH_5");
+        assertThat(resolved.benchmarkCode()).isEqualTo("CSI300");
         assertThat(resolved.modelFamily()).isEqualTo("INDEX_FUND");
         assertThat(resolved.records()).hasSize(2);
         assertThat(resolved.sourceVersion()).hasSize(64);
@@ -86,11 +86,44 @@ class QuantBenchmarkProfileServiceTest {
     }
 
     @Test
+    void legacyCompositeProfileIsIncompleteInsteadOfAssumingMissingCashReturnIsZero() {
+        BenchmarkProfileMapper mapper = mock(BenchmarkProfileMapper.class);
+        QuantBenchmarkSnapshotMapper snapshotMapper = mock(QuantBenchmarkSnapshotMapper.class);
+        AnalysisServiceClient client = mock(AnalysisServiceClient.class);
+        BenchmarkProfile exact = profile(
+                "010736",
+                "INDEX_FUND",
+                "CSI300_95_CASH_5",
+                "{\"CSI300\":0.95,\"CASH_CNY\":0.05}"
+        );
+        when(mapper.selectList(any())).thenReturn(List.of(exact));
+
+        QuantBenchmarkProfileService.ResolvedBenchmark resolved =
+                new QuantBenchmarkProfileService(
+                        mapper,
+                        snapshotMapper,
+                        client,
+                        new ObjectMapper()
+                ).resolve(
+                        "MUTUAL_FUND",
+                        "010736",
+                        LocalDate.parse("2026-07-24"),
+                        LocalDate.parse("2024-01-01"),
+                        LocalDate.parse("2026-07-24")
+                );
+
+        assertThat(resolved.available()).isFalse();
+        assertThat(resolved.failureCode()).isEqualTo("BENCHMARK_INCOMPLETE");
+        assertThat(resolved.failureSummary()).contains("复合基准");
+        verifyNoInteractions(snapshotMapper, client);
+    }
+
+    @Test
     void persistedSnapshotIsReusedWithoutCallingNetworkProvider() {
         BenchmarkProfileMapper mapper = mock(BenchmarkProfileMapper.class);
         QuantBenchmarkSnapshotMapper snapshotMapper = mock(QuantBenchmarkSnapshotMapper.class);
         AnalysisServiceClient client = mock(AnalysisServiceClient.class);
-        BenchmarkProfile exact = profile("010736", "INDEX_FUND", "CSI300_95_CASH_5");
+        BenchmarkProfile exact = profile("010736", "INDEX_FUND", "CSI300");
         QuantBenchmarkSnapshot snapshot = new QuantBenchmarkSnapshot();
         snapshot.setSnapshotVersion("a".repeat(64));
         snapshot.setBenchmarkProfileId(exact.getId());
@@ -127,12 +160,20 @@ class QuantBenchmarkProfileServiceTest {
     private static BenchmarkProfile profile(String productCode,
                                             String modelFamily,
                                             String benchmarkCode) {
+        return profile(productCode, modelFamily, benchmarkCode, "{\"CSI300\":1.0}");
+    }
+
+    private static BenchmarkProfile profile(String productCode,
+                                            String modelFamily,
+                                            String benchmarkCode,
+                                            String compositionJson) {
         BenchmarkProfile profile = new BenchmarkProfile();
         profile.setId(productCode == null ? 1L : 2L);
         profile.setProductType("MUTUAL_FUND");
         profile.setProductCode(productCode);
         profile.setModelFamily(modelFamily);
         profile.setBenchmarkCode(benchmarkCode);
+        profile.setCompositionJson(compositionJson);
         profile.setSourceVersion("OFFICIAL-2024-ANNUAL");
         profile.setSourceUri("https://example.test/official");
         profile.setCurrency("CNY");

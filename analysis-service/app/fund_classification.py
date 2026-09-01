@@ -115,3 +115,8 @@ def known_fund_categories() -> frozenset[str]:
 def is_known_fund_category(category: str | None) -> bool:
     normalized = str(category).strip() if category is not None else ""
     return normalized in known_fund_categories()
+
+
+def is_index_fund_category(category: str | None) -> bool:
+    normalized = str(category).strip() if category is not None else ""
+    return normalized == "INDEX_FUND" or normalized.endswith("_INDEX_FUND")

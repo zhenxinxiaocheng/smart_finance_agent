@@ -47,7 +47,7 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertIsNotNone(latest["macd"])
         self.assertIsNotNone(latest["rsi"])
         self.assertIsNotNone(latest["atr"])
-        self.assertEqual("technical-strategy-v3", result["strategyVersion"])
+        self.assertEqual("technical-strategy-v5", result["strategyVersion"])
         self.assertEqual({"SHORT", "MEDIUM", "LONG"}, set(result["horizons"]))
         self.assertIn(result["horizons"]["SHORT"]["verdict"], {"FAVORABLE", "WAIT", "WEAK"})
         self.assertLess(result["levels"]["support"]["low"], result["levels"]["support"]["high"])
@@ -134,7 +134,7 @@ class AnalysisEngineTest(unittest.TestCase):
         self.assertIsNone(result["score"])
         self.assertEqual("WAIT", result["verdict"])
         self.assertEqual("UNAVAILABLE", result["adviceStatus"])
-        self.assertEqual("CATEGORY_STRATEGY_UNVALIDATED", result["reasonCode"])
+        self.assertEqual("BENCHMARK_UNAVAILABLE", result["reasonCode"])
         self.assertIsNotNone(result["series"][-1]["ma20"])
 
     def test_fund_analysis_accepts_canonical_nav_records(self):
@@ -211,6 +211,114 @@ class AnalysisEngineTest(unittest.TestCase):
         )
         self.assertIn("currentDrawdown", result["horizons"]["SHORT"])
         self.assertIn("drawdownStatus", result["horizons"]["CUSTOM_LONG"])
+
+    def test_index_fund_uses_each_user_horizon_for_benchmark_relative_return(self):
+        start = date(2026, 1, 1)
+        fund_values = [100.0] * 20 + [100.0, 102.0, 101.0, 105.0, 104.0, 108.0, 110.0]
+        benchmark_values = [100.0] * 20 + [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0]
+        records = [
+            {
+                "data_date": (start + timedelta(days=index)).isoformat(),
+                "close": str(value),
+            }
+            for index, value in enumerate(fund_values)
+        ]
+        benchmark_records = [
+            {
+                "data_date": (start + timedelta(days=index)).isoformat(),
+                "close": str(value),
+            }
+            for index, value in enumerate(benchmark_values)
+        ]
+
+        result = analyze_fund(
+            records,
+            {
+                "SHORT": {"minDays": 2, "maxDays": 2, "targetDays": 2},
+                "MEDIUM": {"minDays": 4, "maxDays": 4, "targetDays": 4},
+                "LONG": {"minDays": 6, "maxDays": 6, "targetDays": 6},
+            },
+            "SHORT",
+            fund_category="INDEX_FUND",
+            benchmark={
+                "status": "READY",
+                "code": "CSI300",
+                "sourceVersion": "CSI-OFFICIAL-V1",
+                "records": benchmark_records,
+            },
+        )
+
+        self.assertAlmostEqual(1.92, result["horizons"]["SHORT"]["benchmarkReturn"], places=2)
+        self.assertAlmostEqual(3.85, result["horizons"]["SHORT"]["trackingDifference"], places=2)
+        self.assertAlmostEqual(3.92, result["horizons"]["MEDIUM"]["benchmarkReturn"], places=2)
+        self.assertAlmostEqual(4.99, result["horizons"]["MEDIUM"]["trackingDifference"], places=2)
+        self.assertAlmostEqual(6.00, result["horizons"]["LONG"]["benchmarkReturn"], places=2)
+        self.assertAlmostEqual(4.00, result["horizons"]["LONG"]["trackingDifference"], places=2)
+        self.assertEqual(3, result["horizons"]["SHORT"]["alignedObservationCount"])
+        self.assertNotIn("beta", result["horizons"]["SHORT"])
+        self.assertNotIn("informationRatio", result["horizons"]["SHORT"])
+        self.assertEqual("CSI-OFFICIAL-V1", result["benchmark"]["sourceVersion"])
+
+    def test_index_fund_reports_benchmark_regression_metrics_from_aligned_returns(self):
+        start = date(2026, 2, 1)
+        fund_values = [100.0] * 20 + [100.0]
+        benchmark_values = [100.0] * 20 + [100.0]
+        for fund_return, benchmark_return in zip(
+            [0.02, 0.01, -0.02, 0.01] * 5,
+            [0.01, 0.02, -0.01, 0.00] * 5,
+        ):
+            fund_values.append(fund_values[-1] * (1 + fund_return))
+            benchmark_values.append(benchmark_values[-1] * (1 + benchmark_return))
+        records = [
+            {"data_date": (start + timedelta(days=index)).isoformat(), "close": str(value)}
+            for index, value in enumerate(fund_values)
+        ]
+        benchmark_records = [
+            {"data_date": (start + timedelta(days=index)).isoformat(), "close": str(value)}
+            for index, value in enumerate(benchmark_values)
+        ]
+
+        result = analyze_fund(
+            records,
+            {"MEDIUM": {"minDays": 20, "maxDays": 20, "targetDays": 20}},
+            "MEDIUM",
+            fund_category="INDEX_FUND",
+            benchmark={
+                "status": "READY",
+                "code": "CSI300",
+                "sourceVersion": "CSI-OFFICIAL-V1",
+                "records": benchmark_records,
+            },
+        )
+
+        metrics = result["horizons"]["MEDIUM"]
+        self.assertAlmostEqual(16.29, metrics["trackingError"], places=2)
+        self.assertAlmostEqual(0.7454, metrics["correlation"], places=4)
+        self.assertAlmostEqual(1.0, metrics["beta"], places=4)
+        self.assertAlmostEqual(0.0, metrics["regressionAlpha"], places=4)
+        self.assertAlmostEqual(0.5556, metrics["rSquared"], places=4)
+        self.assertAlmostEqual(0.0, metrics["informationRatio"], places=4)
+
+    def test_index_fund_does_not_replace_incomplete_benchmark_with_zero_metrics(self):
+        result = analyze_fund(
+            price_records(30, step=0.03),
+            {"SHORT": {"minDays": 5, "maxDays": 5, "targetDays": 5}},
+            "SHORT",
+            fund_category="INDEX_FUND",
+            benchmark={
+                "status": "BENCHMARK_INCOMPLETE",
+                "code": "CSI300_95_CASH_5",
+                "sourceVersion": "OFFICIAL-PRODUCT",
+                "reason": "活期存款利率成分缺失",
+                "records": [],
+            },
+        )
+
+        self.assertEqual("BENCHMARK_INCOMPLETE", result["reasonCode"])
+        self.assertEqual("BENCHMARK_INCOMPLETE", result["horizons"]["SHORT"]["reasonCode"])
+        self.assertNotIn("trackingError", result["horizons"]["SHORT"])
+        self.assertNotIn("beta", result["horizons"]["SHORT"])
+        self.assertEqual("UNAVAILABLE", result["adviceStatus"])
 
     def test_fundamental_analysis_requires_three_periods_and_four_dimensions(self):
         insufficient = analyze_fundamentals([

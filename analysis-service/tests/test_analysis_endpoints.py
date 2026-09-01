@@ -161,7 +161,7 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual("READY", result["status"])
         self.assertNotIn("riskPreference", request.model_dump())
         self.assertEqual({"WAVE", "POSITION"}, set(result["horizons"]))
-        self.assertEqual("technical-strategy-v3", result["strategyVersion"])
+        self.assertEqual("technical-strategy-v5", result["strategyVersion"])
         self.assertIn("outlook", result)
         self.assertEqual(3.2, request.market_snapshot.turnover_rate)
 
@@ -234,6 +234,31 @@ class AnalysisEndpointsTest(unittest.TestCase):
         self.assertEqual({"SHORT", "MEDIUM"}, set(fund["horizons"]))
         self.assertEqual("QDII_INDEX_FUND", fund["fundCategory"])
         self.assertEqual("UNAVAILABLE", fund["adviceStatus"])
+
+    def test_fund_endpoint_passes_existing_benchmark_payload_to_analysis(self):
+        records = price_records(30, step=0.03)
+        benchmark_records = [
+            {"data_date": item["data_date"], "close": item["close"]}
+            for item in records
+        ]
+
+        fund = fund_analysis(FundAnalysisRequest(
+            records=records,
+            horizons={
+                "SHORT": {"minDays": 5, "maxDays": 5, "targetDays": 5},
+            },
+            primaryHorizon="SHORT",
+            fundCategory="INDEX_FUND",
+            benchmark={
+                "status": "READY",
+                "code": "CSI300",
+                "sourceVersion": "CSI-OFFICIAL-V1",
+                "records": benchmark_records,
+            },
+        ))
+
+        self.assertEqual("CSI300", fund["benchmark"]["code"])
+        self.assertEqual(6, fund["horizons"]["SHORT"]["alignedObservationCount"])
 
     def test_fund_endpoint_without_category_fails_closed(self):
         fund = fund_analysis(FundAnalysisRequest(

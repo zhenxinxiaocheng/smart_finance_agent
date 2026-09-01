@@ -48,9 +48,17 @@ test('周期标签区分实际计算目标与用户设置范围', () => {
   assert.match(source, /最近 \$\{value\.targetDays\} 个交易日（设置范围/)
 })
 
-test('基金短中长期分别展示各自窗口的回撤指标', () => {
+test('基金短中长期分别展示各自窗口的回撤和基准相对指标', () => {
   assert.match(template, /周期最大回撤/)
   assert.match(template, /percent\(activeFundPeriod\.currentDrawdown/)
   assert.match(template, /percent\(activeFundPeriod\.maxDrawdown/)
   assert.match(template, /drawdownStatusLabel\(activeFundPeriod\.drawdownStatus/)
+  assert.match(template, /基准收益/)
+  assert.match(template, /跟踪差/)
+  assert.match(template, /年化跟踪误差/)
+  assert.match(template, /相关系数/)
+  assert.match(template, /回归 Alpha/)
+  assert.match(template, /R²/)
+  assert.match(template, /信息比率 IR/)
+  assert.match(template, /v-if="hasMetric\(activeFundPeriod\.benchmarkReturn\)"/)
 })

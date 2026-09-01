@@ -27,6 +27,7 @@
             <div class="flex flex-wrap items-center gap-2">
               <h1 class="truncate text-2xl font-semibold tracking-tight">{{ asset.name }}</h1>
               <Badge variant="outline">{{ asset.productType === 'MUTUAL_FUND' ? '基金' : '股票' }}</Badge>
+              <Badge v-if="asset.productType === 'MUTUAL_FUND'" variant="outline">{{ fundCategoryLabel(asset.fundCategory || sourceStatus.fundCategory) }}</Badge>
               <Badge variant="secondary">{{ sourceLabel }}</Badge>
             </div>
             <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
@@ -126,9 +127,14 @@
             </div>
 
             <div v-else>
-              <div class="flex items-center justify-between gap-3"><span class="text-sm font-semibold">基金表现研判</span><Badge variant="outline">{{ activePeriodText }}</Badge></div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="whitespace-nowrap text-sm font-semibold">基金表现研判</span>
+                  <Badge v-if="fundAdviceExperimental" variant="outline" class="shrink-0">实验性建议</Badge>
+                </div>
+              </div>
               <p class="mt-3 text-2xl font-semibold" :class="verdictTone(activeVerdict)">{{ activeHeadline }}</p>
-              <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ fundAdviceUnavailable ? fundAdviceMessage : '根据净值趋势、波动和回撤状态生成。' }}</p>
+              <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ fundAdviceUnavailable ? fundAdviceMessage : fundAdviceExperimental ? '根据当前周期的净值趋势、基准相对表现、波动与回撤状态生成。' : '根据净值趋势、波动和回撤状态生成。' }}</p>
             </div>
 
             <div v-if="!isFund && activeOutlook.risks?.length" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
@@ -139,6 +145,11 @@
             </div>
 
             <div v-if="asset.productType === 'MUTUAL_FUND'" class="space-y-2.5">
+              <ActionPriceRow
+                v-if="hasMetric(activeFundPeriod.score)"
+                label="周期评分"
+                :value="`${decimal(activeFundPeriod.score)} / 100`"
+              />
               <ActionPriceRow
                 label="周期收益"
                 :value="percent(activeFundPeriod.return)"
@@ -162,6 +173,92 @@
                 label="回撤状态"
                 :value="drawdownStatusLabel(activeFundPeriod.drawdownStatus)"
               />
+              <ActionPriceRow
+                v-if="hasMetric(activeFundPeriod.periodAverageNav)"
+                label="周期平均净值"
+                :value="singlePrice(activeFundPeriod.periodAverageNav)"
+              />
+              <ActionPriceRow
+                v-if="hasMetric(activeFundPeriod.latestToPeriodAverage)"
+                label="净值相对周期均值"
+                :value="percent(activeFundPeriod.latestToPeriodAverage)"
+                :tone="tone(activeFundPeriod.latestToPeriodAverage)"
+              />
+              <ActionPriceRow
+                v-if="activeFundPeriod.observationCount"
+                label="观测净值点"
+                :value="`${activeFundPeriod.observationCount} 个`"
+              />
+              <ActionPriceRow
+                v-if="activeFundPeriod.startDate && activeFundPeriod.endDate"
+                label="周期数据区间"
+                :value="`${activeFundPeriod.startDate} → ${activeFundPeriod.endDate}`"
+              />
+              <details class="group rounded-lg border bg-muted/10 px-3 py-2.5">
+                <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium">
+                  <span class="flex items-center gap-2">
+                    <span>专业指标</span>
+                    <span v-if="!hasFundBenchmarkMetrics" class="text-xs font-normal text-muted-foreground">数据待准备</span>
+                  </span>
+                  <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+                </summary>
+                <div class="mt-3 space-y-2.5 border-t pt-3">
+                  <div class="rounded-md border bg-background/60 px-3 py-2 text-xs">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-muted-foreground">对比基准</span>
+                      <strong class="text-right">{{ fundBenchmarkLabel }}</strong>
+                    </div>
+                    <div v-if="fundBenchmarkSampleLabel" class="mt-1.5 flex items-center justify-between gap-3">
+                      <span class="text-muted-foreground">指标样本</span>
+                      <strong :class="fundBenchmarkSampleTone">{{ fundBenchmarkSampleLabel }}</strong>
+                    </div>
+                  </div>
+                  <ActionPriceRow
+                    label="基准收益"
+                    :help="fundMetricHelp.benchmarkReturn"
+                    :value="percent(activeFundPeriod.benchmarkReturn)"
+                    :tone="tone(activeFundPeriod.benchmarkReturn)"
+                  />
+                  <ActionPriceRow
+                    label="跟踪差"
+                    :help="fundMetricHelp.trackingDifference"
+                    :value="percent(activeFundPeriod.trackingDifference)"
+                    :tone="tone(activeFundPeriod.trackingDifference)"
+                  />
+                  <ActionPriceRow
+                    label="年化跟踪误差"
+                    :help="fundMetricHelp.trackingError"
+                    :value="percent(activeFundPeriod.trackingError, false)"
+                  />
+                  <ActionPriceRow
+                    label="相关系数"
+                    :help="fundMetricHelp.correlation"
+                    :value="decimal(activeFundPeriod.correlation)"
+                  />
+                  <ActionPriceRow
+                    label="Beta"
+                    :help="fundMetricHelp.beta"
+                    :value="decimal(activeFundPeriod.beta)"
+                  />
+                  <ActionPriceRow
+                    label="回归 Alpha（年化）"
+                    :help="fundMetricHelp.alpha"
+                    :value="percent(activeFundPeriod.regressionAlpha)"
+                    :tone="tone(activeFundPeriod.regressionAlpha)"
+                  />
+                  <ActionPriceRow
+                    label="R²"
+                    :help="fundMetricHelp.rSquared"
+                    :value="decimal(activeFundPeriod.rSquared)"
+                  />
+                  <ActionPriceRow
+                    label="信息比率 IR"
+                    :help="fundMetricHelp.informationRatio"
+                    :value="decimal(activeFundPeriod.informationRatio)"
+                    :tone="tone(activeFundPeriod.informationRatio)"
+                  />
+                </div>
+              </details>
             </div>
             <div v-else class="space-y-2.5">
               <div class="flex items-center gap-1 pb-0.5 text-xs text-muted-foreground"><span>关键价位参考</span><InfoTooltip :content="helpText.priceZones" label="了解关键价位" /></div>
@@ -400,11 +497,44 @@ const historyJobNotice = computed(() => ({
 const qualityBlocked = computed(() => sourceStatus.value.dataState === 'BLOCKED')
 const qualityWaiting = computed(() => sourceStatus.value.dataState === 'WAITING')
 const activeFundPeriod = computed(() => isFund.value ? activeAnalysis.value : null)
+const hasFundBenchmarkMetrics = computed(() => [
+  'benchmarkReturn',
+  'trackingDifference',
+  'trackingError',
+  'correlation',
+  'beta',
+  'regressionAlpha',
+  'rSquared',
+  'informationRatio',
+].some(key => hasMetric(activeFundPeriod.value?.[key])))
+const fundBenchmark = computed(() => technical.value.benchmark || {})
+const fundBenchmarkLabel = computed(() => fundBenchmark.value.name || fundBenchmark.value.code || '尚未准备')
+const fundBenchmarkSampleLabel = computed(() => {
+  const count = activeFundPeriod.value?.benchmarkMetricObservationCount
+  const recommended = activeFundPeriod.value?.benchmarkMetricRecommendedObservationCount
+  if (count == null) return ''
+  if (activeFundPeriod.value?.benchmarkMetricStatus === 'ADEQUATE_SAMPLE') return `${count} 个收益率样本，样本充足`
+  if (activeFundPeriod.value?.benchmarkMetricStatus === 'LOW_SAMPLE') return `${count} / ${recommended}，样本偏少`
+  return `${count} / ${recommended}，暂不足以计算`
+})
+const fundBenchmarkSampleTone = computed(() => activeFundPeriod.value?.benchmarkMetricStatus === 'ADEQUATE_SAMPLE'
+  ? 'text-emerald-600 dark:text-emerald-400'
+  : 'text-amber-600 dark:text-amber-400')
+const fundMetricHelp = {
+  benchmarkReturn: '同一周期内，基金所跟踪基准的涨跌幅，用来判断市场本身的表现。',
+  trackingDifference: '基金周期收益减去基准周期收益。正数表示跑赢基准，负数表示跑输基准。',
+  trackingError: '衡量基金与基准收益差异的波动程度。数值越低，通常说明跟踪越稳定。',
+  correlation: '取值范围为 -1 到 1。越接近 1，基金与基准的涨跌方向越一致。',
+  beta: '衡量基金对基准波动的敏感度。接近 1 表示波动相近，大于 1 通常波动更大。',
+  alpha: '扣除基准波动影响后估算的年化超额收益，不代表未来一定能够获得。',
+  rSquared: '取值范围为 0 到 1。越接近 1，说明基金波动越能由当前基准解释。',
+  informationRatio: '单位跟踪风险带来的超额收益。通常越高越好，但会受样本区间影响。',
+}
 const fundFullHistory = computed(() => technical.value.fullHistory || {})
 const fundFullHistoryMetrics = computed(() => [
-  { label: '分析数据区间收益', value: percent(fundFullHistory.value.windowReturn) },
-  { label: '分析数据区间年化波动', value: percent(fundFullHistory.value.annualizedVolatility, false) },
-  { label: '分析数据区间最大回撤', value: percent(fundFullHistory.value.maxDrawdown, false), tone: 'text-destructive' },
+  { label: '历史区间收益', value: percent(fundFullHistory.value.windowReturn) },
+  { label: '历史区间年化波动', value: percent(fundFullHistory.value.annualizedVolatility, false) },
+  { label: '历史最大回撤', value: percent(fundFullHistory.value.maxDrawdown, false), tone: 'text-destructive' },
   { label: '当前回撤', value: percent(fundFullHistory.value.currentDrawdown, false), tone: Number(fundFullHistory.value.currentDrawdown || 0) < 0 ? 'text-destructive' : '' },
   { label: '回撤状态', value: drawdownStatusLabel(fundFullHistory.value.drawdownStatus) },
   { label: '数据区间', value: fundFullHistory.value.startDate && fundFullHistory.value.endDate
@@ -418,10 +548,15 @@ const horizonOptions = computed(() => (horizonProfile.value.settings || []).map(
   primary: Boolean(item.primary),
 })))
 const isFund = computed(() => asset.value.productType === 'MUTUAL_FUND')
-const fundAdviceUnavailable = computed(() => isFund.value && technical.value.adviceStatus === 'UNAVAILABLE')
-const fundAdviceMessage = computed(() => technical.value.reasonCode === 'FUND_CATEGORY_UNAVAILABLE'
-  ? '基金分类尚未完成，当前只展示历史统计，不提供操作建议。'
-  : '该基金分类的专属策略尚未通过验证，当前只展示历史统计，不提供操作建议。')
+const fundAdviceUnavailable = computed(() => isFund.value && activeAnalysis.value.adviceStatus === 'UNAVAILABLE')
+const fundAdviceExperimental = computed(() => isFund.value && activeAnalysis.value.adviceStatus === 'EXPERIMENTAL')
+const fundAdviceMessage = computed(() => ({
+  FUND_CATEGORY_UNAVAILABLE: '基金分类尚未完成，当前只展示历史统计，不提供操作建议。',
+  FUND_STRATEGY_UNAVAILABLE: '该基金类型的专属策略尚未接入，当前只展示历史统计，不套用指数基金规则。',
+  BENCHMARK_UNAVAILABLE: '该指数基金的基准行情尚未准备完成，当前不提供操作建议。',
+  BENCHMARK_INCOMPLETE: '该指数基金的基准配置不完整，当前不提供操作建议。',
+  BENCHMARK_ALIGNMENT_INSUFFICIENT: '该周期内基金与基准的同日收益样本不足，当前不提供操作建议。',
+}[activeAnalysis.value.reasonCode] || '该基金分类的专属策略尚未通过验证，当前只展示历史统计，不提供操作建议。'))
 const activeAnalysis = computed(() => technical.value.horizons?.[activeHorizon.value] || technical.value)
 const activeOutlook = computed(() => activeAnalysis.value.outlook || technical.value.outlook || {})
 const activeDirection = computed(() => directionMeta(activeOutlook.value.direction))
@@ -451,7 +586,7 @@ const fundamentalDimensions = computed(() => {
   return Object.entries(fundamental.value.dimensions || {}).map(([key, data]) => ({ key, label: labels[key] || key, data }))
 })
 const fundamentalVerdict = computed(() => {
-  if (asset.value.productType === 'MUTUAL_FUND') return fundActionLabel(technical.value.action)
+  if (asset.value.productType === 'MUTUAL_FUND') return '历史统计'
   return ({ ATTRACTIVE: '长期较有吸引力', FAIR: '长期中性', CAUTIOUS: '长期需谨慎', INSUFFICIENT: '数据不足' }[fundamental.value.verdict] || '数据不足')
 })
 const sourceLabel = computed(() => ({
@@ -471,7 +606,7 @@ const topMetrics = computed(() => [
     : { label: '走势研判', value: outlookDirectionLabel(activeOutlook.value.direction), hint: `${confidenceLabel(activeOutlook.value.confidence)} · ${activePeriodText.value}`, tone: activeDirection.value.tone, help: helpText.technicalOutlook },
 ])
 
-const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
+const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String, help: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'flex min-w-0 items-center gap-1 text-muted-foreground' }, [h('span', props.label), props.help ? h(InfoTooltip, { content: props.help, label: `了解${props.label}` }) : null]), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
 const MetricMini = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'rounded-lg border bg-muted/20 p-3' }, [h('div', { class: 'text-xs text-muted-foreground' }, props.label), h('div', { class: ['mt-1.5 font-semibold tabular-nums', props.tone] }, props.value)]) })
 const MetricLine = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between border-b border-border/60 pb-2 text-sm last:border-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums', props.tone] }, props.value)]) })
 
@@ -607,8 +742,33 @@ async function clearPreference() {
 
 function verdictLabel(value) { return ({ FAVORABLE: '值得关注', WAIT: '中性观察', WEAK: '技术偏弱' }[value] || '等待数据') }
 function verdictTone(value) { return value === 'WEAK' ? 'text-destructive' : value === 'FAVORABLE' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }
-function actionVerdict(value) { return ({ ACCUMULATE: 'FAVORABLE', HOLD: 'WAIT', PAUSE: 'WEAK', TAKE_PROFIT: 'WAIT' }[value] || 'WAIT') }
-function fundActionLabel(value) { return ({ ACCUMULATE: '定投参考', HOLD: '继续持有', PAUSE: '暂停追加', TAKE_PROFIT: '分批止盈', WAIT: '暂无操作建议' }[value] || '等待数据') }
+function actionVerdict(value) { return ({ BUY: 'FAVORABLE', ACCUMULATE: 'FAVORABLE', HOLD: 'WAIT', REDUCE: 'WEAK', PAUSE: 'WEAK', TAKE_PROFIT: 'WAIT', WAIT: 'WAIT' }[value] || 'WAIT') }
+function fundActionLabel(value) {
+  const hasPosition = Number(asset.value.quantity || 0) > 0
+  return ({
+    BUY: hasPosition ? '加仓' : '买入',
+    ACCUMULATE: hasPosition ? '加仓' : '买入',
+    HOLD: hasPosition ? '继续持有' : '继续观望',
+    REDUCE: hasPosition ? '减仓' : '继续观望',
+    PAUSE: hasPosition ? '减仓' : '继续观望',
+    TAKE_PROFIT: hasPosition ? '分批减仓' : '继续观望',
+    WAIT: '暂无操作建议',
+  }[value] || '等待数据')
+}
+function fundCategoryLabel(value) {
+  return ({
+    INDEX_FUND: '境内指数基金',
+    QDII_INDEX_FUND: '海外指数基金',
+    OTHER_INDEX_FUND: '其他指数基金',
+    ACTIVE_EQUITY_FUND: '主动股票基金',
+    HYBRID_FUND: '混合基金',
+    BOND_FUND: '债券基金',
+    MONEY_MARKET_FUND: '货币基金',
+    QDII_FUND: 'QDII 基金',
+    COMMODITY_FUND: '商品基金',
+    ACTIVE_FUND: '主动基金',
+  }[value] || '类型待确认')
+}
 function horizonRange(value) {
   if (value?.targetDays != null) {
     return `最近 ${value.targetDays} 个交易日（设置范围 ${value.minimumDays}–${value.maximumDays}）`
@@ -630,6 +790,7 @@ function signedMoney(value) { if (value == null) return '-'; const n = Number(va
 function signedPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%` }
 function percent(value, signed = true) { if (value == null) return '-'; const n = Number(value); return `${signed && n > 0 ? '+' : ''}${n.toFixed(2)}%` }
 function decimal(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(Number(value)) }
+function hasMetric(value) { return value !== null && value !== undefined && Number.isFinite(Number(value)) }
 function tone(value) { const n = Number(value || 0); return n > 0 ? 'text-emerald-600 dark:text-emerald-400' : n < 0 ? 'text-destructive' : '' }
 function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', MODEL_DRIFT: '模型表现漂移', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
 function quantActionLabel(value) { return ({ BUY_WATCH: '买入观察', ADD: '加仓', HOLD: '持有', REDUCE: '减仓', EXIT: '退出', NO_TRADE: '暂不交易' }[value] || '暂不交易') }

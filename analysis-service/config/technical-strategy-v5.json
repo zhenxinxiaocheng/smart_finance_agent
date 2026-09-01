@@ -1,5 +1,5 @@
 {
-  "version": "technical-strategy-v3",
+  "version": "technical-strategy-v5",
   "providers": {
     "realtime_http_timeout_seconds": 5,
     "history_http_timeout_seconds": 8,
@@ -122,6 +122,8 @@
     "fast_moving_average": 20,
     "slow_moving_average": 60,
     "annualization_days": 252,
+    "benchmark_relative_calculation_minimum_observations": 5,
+    "benchmark_relative_recommended_observations": 20,
     "return_periods": [
       { "code": "ONE_MONTH", "display_name": "近一月", "days": 21 },
       { "code": "THREE_MONTHS", "display_name": "近三月", "days": 63 },
@@ -145,12 +147,27 @@
       "take_profit_long_return_minimum": 30,
       "take_profit_price_to_average_ratio": 1.08
     },
+    "index_score": {
+      "tracking_difference_clip_percent": 5.0,
+      "tracking_difference_weight": 1.0,
+      "tracking_error_penalty_start_percent": 6.0,
+      "tracking_error_penalty_cap": 12.0,
+      "correlation_penalty_start": 0.9,
+      "correlation_penalty_weight": 20.0,
+      "beta_deviation_tolerance": 0.15,
+      "beta_deviation_penalty_weight": 10.0,
+      "information_ratio_clip": 2.0,
+      "information_ratio_weight": 2.0
+    },
     "period": {
       "favorable_return_percent": 5.0,
       "weak_return_percent": -3.0,
       "pause_return_percent": -5.0,
       "high_volatility_percent": 30.0,
-      "return_weight": 1.0
+      "return_weight": 1.0,
+      "favorable_action": "BUY",
+      "neutral_action": "HOLD",
+      "weak_action": "REDUCE"
     }
   },
   "fundamental": {

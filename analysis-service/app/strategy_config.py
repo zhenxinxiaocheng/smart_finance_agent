@@ -83,7 +83,7 @@ class StrategyConfig:
 def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
     configured_path = path or os.getenv("ANALYSIS_STRATEGY_CONFIG")
     source = Path(configured_path) if configured_path else (
-        Path(__file__).resolve().parent.parent / "config" / "technical-strategy-v3.json"
+        Path(__file__).resolve().parent.parent / "config" / "technical-strategy-v5.json"
     )
     with source.open("r", encoding="utf-8") as handle:
         data = json.load(handle)

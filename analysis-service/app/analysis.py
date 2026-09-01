@@ -5,7 +5,7 @@ import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .fund_classification import is_known_fund_category
+from .fund_classification import is_index_fund_category, is_known_fund_category
 from .strategy_config import StrategyConfig, load_strategy_config
 from .technical_outlook import TechnicalObservation, evaluate_outlook
 
@@ -509,11 +509,238 @@ def _annualized_volatility(values: Sequence[float]) -> float:
     return 0.0
 
 
+def _benchmark_relative_statistics(
+    fund_values: Sequence[float],
+    benchmark_values: Sequence[float],
+) -> dict[str, Any]:
+    paired = min(len(fund_values), len(benchmark_values))
+    if paired < 3:
+        return {}
+    paired_returns = [
+        (
+            fund_values[index] / fund_values[index - 1] - 1,
+            benchmark_values[index] / benchmark_values[index - 1] - 1,
+        )
+        for index in range(1, paired)
+        if fund_values[index - 1] and benchmark_values[index - 1]
+    ]
+    count = len(paired_returns)
+    calculation_minimum = STRATEGY.integer(
+        "fund.benchmark_relative_calculation_minimum_observations"
+    )
+    recommended_minimum = STRATEGY.integer(
+        "fund.benchmark_relative_recommended_observations"
+    )
+    metadata = {
+        "benchmarkMetricObservationCount": count,
+        "benchmarkMetricRecommendedObservationCount": recommended_minimum,
+        "benchmarkMetricStatus": (
+            "INSUFFICIENT_SAMPLE"
+            if count < calculation_minimum
+            else "ADEQUATE_SAMPLE"
+            if count >= recommended_minimum
+            else "LOW_SAMPLE"
+        ),
+    }
+    if count < calculation_minimum:
+        return metadata
+    fund_returns = [item[0] for item in paired_returns]
+    benchmark_returns = [item[1] for item in paired_returns]
+    active_returns = [
+        fund_returns[index] - benchmark_returns[index]
+        for index in range(count)
+    ]
+    annualization = STRATEGY.integer("fund.annualization_days")
+    tracking_error = statistics.stdev(active_returns) * math.sqrt(annualization)
+    information_ratio = (
+        statistics.fmean(active_returns) * annualization / tracking_error
+        if tracking_error > 0
+        else None
+    )
+    fund_mean = statistics.fmean(fund_returns)
+    benchmark_mean = statistics.fmean(benchmark_returns)
+    benchmark_variance = statistics.variance(benchmark_returns)
+    fund_variance = statistics.variance(fund_returns)
+    covariance = sum(
+        (fund_returns[index] - fund_mean)
+        * (benchmark_returns[index] - benchmark_mean)
+        for index in range(count)
+    ) / (count - 1)
+    beta = covariance / benchmark_variance if benchmark_variance > 0 else None
+    correlation = (
+        covariance / math.sqrt(fund_variance * benchmark_variance)
+        if fund_variance > 0 and benchmark_variance > 0
+        else None
+    )
+    regression_alpha = (
+        (fund_mean - beta * benchmark_mean) * annualization * 100
+        if beta is not None
+        else None
+    )
+    return {
+        **metadata,
+        "trackingError": _round(tracking_error * 100, 2),
+        "correlation": _round(correlation, 4),
+        "beta": _round(beta, 4),
+        "regressionAlpha": _round(regression_alpha, 4),
+        "rSquared": _round(correlation * correlation, 4)
+        if correlation is not None
+        else None,
+        "informationRatio": _round(information_ratio, 4),
+    }
+
+
+def _experimental_fund_decision(
+    values: Sequence[float],
+    period_return: float,
+    annualized_volatility: float,
+    max_drawdown: float,
+    benchmark_metrics: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    favorable_return = STRATEGY.number("fund.period.favorable_return_percent")
+    weak_return = STRATEGY.number("fund.period.weak_return_percent")
+    pause_return = STRATEGY.number("fund.period.pause_return_percent")
+    pause_drawdown = STRATEGY.number("fund.actions.pause_drawdown_maximum")
+
+    return_clip = STRATEGY.number("fund.score.short_return_clip")
+    score = STRATEGY.number("fund.score.base") + (
+        _clamp(period_return, -return_clip, return_clip)
+        * STRATEGY.number("fund.period.return_weight")
+    )
+    period_average = statistics.fmean(values)
+    above_average = values[-1] >= period_average
+    average_adjustment = STRATEGY.number("fund.score.above_average_adjustment")
+    score += average_adjustment if above_average else -average_adjustment
+    drawdown_penalty = min(
+        STRATEGY.number("fund.score.drawdown_penalty_cap"),
+        max(
+            0.0,
+            -max_drawdown - STRATEGY.number("fund.score.drawdown_penalty_start"),
+        ),
+    )
+    score = _score_clamp(score - drawdown_penalty)
+
+    volatility_threshold = STRATEGY.number("fund.period.high_volatility_percent")
+    reasons = [
+        f"本周期收益 {_round(period_return, 2)}%",
+        "最新净值位于本周期均值之上" if above_average else "最新净值位于本周期均值之下",
+        f"本周期最大回撤 {_round(max_drawdown, 2)}%",
+    ]
+    if annualized_volatility >= volatility_threshold:
+        reasons.append(
+            f"本周期年化波动 {_round(annualized_volatility, 2)}%，波动风险较高"
+        )
+
+    benchmark_return = _number((benchmark_metrics or {}).get("benchmarkReturn"))
+    tracking_difference = _number((benchmark_metrics or {}).get("trackingDifference"))
+    metric_status = str((benchmark_metrics or {}).get("benchmarkMetricStatus") or "")
+    if benchmark_return is not None:
+        reasons.append(f"同期跟踪基准收益 {_round(benchmark_return, 2)}%")
+    if tracking_difference is not None:
+        reasons.append(f"相对跟踪基准 {_round(tracking_difference, 2)}%")
+        relative_clip = STRATEGY.number("fund.index_score.tracking_difference_clip_percent")
+        score += _clamp(tracking_difference, -relative_clip, relative_clip) * STRATEGY.number(
+            "fund.index_score.tracking_difference_weight"
+        )
+
+    if metric_status == "ADEQUATE_SAMPLE":
+        tracking_error = _number((benchmark_metrics or {}).get("trackingError"))
+        correlation = _number((benchmark_metrics or {}).get("correlation"))
+        beta = _number((benchmark_metrics or {}).get("beta"))
+        information_ratio = _number((benchmark_metrics or {}).get("informationRatio"))
+        if tracking_error is not None:
+            excess_tracking_error = max(
+                0.0,
+                tracking_error
+                - STRATEGY.number("fund.index_score.tracking_error_penalty_start_percent"),
+            )
+            score -= min(
+                STRATEGY.number("fund.index_score.tracking_error_penalty_cap"),
+                excess_tracking_error,
+            )
+        if correlation is not None:
+            score -= max(
+                0.0,
+                STRATEGY.number("fund.index_score.correlation_penalty_start") - correlation,
+            ) * STRATEGY.number("fund.index_score.correlation_penalty_weight")
+        if beta is not None:
+            beta_excess = max(
+                0.0,
+                abs(beta - 1.0)
+                - STRATEGY.number("fund.index_score.beta_deviation_tolerance"),
+            )
+            score -= beta_excess * STRATEGY.number(
+                "fund.index_score.beta_deviation_penalty_weight"
+            )
+        if information_ratio is not None:
+            ir_clip = STRATEGY.number("fund.index_score.information_ratio_clip")
+            score += _clamp(information_ratio, -ir_clip, ir_clip) * STRATEGY.number(
+                "fund.index_score.information_ratio_weight"
+            )
+    elif metric_status == "LOW_SAMPLE":
+        reasons.append("基准回归指标样本偏少，本周期仅作为辅助参考")
+
+    score = _score_clamp(score)
+    if period_return <= pause_return or max_drawdown <= pause_drawdown:
+        direction = "NEGATIVE"
+        verdict = "WEAK"
+        action = STRATEGY.text("fund.period.weak_action")
+    elif (
+        score >= STRATEGY.number("score.favorable_minimum")
+        and period_return >= favorable_return
+        and benchmark_return is not None
+        and benchmark_return > 0
+    ):
+        direction = "POSITIVE"
+        verdict = "FAVORABLE"
+        action = STRATEGY.text("fund.period.favorable_action")
+    elif score < STRATEGY.number("score.wait_minimum") or period_return <= weak_return:
+        direction = "NEGATIVE"
+        verdict = "WEAK"
+        action = STRATEGY.text("fund.period.weak_action")
+    else:
+        direction = "NEUTRAL"
+        verdict = "WAIT"
+        action = STRATEGY.text("fund.period.neutral_action")
+
+    return {
+        "analysisMode": "EXPERIMENTAL_RULE_REFERENCE",
+        "adviceStatus": "EXPERIMENTAL",
+        "reasonCode": "EXPERIMENTAL_STRATEGY",
+        "reason": "实验性建议",
+        "score": _round(score, 1),
+        "periodAverageNav": _round(period_average, 4),
+        "latestToPeriodAverage": _round(
+            (values[-1] / period_average - 1) * 100 if period_average else None,
+            2,
+        ),
+        "direction": direction,
+        "verdict": verdict,
+        "action": action,
+        "reasons": reasons,
+    }
+
+
+def _unavailable_fund_decision(reason_code: str, reason: str) -> dict[str, Any]:
+    return {
+        "analysisMode": "DESCRIPTIVE_ONLY",
+        "adviceStatus": "UNAVAILABLE",
+        "reasonCode": reason_code,
+        "reason": reason,
+        "score": None,
+        "direction": "NEUTRAL",
+        "verdict": "WAIT",
+        "action": "WAIT",
+        "reasons": [],
+    }
+
+
 def analyze_fund(
     records: Iterable[Mapping[str, Any]],
     horizons: Mapping[str, Mapping[str, Any]] | None = None,
     primary_horizon: str | None = None,
     fund_category: str | None = None,
+    benchmark: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_category = str(fund_category).strip() if fund_category is not None else ""
     if not is_known_fund_category(normalized_category):
@@ -550,6 +777,26 @@ def analyze_fund(
             "requiredHistoryDays": minimum_history,
         }
     values = [item["close"] for item in quotes]
+    benchmark_summary: dict[str, Any] | None = None
+    aligned_quotes: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    benchmark_by_date: dict[str, dict[str, Any]] = {}
+    index_fund = is_index_fund_category(normalized_category)
+    if index_fund and benchmark:
+        benchmark_summary = {
+            key: benchmark.get(key)
+            for key in ("status", "code", "name", "sourceVersion", "reason")
+            if benchmark.get(key) is not None
+        }
+        if benchmark.get("status") == "READY":
+            benchmark_by_date = {
+                item["date"]: item
+                for item in _normalized_quotes(benchmark.get("records") or [])
+            }
+            aligned_quotes = [
+                (item, benchmark_by_date[item["date"]])
+                for item in quotes
+                if item["date"] in benchmark_by_date
+            ]
     fast_average_period = STRATEGY.integer("fund.fast_moving_average")
     slow_average_period = STRATEGY.integer("fund.slow_moving_average")
     ma_periods = sorted(set(STRATEGY.integer_list("fund.moving_average_periods")
@@ -562,7 +809,7 @@ def analyze_fund(
     current_drawdown_rounded = _round(current_drawdown, 2)
     drawdown_status = _drawdown_status(current_drawdown, max_drawdown)
     full_history = {
-        "scope": "VALIDATED_ANALYSIS_WINDOW",
+        "scope": "FULL_AVAILABLE_HISTORY",
         "recordCount": len(quotes),
         "startDate": quotes[0]["date"],
         "endDate": quotes[-1]["date"],
@@ -602,27 +849,69 @@ def analyze_fund(
                 "days": days,
                 "value": _round(value, 2),
             })
-        return {
+        full_window_return = (values[-1] / values[0] - 1) * 100
+        benchmark_metrics: dict[str, Any] = {}
+        if aligned_quotes:
+            aligned_fund_values = [item[0]["close"] for item in aligned_quotes]
+            aligned_benchmark_values = [item[1]["close"] for item in aligned_quotes]
+            benchmark_return = (
+                aligned_benchmark_values[-1] / aligned_benchmark_values[0] - 1
+            ) * 100
+            aligned_fund_return = (
+                aligned_fund_values[-1] / aligned_fund_values[0] - 1
+            ) * 100
+            benchmark_metrics = {
+                "benchmarkReturn": _round(benchmark_return, 2),
+                "trackingDifference": _round(aligned_fund_return - benchmark_return, 2),
+                "alignedObservationCount": len(aligned_quotes),
+                **_benchmark_relative_statistics(
+                    aligned_fund_values, aligned_benchmark_values
+                ),
+            }
+        if not index_fund:
+            decision = _unavailable_fund_decision(
+                "FUND_STRATEGY_UNAVAILABLE",
+                "该基金类别尚未配置经过区分的专属分析策略",
+            )
+        elif not benchmark_summary or benchmark_summary.get("status") != "READY":
+            decision = _unavailable_fund_decision(
+                str((benchmark_summary or {}).get("status") or "BENCHMARK_UNAVAILABLE"),
+                str((benchmark_summary or {}).get("reason") or "指数基金精确基准尚未准备完成"),
+            )
+        elif benchmark_metrics.get("benchmarkMetricStatus") not in {
+            "LOW_SAMPLE", "ADEQUATE_SAMPLE"
+        }:
+            decision = _unavailable_fund_decision(
+                "BENCHMARK_ALIGNMENT_INSUFFICIENT",
+                "基金与基准的同日收益样本不足",
+            )
+        else:
+            decision = _experimental_fund_decision(
+                values,
+                full_window_return,
+                annualized_volatility,
+                max_drawdown,
+                benchmark_metrics,
+            )
+        result = {
             "status": "READY",
-            "analysisMode": "DESCRIPTIVE_ONLY",
-            "adviceStatus": "UNAVAILABLE",
-            "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
-            "reason": "该基金类型尚无通过验证的专属策略，仅展示历史统计",
             "fundCategory": normalized_category,
             "strategyVersion": STRATEGY.version,
             "indicatorPeriods": {"movingAverages": ma_periods},
             "fullHistory": full_history,
-            "score": None,
-            "verdict": "WAIT",
             "returnMetrics": return_metrics,
             "annualizedVolatility": _round(annualized_volatility, 2),
             "maxDrawdown": _round(max_drawdown, 2),
             "drawdownRecovered": recovered,
             "drawdownPeakDate": quotes[peak_index]["date"],
             "drawdownTroughDate": quotes[trough_index]["date"],
-            "action": "WAIT",
             "series": series,
+            **benchmark_metrics,
+            **decision,
         }
+        if benchmark_summary is not None:
+            result["benchmark"] = benchmark_summary
+        return result
 
     period_results: dict[str, dict[str, Any]] = {}
     return_metrics = []
@@ -643,18 +932,68 @@ def analyze_fund(
             period_values
         )
         period_current_drawdown, period_current_peak_index = _current_drawdown(period_values)
-        direction = (
-            "POSITIVE"
-            if period_return is not None and period_return > 0
-            else "NEGATIVE"
-            if period_return is not None and period_return < 0
-            else "NEUTRAL"
-        )
+        benchmark_metrics: dict[str, Any] = {}
+        aligned_period = [
+            (item, benchmark_by_date[item["date"]])
+            for item in period_quotes
+            if item["date"] in benchmark_by_date
+        ]
+        if len(aligned_period) == target_days + 1:
+            aligned_fund_values = [item[0]["close"] for item in aligned_period]
+            aligned_benchmark_values = [item[1]["close"] for item in aligned_period]
+            benchmark_return = (
+                aligned_benchmark_values[-1] / aligned_benchmark_values[0] - 1
+            ) * 100
+            aligned_fund_return = (
+                aligned_fund_values[-1] / aligned_fund_values[0] - 1
+            ) * 100
+            benchmark_metrics = {
+                "benchmarkReturn": _round(benchmark_return, 2),
+                "trackingDifference": _round(aligned_fund_return - benchmark_return, 2),
+                "alignedObservationCount": len(aligned_period),
+                **_benchmark_relative_statistics(
+                    aligned_fund_values, aligned_benchmark_values
+                ),
+            }
+
+        if not complete or period_return is None:
+            decision = _unavailable_fund_decision(
+                "INSUFFICIENT_HORIZON_HISTORY",
+                "该周期可用历史数据不足",
+            )
+        elif not index_fund:
+            decision = _unavailable_fund_decision(
+                "FUND_STRATEGY_UNAVAILABLE",
+                "该基金类别尚未配置经过区分的专属分析策略",
+            )
+        elif not benchmark_summary or benchmark_summary.get("status") != "READY":
+            decision = _unavailable_fund_decision(
+                str((benchmark_summary or {}).get("status") or "BENCHMARK_UNAVAILABLE"),
+                str((benchmark_summary or {}).get("reason") or "指数基金精确基准尚未准备完成"),
+            )
+        elif benchmark_metrics.get("benchmarkMetricStatus") not in {
+            "LOW_SAMPLE", "ADEQUATE_SAMPLE"
+        }:
+            decision = _unavailable_fund_decision(
+                "BENCHMARK_ALIGNMENT_INSUFFICIENT",
+                "该周期内基金与基准的同日收益样本不足",
+            )
+        else:
+            decision = _experimental_fund_decision(
+                period_values,
+                period_return,
+                period_volatility,
+                period_max_drawdown,
+                benchmark_metrics,
+            )
         period_results[code] = {
             "status": "READY" if complete and period_return is not None else "LIMITED",
             "minimumDays": min_days,
             "maximumDays": max_days,
             "targetDays": target_days,
+            "observationCount": len(period_values),
+            "startDate": period_quotes[0]["date"],
+            "endDate": period_quotes[-1]["date"],
             "availableHistoryDays": len(values),
             "requiredHistoryDays": target_days,
             "return": _round(period_return, 2),
@@ -667,11 +1006,8 @@ def analyze_fund(
             "drawdownStatus": _drawdown_status(
                 period_current_drawdown, period_max_drawdown
             ),
-            "direction": direction,
-            "verdict": "WAIT",
-            "action": "WAIT",
-            "adviceStatus": "UNAVAILABLE",
-            "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
+            **benchmark_metrics,
+            **decision,
         }
         return_metrics.append({
             "code": code,
@@ -681,24 +1017,29 @@ def analyze_fund(
         })
 
     primary_code = primary_horizon if primary_horizon in period_results else next(iter(period_results))
-    return {
+    primary_result = period_results[primary_code]
+    result = {
         "status": "READY",
-        "analysisMode": "DESCRIPTIVE_ONLY",
-        "adviceStatus": "UNAVAILABLE",
-        "reasonCode": "CATEGORY_STRATEGY_UNVALIDATED",
-        "reason": "该基金类型尚无通过验证的专属策略，仅展示历史统计",
+        "analysisMode": primary_result["analysisMode"],
+        "adviceStatus": primary_result["adviceStatus"],
+        "reasonCode": primary_result["reasonCode"],
+        "reason": primary_result["reason"],
         "fundCategory": normalized_category,
         "strategyVersion": STRATEGY.version,
         "indicatorPeriods": {"movingAverages": ma_periods},
         "fullHistory": full_history,
         "horizons": period_results,
         "primaryHorizon": primary_code,
-        "score": None,
-        "verdict": "WAIT",
-        "action": "WAIT",
+        "score": primary_result["score"],
+        "verdict": primary_result["verdict"],
+        "action": primary_result["action"],
+        "reasons": primary_result["reasons"],
         "returnMetrics": return_metrics,
         "series": series,
     }
+    if benchmark_summary is not None:
+        result["benchmark"] = benchmark_summary
+    return result
 
 
 def _field(period: Mapping[str, Any], name: str) -> float | None:

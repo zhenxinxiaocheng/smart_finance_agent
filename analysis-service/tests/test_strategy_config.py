@@ -9,7 +9,15 @@ class StrategyConfigTest(unittest.TestCase):
     def test_versioned_file_is_the_only_runtime_strategy_parameter_source(self):
         strategy = load_strategy_config()
 
-        self.assertEqual("technical-strategy-v3", strategy.version)
+        self.assertEqual("technical-strategy-v5", strategy.version)
+        self.assertEqual(
+            5,
+            strategy.integer("fund.benchmark_relative_calculation_minimum_observations"),
+        )
+        self.assertEqual(
+            20,
+            strategy.integer("fund.benchmark_relative_recommended_observations"),
+        )
         self.assertEqual([5, 10, 20, 60, 120, 250],
                          strategy.integer_list("technical.moving_average_periods"))
         self.assertGreater(strategy.integer("backtest.maximum_evaluations_per_horizon"), 0)

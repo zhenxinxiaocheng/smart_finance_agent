@@ -29,7 +29,27 @@ public class AnalysisServiceClient {
                                   BigDecimal volumeRatio, BigDecimal amplitude,
                                   List<String> warnings, LocalDate inceptionDate,
                                   String fundTypeRaw, String fundCategory,
-                                  String classificationSource, String classificationVersion) {
+                                  String classificationSource, String classificationVersion,
+                                  String benchmarkName, String trackingTarget,
+                                  String benchmarkCode, String benchmarkSourceUri,
+                                  String benchmarkSourceVersion) {
+        public ResolvedProduct(String productType, String code, String name, String market,
+                               String currency, String provider, LocalDate dataDate,
+                               BigDecimal latestPrice, BigDecimal previousClose,
+                               BigDecimal changeAmount, BigDecimal changePercent,
+                               BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
+                               BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
+                               BigDecimal volumeRatio, BigDecimal amplitude,
+                               List<String> warnings, LocalDate inceptionDate,
+                               String fundTypeRaw, String fundCategory,
+                               String classificationSource, String classificationVersion) {
+            this(productType, code, name, market, currency, provider, dataDate, latestPrice,
+                    previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
+                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, inceptionDate,
+                    fundTypeRaw, fundCategory, classificationSource, classificationVersion,
+                    null, null, null, null, null);
+        }
+
         public ResolvedProduct(String productType, String code, String name, String market,
                                String currency, String provider, LocalDate dataDate,
                                BigDecimal latestPrice, BigDecimal previousClose,
@@ -41,7 +61,7 @@ public class AnalysisServiceClient {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
                     previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
                     volume, amount, turnoverRate, volumeRatio, amplitude, warnings, inceptionDate,
-                    null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
 
         public ResolvedProduct(String productType, String code, String name, String market,
@@ -55,7 +75,7 @@ public class AnalysisServiceClient {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
                     previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
                     volume, amount, turnoverRate, volumeRatio, amplitude, warnings, null,
-                    null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
 
         public ResolvedProduct(String productType, String code, String name, String market,
@@ -63,7 +83,7 @@ public class AnalysisServiceClient {
                                BigDecimal latestPrice, List<String> warnings) {
             this(productType, code, name, market, currency, provider, dataDate, latestPrice,
                     null, null, null, null, null, null, null, null, null, null, null, warnings, null,
-                    null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
     }
 
@@ -186,19 +206,20 @@ public class AnalysisServiceClient {
     }
 
     public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records) {
-        return fundAnalysis(records, null, Map.of(), null);
+        return fundAnalysis(records, null, Map.of(), null, Map.of());
     }
 
     public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records,
                                             Map<String, Map<String, Integer>> horizons,
                                             String primaryHorizon) {
-        return fundAnalysis(records, null, horizons, primaryHorizon);
+        return fundAnalysis(records, null, horizons, primaryHorizon, Map.of());
     }
 
     public Map<String, Object> fundAnalysis(List<? extends Map<String, ?>> records,
                                             String fundCategory,
                                             Map<String, Map<String, Integer>> horizons,
-                                            String primaryHorizon) {
+                                            String primaryHorizon,
+                                            Map<String, ?> benchmark) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("records", records);
         if (fundCategory != null && !fundCategory.isBlank()) {
@@ -206,6 +227,9 @@ public class AnalysisServiceClient {
         }
         body.put("horizons", horizons);
         body.put("primaryHorizon", primaryHorizon);
+        if (benchmark != null && !benchmark.isEmpty()) {
+            body.put("benchmark", benchmark);
+        }
         return postAnalysis("/internal/v1/analysis/fund", body);
     }
 
@@ -337,7 +361,7 @@ public class AnalysisServiceClient {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("product_type", productType);
         body.put("code", code);
-        Map<String, Object> response = restClient.post()
+        Map<String, Object> response = benchmarkRestClient.post()
                 .uri("/internal/v1/products/resolve")
                 .header("X-Internal-Token", internalToken)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -367,7 +391,12 @@ public class AnalysisServiceClient {
                 text(response, "fundTypeRaw"),
                 text(response, "fundCategory"),
                 text(response, "classificationSource"),
-                text(response, "classificationVersion")
+                text(response, "classificationVersion"),
+                text(response, "benchmarkName"),
+                text(response, "trackingTarget"),
+                text(response, "benchmarkCode"),
+                text(response, "benchmarkSourceUri"),
+                text(response, "benchmarkSourceVersion")
         );
     }
 

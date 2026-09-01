@@ -171,7 +171,10 @@ class AnalysisServiceClientTest {
                         {"records":[{"data_date":"2026-08-06","nav":"1.2345"}],
                          "fundCategory":"QDII_INDEX_FUND",
                          "horizons":{"SHORT":{"minDays":5,"maxDays":20,"targetDays":10}},
-                         "primaryHorizon":"SHORT"}
+                         "primaryHorizon":"SHORT",
+                         "benchmark":{"status":"READY","code":"CSI300",
+                                      "sourceVersion":"CSI-OFFICIAL-V1",
+                                      "records":[{"data_date":"2026-08-06","close":"101.2"}]}}
                         """))
                 .andRespond(withSuccess("""
                         {"status":"READY","analysisMode":"DESCRIPTIVE_ONLY",
@@ -182,7 +185,16 @@ class AnalysisServiceClientTest {
                 List.of(Map.of("data_date", "2026-08-06", "nav", "1.2345")),
                 "QDII_INDEX_FUND",
                 Map.of("SHORT", Map.of("minDays", 5, "maxDays", 20, "targetDays", 10)),
-                "SHORT");
+                "SHORT",
+                Map.of(
+                        "status", "READY",
+                        "code", "CSI300",
+                        "sourceVersion", "CSI-OFFICIAL-V1",
+                        "records", List.of(Map.of(
+                                "data_date", "2026-08-06",
+                                "close", "101.2"
+                        ))
+                ));
 
         assertThat(result)
                 .containsEntry("analysisMode", "DESCRIPTIVE_ONLY")

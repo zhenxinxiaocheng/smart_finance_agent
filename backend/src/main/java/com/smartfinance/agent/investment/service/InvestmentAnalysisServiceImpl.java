@@ -7,12 +7,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.entity.FinancialProfile;
 import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
 import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
+import com.smartfinance.agent.investment.domain.FundClassificationPolicy;
 import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
 import com.smartfinance.agent.investment.quant.QuantModelMonitor;
 import com.smartfinance.agent.investment.quant.QuantModelMonitorMapper;
+import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
+import com.smartfinance.agent.investment.quant.BenchmarkProfile;
 import com.smartfinance.agent.investment.quant.QuantStrategyVersion;
 import com.smartfinance.agent.investment.quant.QuantStrategyVersionMapper;
 import com.smartfinance.agent.mapper.FinancialProfileMapper;
@@ -51,6 +54,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final InvestmentFinancialWarningEngine warningEngine;
     private final QuantStrategyVersionMapper quantStrategyMapper;
     private final QuantModelMonitorMapper quantMonitorMapper;
+    private final QuantBenchmarkProfileService benchmarkProfileService;
 
     public InvestmentAnalysisServiceImpl(InvestmentAssetService assetService,
                                          InvestmentProductMapper productMapper,
@@ -69,7 +73,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          InvestmentDataJobService dataJobService,
                                          InvestmentFinancialWarningEngine warningEngine,
                                          QuantStrategyVersionMapper quantStrategyMapper,
-                                         QuantModelMonitorMapper quantMonitorMapper) {
+                                         QuantModelMonitorMapper quantMonitorMapper,
+                                         QuantBenchmarkProfileService benchmarkProfileService) {
         this.assetService = assetService;
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
@@ -88,6 +93,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.warningEngine = warningEngine;
         this.quantStrategyMapper = quantStrategyMapper;
         this.quantMonitorMapper = quantMonitorMapper;
+        this.benchmarkProfileService = benchmarkProfileService;
     }
 
     @Override
@@ -161,7 +167,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 horizonProperties.getAnalysisRuleVersion(),
                 product.getFundCategory(),
                 product.getClassificationSource(),
-                product.getClassificationVersion()
+                product.getClassificationVersion(),
+                quoteHistoryMaterial(quotes),
+                benchmarkCacheMaterial(product, quotes)
         );
         if (!Objects.equals(snapshot.getAnalysisCacheKey(), currentKey)) {
             return false;
@@ -182,7 +190,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             String analysisRuleVersion,
             String fundCategory,
             String classificationSource,
-            String classificationVersion) {
+            String classificationVersion,
+            Map<String, Object> quoteHistoryMaterial,
+            Map<String, Object> benchmarkMaterial) {
         Map<String, Object> material = new LinkedHashMap<>();
         material.put("datasetVersion", datasetVersion);
         material.put("qualityRuleSetVersion", qualityRuleSetVersion);
@@ -192,6 +202,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         material.put("fundCategory", fundCategory);
         material.put("classificationSource", classificationSource);
         material.put("classificationVersion", classificationVersion);
+        material.put("quoteHistory", quoteHistoryMaterial);
+        material.put("benchmark", benchmarkMaterial);
         return hash(writeJson(material));
     }
 
@@ -381,8 +393,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             sourceStatus.put("adapterVersion", manifest.get("adapterVersion"));
             sourceStatus.put("dataFetchedAt", manifest.get("fetchedAt"));
             sourceStatus.put("secondaryDatasetVersions", quality.secondaryDatasetVersions());
-            sourceStatus.put("quoteCount", quality.records().size());
-            sourceStatus.put("quoteStatus", quality.records().size()
+            sourceStatus.put("quoteCount", quotes.size());
+            sourceStatus.put("qualityWindowRecordCount", quality.records().size());
+            sourceStatus.put("quoteStatus", quotes.size()
                     >= horizonProperties.getMinimumHistoryTradingDays() ? "READY" : "INSUFFICIENT");
         } catch (RuntimeException exception) {
             sourceStatus.put("qualityStatus", "UNAVAILABLE");
@@ -422,6 +435,25 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         LocalDate quoteDate = quality == null || quality.records().isEmpty()
                 ? quotes.isEmpty() ? null : quotes.get(quotes.size() - 1).getTradeDate()
                 : latestRecordDate(quality.records());
+        Map<String, Object> fundBenchmark = qualityBlocked
+                ? Map.of()
+                : benchmarkPayload(product, quality.records());
+        if (!fundBenchmark.isEmpty()) {
+            sourceStatus.put("benchmarkStatus", fundBenchmark.get("status"));
+            sourceStatus.put("benchmarkCode", fundBenchmark.get("code"));
+            sourceStatus.put("benchmarkName", fundBenchmark.get("name"));
+            sourceStatus.put("benchmarkSourceVersion", fundBenchmark.get("sourceVersion"));
+            sourceStatus.put("benchmarkReason", fundBenchmark.get("reason"));
+            if ("BENCHMARK_UNAVAILABLE".equals(fundBenchmark.get("status"))) {
+                try {
+                    dataJobService.ensureBenchmarkQueued(
+                            userId, assetId, product.getId()
+                    );
+                } catch (RuntimeException queueException) {
+                    sourceStatus.put("benchmarkQueueError", queueException.getMessage());
+                }
+            }
+        }
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
         String configuredStrategyVersion = runtimeProperties.getAnalysis().getStrategyVersion();
         String analysisCacheKey = qualityBlocked ? null : analysisCacheKey(
@@ -432,7 +464,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 horizonProperties.getAnalysisRuleVersion(),
                 product.getFundCategory(),
                 product.getClassificationSource(),
-                product.getClassificationVersion()
+                product.getClassificationVersion(),
+                quoteHistoryMaterial(quotes),
+                benchmarkCacheMaterial(fundBenchmark)
         );
         boolean currentSnapshot = !qualityBlocked
                 && isCurrentSnapshot(snapshot, analysisCacheKey);
@@ -469,7 +503,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 snapshotMapper.updateById(snapshot);
             }
         } else {
-            List<Map<String, Object>> records = quality.records();
+            List<Map<String, Object>> records = "MUTUAL_FUND".equals(product.getProductType())
+                    ? quoteRecords(quotes)
+                    : quality.records();
             try {
                 if ("MUTUAL_FUND".equals(product.getProductType())) {
                     Map<String, Map<String, Integer>> fundHorizons = new LinkedHashMap<>();
@@ -484,7 +520,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                             records,
                             product.getFundCategory(),
                             fundHorizons,
-                            horizonProfile.primaryCode()
+                            horizonProfile.primaryCode(),
+                            fundBenchmark
                     );
                     technical = fund;
                     fundamental = Map.of("status", "NOT_APPLICABLE", "verdict", "NOT_APPLICABLE");
@@ -737,6 +774,15 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         return quotes.stream().map(InvestmentAnalysisServiceImpl::quoteRecord).toList();
     }
 
+    private static Map<String, Object> quoteHistoryMaterial(List<ProductDailyQuote> quotes) {
+        if (quotes.isEmpty()) return Map.of("count", 0);
+        return Map.of(
+                "count", quotes.size(),
+                "startDate", quotes.get(0).getTradeDate().toString(),
+                "endDate", quotes.get(quotes.size() - 1).getTradeDate().toString()
+        );
+    }
+
     static List<Map<String, Object>> displayQuoteSeries(
             List<ProductDailyQuote> quotes,
             Object analysisSeries) {
@@ -830,6 +876,132 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 .map(record -> LocalDate.parse(String.valueOf(record.get("data_date"))))
                 .max(LocalDate::compareTo)
                 .orElse(null);
+    }
+
+    private static LocalDate earliestRecordDate(List<Map<String, Object>> records) {
+        return records.stream()
+                .map(record -> LocalDate.parse(String.valueOf(record.get("data_date"))))
+                .min(LocalDate::compareTo)
+                .orElse(null);
+    }
+
+    private Map<String, Object> benchmarkPayload(
+            InvestmentProduct product,
+            List<Map<String, Object>> records) {
+        if (!FundClassificationPolicy.indexBased(product.getFundCategory()) || records.isEmpty()) {
+            return Map.of();
+        }
+        LocalDate startDate = earliestRecordDate(records);
+        LocalDate endDate = latestRecordDate(records);
+        return withBenchmarkName(
+                product,
+                endDate,
+                benchmarkPayload(resolveFundBenchmark(product, startDate, endDate))
+        );
+    }
+
+    private Map<String, Object> benchmarkCacheMaterial(
+            InvestmentProduct product,
+            List<ProductDailyQuote> quotes) {
+        if (!FundClassificationPolicy.indexBased(product.getFundCategory()) || quotes.isEmpty()) {
+            return Map.of();
+        }
+        LocalDate startDate = quotes.get(0).getTradeDate();
+        LocalDate endDate = quotes.get(quotes.size() - 1).getTradeDate();
+        return benchmarkCacheMaterial(withBenchmarkName(
+                product,
+                endDate,
+                benchmarkPayload(resolveFundBenchmark(product, startDate, endDate))
+        ));
+    }
+
+    private Map<String, Object> withBenchmarkName(
+            InvestmentProduct product,
+            LocalDate asOfDate,
+            Map<String, Object> benchmark) {
+        BenchmarkProfile profile = benchmarkProfileService.configuration(
+                product.getProductType(), product.getCode(), asOfDate
+        );
+        if (profile != null && profile.getDisplayName() != null
+                && !profile.getDisplayName().isBlank()) {
+            benchmark.put("name", profile.getDisplayName());
+        }
+        return benchmark;
+    }
+
+    private QuantBenchmarkProfileService.ResolvedBenchmark resolveFundBenchmark(
+            InvestmentProduct product,
+            LocalDate startDate,
+            LocalDate endDate) {
+        BenchmarkProfile profile = benchmarkProfileService.configuration(
+                product.getProductType(), product.getCode(), endDate
+        );
+        if (profile == null || !Objects.equals(product.getCode(), profile.getProductCode())) {
+            try {
+                AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
+                        product.getProductType(), product.getCode()
+                );
+                benchmarkProfileService.configureImportedFundBenchmark(product, resolved);
+                profile = benchmarkProfileService.configuration(
+                        product.getProductType(), product.getCode(), endDate
+                );
+            } catch (RuntimeException exception) {
+                return new QuantBenchmarkProfileService.ResolvedBenchmark(
+                        false,
+                        null,
+                        product.getFundCategory(),
+                        null,
+                        List.of(),
+                        "BENCHMARK_UNAVAILABLE",
+                        "存量基金基准补齐失败：" + exception.getMessage()
+                );
+            }
+        }
+        if (profile == null || !Objects.equals(product.getCode(), profile.getProductCode())) {
+            return new QuantBenchmarkProfileService.ResolvedBenchmark(
+                    false,
+                    null,
+                    product.getFundCategory(),
+                    null,
+                    List.of(),
+                    "BENCHMARK_UNAVAILABLE",
+                    "未配置与当前基金代码精确匹配的官方基准"
+            );
+        }
+        return benchmarkProfileService.resolveCached(
+                product.getProductType(), product.getCode(), endDate, startDate, endDate
+        );
+    }
+
+    static Map<String, Object> benchmarkPayload(
+            QuantBenchmarkProfileService.ResolvedBenchmark benchmark) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", benchmark.available() ? "READY" : benchmark.failureCode());
+        if (benchmark.benchmarkCode() != null) {
+            payload.put("code", benchmark.benchmarkCode());
+        }
+        if (benchmark.sourceVersion() != null) {
+            payload.put("sourceVersion", benchmark.sourceVersion());
+        }
+        if (benchmark.failureSummary() != null) {
+            payload.put("reason", benchmark.failureSummary());
+        }
+        payload.put("records", benchmark.records());
+        return payload;
+    }
+
+    private static Map<String, Object> benchmarkCacheMaterial(
+            Map<String, Object> benchmark) {
+        if (benchmark.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> material = new LinkedHashMap<>();
+        for (String key : List.of("status", "code", "name", "sourceVersion")) {
+            if (benchmark.get(key) != null) {
+                material.put(key, benchmark.get(key));
+            }
+        }
+        return material;
     }
 
     @SuppressWarnings("unchecked")

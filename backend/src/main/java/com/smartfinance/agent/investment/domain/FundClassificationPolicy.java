@@ -28,6 +28,11 @@ public final class FundClassificationPolicy {
         return !blank(category) && !"UNKNOWN".equals(category);
     }
 
+    public static boolean indexBased(String category) {
+        return "INDEX_FUND".equals(category)
+                || (!blank(category) && category.endsWith("_INDEX_FUND"));
+    }
+
     private static boolean blank(String value) {
         return value == null || value.isBlank();
     }

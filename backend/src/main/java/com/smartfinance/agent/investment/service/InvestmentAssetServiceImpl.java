@@ -5,6 +5,8 @@ import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
+import com.smartfinance.agent.investment.quant.BenchmarkProfile;
+import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +39,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final InvestmentRuntimeProperties runtimeProperties;
     private final ChinaTradingCalendarService tradingCalendar;
     private final FundClassificationService classificationService;
+    private final QuantBenchmarkProfileService benchmarkProfileService;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -51,7 +54,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentDataJobService dataJobService,
                                       InvestmentRuntimeProperties runtimeProperties,
                                       ChinaTradingCalendarService tradingCalendar,
-                                      FundClassificationService classificationService) {
+                                      FundClassificationService classificationService,
+                                      QuantBenchmarkProfileService benchmarkProfileService) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -63,6 +67,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.runtimeProperties = runtimeProperties;
         this.tradingCalendar = tradingCalendar;
         this.classificationService = classificationService;
+        this.benchmarkProfileService = benchmarkProfileService;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -98,6 +103,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             replaceHolding(userId, asset, request.getQuantity(), request.getAverageCost(), asset.getNote());
         }
         dataJobService.ensureQueued(userId, asset.getId(), product.getId(), product.getProductType(), false);
+        if (resolved.benchmarkCode() != null) {
+            dataJobService.ensureBenchmarkQueued(userId, asset.getId(), product.getId());
+        }
         return toView(asset);
     }
 
@@ -140,6 +148,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     public InvestmentAssetView refresh(Long userId, Long assetId, boolean force) {
         InvestmentAsset asset = requireAsset(userId, assetId);
         refreshAsset(asset, force);
+        queueBenchmarkHistory(asset);
         return toView(asset);
     }
 
@@ -149,7 +158,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 .eq(InvestmentAsset::getUserId, userId)
                 .orderByDesc(InvestmentAsset::getUpdatedAt));
         List<CompletableFuture<Void>> refreshTasks = assets.stream()
-                .map(asset -> CompletableFuture.runAsync(() -> refreshAsset(asset, force), refreshExecutor))
+                .map(asset -> CompletableFuture.runAsync(() -> {
+                    refreshAsset(asset, force);
+                    queueBenchmarkHistory(asset);
+                }, refreshExecutor))
                 .toList();
         CompletableFuture.allOf(refreshTasks.toArray(CompletableFuture[]::new)).join();
         return assets.stream().map(this::toView).toList();
@@ -256,6 +268,21 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         asset.setSyncStatus(outcome.status());
         asset.setSyncError(outcome.error());
         assetMapper.updateById(asset);
+    }
+
+    private void queueBenchmarkHistory(InvestmentAsset asset) {
+        InvestmentProduct product = productMapper.selectById(asset.getProductId());
+        if (product == null || !"MUTUAL_FUND".equals(product.getProductType())) {
+            return;
+        }
+        BenchmarkProfile profile = benchmarkProfileService.configuration(
+                product.getProductType(), product.getCode(), LocalDate.now()
+        );
+        if (profile != null && Objects.equals(product.getCode(), profile.getProductCode())) {
+            dataJobService.ensureBenchmarkQueued(
+                    asset.getUserId(), asset.getId(), product.getId()
+            );
+        }
     }
 
     private boolean canReuse(InvestmentProduct product, CachedRefreshOutcome cached, LocalDateTime now) {
@@ -387,6 +414,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
         classificationService.applyResolved(product, resolved);
         if (product.getId() == null) productMapper.insert(product); else productMapper.updateById(product);
+        benchmarkProfileService.configureImportedFundBenchmark(product, resolved);
         return product;
     }
 

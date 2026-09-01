@@ -133,7 +133,12 @@ public class InvestmentDataJobService {
                                                   String jobType) {
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing != null) {
-            if (List.of("SUCCEEDED", "FAILED", "PARTIAL", "CANCELLED")
+            boolean retryBenchmarkNow = "BENCHMARK_HISTORY".equals(jobType)
+                    && ("RETRY_WAIT".equals(existing.getStatus())
+                    || ("QUEUED".equals(existing.getStatus())
+                    && (existing.getNextRetryAt() != null
+                    || existing.getErrorMessage() != null)));
+            if (retryBenchmarkNow || List.of("SUCCEEDED", "FAILED", "PARTIAL", "CANCELLED")
                     .contains(existing.getStatus())) {
                 resetForRefresh(existing);
                 existing.setForceRefresh(false);
@@ -164,11 +169,21 @@ public class InvestmentDataJobService {
     }
 
     public Map<String, Object> statusForAsset(Long userId, Long assetId) {
-        InvestmentDataJob job = mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
-                .eq(InvestmentDataJob::getUserId, userId)
-                .eq(InvestmentDataJob::getAssetId, assetId)
-                .orderByDesc(InvestmentDataJob::getUpdatedAt)
-                .last("LIMIT 1"));
+        InvestmentAsset asset = assetMapper.selectOne(new LambdaQueryWrapper<InvestmentAsset>()
+                .eq(InvestmentAsset::getUserId, userId)
+                .eq(InvestmentAsset::getId, assetId)
+                .eq(InvestmentAsset::getDeleted, 0));
+        if (asset == null) {
+            return Map.of();
+        }
+        InvestmentProduct product = productMapper.selectById(asset.getProductId());
+        if (product == null) {
+            return Map.of();
+        }
+        InvestmentDataJob job = findByAssetAndType(
+                assetId,
+                jobTypeFor(product.getProductType())
+        );
         if (job == null) {
             return Map.of();
         }

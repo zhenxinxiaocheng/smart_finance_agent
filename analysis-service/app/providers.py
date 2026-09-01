@@ -418,6 +418,11 @@ def normalize_resolved_product(
     fund_category: str | None = None,
     classification_source: str | None = None,
     classification_version: str | None = None,
+    benchmark_name: str | None = None,
+    tracking_target: str | None = None,
+    benchmark_code: str | None = None,
+    benchmark_source_uri: str | None = None,
+    benchmark_source_version: str | None = None,
 ) -> dict[str, Any]:
     price = _decimal(latest_price)
     return {
@@ -446,6 +451,11 @@ def normalize_resolved_product(
         "fundCategory": fund_category,
         "classificationSource": classification_source,
         "classificationVersion": classification_version,
+        "benchmarkName": benchmark_name,
+        "trackingTarget": tracking_target,
+        "benchmarkCode": benchmark_code,
+        "benchmarkSourceUri": benchmark_source_uri,
+        "benchmarkSourceVersion": benchmark_source_version,
     }
 
 
@@ -482,6 +492,70 @@ def _stock_inception_date(ak_module: Any, code: str) -> date | None:
     return None
 
 
+def _normalized_index_name(value: Any) -> str:
+    text = re.sub(r"[\s（）()·,，]", "", str(value or "")).strip()
+    for suffix in ("全收益指数", "净收益指数", "价格指数", "指数收益率", "收益率", "指数"):
+        if text.endswith(suffix):
+            text = text[:-len(suffix)]
+            break
+    return text.casefold()
+
+
+def _fund_benchmark_metadata(ak_module: Any, code: str) -> dict[str, Any]:
+    overview_provider = getattr(ak_module, "fund_overview_em", None)
+    if overview_provider is None:
+        return {}
+    records = overview_provider(symbol=code).to_dict("records")
+    if not records:
+        return {}
+    overview = records[0]
+    inception_date = _provider_date(
+        _first_text(overview, "成立日期/规模", "成立日期", "inception_date")
+    )
+    benchmark_name = _first_text(overview, "业绩比较基准", "performance_benchmark")
+    tracking_target = _first_text(overview, "跟踪标的", "tracking_target")
+    if tracking_target.startswith("该基金无"):
+        tracking_target = ""
+
+    target_name = _normalized_index_name(tracking_target)
+    resolved_index_code = ""
+    if target_name:
+        for provider_name in ("index_stock_info", "index_stock_info_sina"):
+            index_provider = getattr(ak_module, provider_name, None)
+            if index_provider is None:
+                continue
+            try:
+                index_records = index_provider().to_dict("records")
+            except Exception:
+                continue
+            matches: list[str] = []
+            for item in index_records:
+                index_name = _first_text(
+                    item, "display_name", "index_name", "指数名称", "指数简称", "name"
+                )
+                raw_code = _first_text(
+                    item, "index_code", "symbol", "指数代码", "代码", "code"
+                )
+                digits = "".join(character for character in raw_code if character.isdigit())
+                if _normalized_index_name(index_name) == target_name and len(digits) >= 6:
+                    matches.append(digits[-6:])
+            canonical_matches = sorted(set(matches))
+            if canonical_matches:
+                resolved_index_code = canonical_matches[0]
+                break
+
+    result = {
+        "inceptionDate": None if inception_date is None else inception_date.isoformat(),
+        "benchmarkName": benchmark_name or None,
+        "trackingTarget": tracking_target or None,
+        "benchmarkSourceUri": f"https://fundf10.eastmoney.com/jbgk_{code}.html",
+        "benchmarkSourceVersion": "AKSHARE-FUND-OVERVIEW-V1",
+    }
+    if resolved_index_code:
+        result["benchmarkCode"] = f"CN_INDEX:{resolved_index_code}"
+    return result
+
+
 def resolve_product_metadata(
     product_type: str,
     code: str,
@@ -505,6 +579,7 @@ def resolve_product_metadata(
     fund_catalog_records: tuple[dict[str, Any], ...] = ()
     fund_catalog_match: dict[str, Any] | None = None
     fund_classification = classify_fund_type(None)
+    fund_benchmark: dict[str, Any] = {}
     inception_date: date | None = None
     if normalized_type == "STOCK":
         records = ak_module.stock_info_a_code_name().to_dict("records")
@@ -528,6 +603,11 @@ def resolve_product_metadata(
             warnings.append(f"AKSHARE 行情获取失败: {exc}")
     else:
         market = "FUND_CN"
+        try:
+            fund_benchmark = _fund_benchmark_metadata(ak_module, normalized_code)
+            inception_date = _provider_date(fund_benchmark.get("inceptionDate"))
+        except Exception as exc:
+            warnings.append(f"AKSHARE 基金基准获取失败: {exc}")
         try:
             fund_catalog_records = _fund_catalog_records(ak_module, clock=cache_clock)
         except Exception as exc:
@@ -559,6 +639,7 @@ def resolve_product_metadata(
                     snapshot_match, normalized_code, fund_classification)
                 if snapshot_result is not None:
                     snapshot_result["warnings"] = warnings
+                    snapshot_result.update(fund_benchmark)
                     return snapshot_result
                 warnings.append(f"AKSHARE 基金快照未返回有效净值 {normalized_code}")
 
@@ -618,6 +699,11 @@ def resolve_product_metadata(
             "AKSHARE_FUND_NAME_EM" if fund_classification.raw_type is not None else None
         ),
         classification_version=fund_classification.version,
+        benchmark_name=fund_benchmark.get("benchmarkName"),
+        tracking_target=fund_benchmark.get("trackingTarget"),
+        benchmark_code=fund_benchmark.get("benchmarkCode"),
+        benchmark_source_uri=fund_benchmark.get("benchmarkSourceUri"),
+        benchmark_source_version=fund_benchmark.get("benchmarkSourceVersion"),
     )
 
 
@@ -1289,41 +1375,6 @@ def fetch_benchmark_history(
         except ImportError as exc:
             raise ProviderUnavailable("AKShare is not installed") from exc
 
-    if normalized == "CSI300_95_CASH_5":
-        try:
-            frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
-            rows = _benchmark_rows(frame, start_date, end_date)
-            return _weighted_benchmark(rows, Decimal("0.95"))
-        except Exception as akshare_error:
-            if baostock_module is not None:
-                rows = _baostock_benchmark_rows(
-                    start_date,
-                    end_date,
-                    baostock_module=baostock_module,
-                )
-                return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
-            try:
-                rows = _eastmoney_csi300_rows(start_date, end_date)
-                return _weighted_benchmark(rows, Decimal("0.95"), provider="EASTMONEY")
-            except Exception:
-                try:
-                    rows = _tencent_csi300_rows(start_date, end_date)
-                    return _weighted_benchmark(rows, Decimal("0.95"), provider="TENCENT")
-                except Exception:
-                    pass
-                try:
-                    rows = _baostock_benchmark_rows(start_date, end_date)
-                    return _weighted_benchmark(rows, Decimal("0.95"), provider="BAOSTOCK")
-                except Exception as baostock_error:
-                    raise ProviderUnavailable(
-                        f"沪深300基准数据源暂不可用："
-                        f"AKShare={type(akshare_error).__name__}, "
-                        f"BaoStock={type(baostock_error).__name__}"
-                    ) from baostock_error
-    if normalized == "AU9999_95_CASH_5":
-        frame = ak_module.spot_hist_sge(symbol="Au99.99")
-        rows = _benchmark_rows(frame, start_date, end_date)
-        return _weighted_benchmark(rows, Decimal("0.95"))
     if normalized in {"NASDAQ100_TR_CNY", "NASDAQ100_FX_ADJUSTED"}:
         frame = ak_module.index_global_hist_em(symbol="纳斯达克100")
         rows = _benchmark_rows(frame, start_date, end_date)
@@ -1336,19 +1387,51 @@ def fetch_benchmark_history(
         ]
         if len(adjusted) < 2:
             raise ProviderUnavailable("AKSHARE 未返回足够的纳斯达克100汇率调整数据")
-        return _weighted_benchmark(adjusted, Decimal("1"))
+        return _normalized_benchmark_level(adjusted)
+    if normalized.startswith("CN_INDEX:"):
+        index_code = normalized.split(":", 1)[1]
+        if len(index_code) != 6 or not index_code.isdigit():
+            raise ValueError(f"invalid China index benchmark code: {benchmark_code}")
+        provider_symbol = _china_index_provider_symbol(index_code)
+        providers = (
+            (
+                "AKSHARE_EASTMONEY",
+                lambda: ak_module.index_zh_a_hist(
+                    symbol=index_code,
+                    period="daily",
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                ),
+            ),
+            (
+                "AKSHARE_SINA",
+                lambda: ak_module.stock_zh_index_daily(symbol=provider_symbol),
+            ),
+            (
+                "AKSHARE_TENCENT",
+                lambda: ak_module.stock_zh_index_daily_tx(symbol=provider_symbol),
+            ),
+        )
+        errors: list[str] = []
+        for provider, loader in providers:
+            try:
+                rows = _benchmark_rows(loader(), start_date, end_date)
+                return _normalized_benchmark_level(rows, provider=provider)
+            except Exception as exc:
+                errors.append(f"{provider}: {exc}")
+        raise ProviderUnavailable("；".join(errors))
     if normalized == "CSI300":
         try:
             frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
             rows = _benchmark_rows(frame, start_date, end_date)
-            return _weighted_benchmark(rows, Decimal("1"))
+            return _normalized_benchmark_level(rows)
         except Exception:
             rows = _baostock_benchmark_rows(
                 start_date,
                 end_date,
                 baostock_module=baostock_module,
             )
-            return _weighted_benchmark(rows, Decimal("1"), provider="BAOSTOCK")
+            return _normalized_benchmark_level(rows, provider="BAOSTOCK")
     raise ValueError(f"unsupported benchmark code: {benchmark_code}")
 
 
@@ -1373,6 +1456,14 @@ def _benchmark_rows(
     if len(result) < 2:
         raise ProviderUnavailable("AKSHARE 未返回足够的基准历史数据")
     return result
+
+
+def _china_index_provider_symbol(index_code: str) -> str:
+    if index_code.startswith("399"):
+        return f"sz{index_code}"
+    if index_code.startswith("899"):
+        return f"bj{index_code}"
+    return f"sh{index_code}"
 
 
 def _benchmark_fx_rows(
@@ -1493,9 +1584,8 @@ def _eastmoney_csi300_rows(
     return normalized
 
 
-def _weighted_benchmark(
+def _normalized_benchmark_level(
     rows: list[tuple[date, Decimal]],
-    risky_weight: Decimal,
     *,
     provider: str = "AKSHARE",
 ) -> list[dict[str, Any]]:
@@ -1505,8 +1595,8 @@ def _weighted_benchmark(
     result: list[dict[str, Any]] = []
     for index, (data_date, value) in enumerate(rows):
         if index:
-            risky_return = value / previous - Decimal("1")
-            level *= Decimal("1") + risky_weight * risky_return
+            period_return = value / previous - Decimal("1")
+            level *= Decimal("1") + period_return
             level = level.quantize(Decimal("0.0001"))
         result.append({
             "data_date": data_date.isoformat(),

@@ -167,19 +167,14 @@ class ProviderNormalizationTest(unittest.TestCase):
 
         self.assertEqual(["2026-09-30", "2026-10-08"], result)
 
-    def test_official_composite_benchmark_builds_versioned_synthetic_level(self):
-        result = fetch_benchmark_history(
-            "CSI300_95_CASH_5",
-            date(2026, 7, 9),
-            date(2026, 7, 10),
-            ak_module=FakeAkshare(),
-        )
-
-        self.assertEqual("2026-07-09", result[0]["data_date"])
-        self.assertEqual("100", result[0]["close"])
-        self.assertEqual("109.5000", result[1]["close"])
-        self.assertEqual("AKSHARE", result[0]["provider"])
-        self.assertEqual("benchmark-adapter-v1", result[0]["adapter_version"])
+    def test_incomplete_composite_benchmark_is_not_approximated_with_zero_cash_return(self):
+        with self.assertRaisesRegex(ValueError, "unsupported benchmark code"):
+            fetch_benchmark_history(
+                "CSI300_95_CASH_5",
+                date(2026, 7, 9),
+                date(2026, 7, 10),
+                ak_module=FakeAkshare(),
+            )
 
     def test_csi300_benchmark_falls_back_to_baostock_when_akshare_is_unavailable(self):
         class FailingAkshare:
@@ -218,7 +213,7 @@ class ProviderNormalizationTest(unittest.TestCase):
 
         baostock = FakeBaoStock()
         result = fetch_benchmark_history(
-            "CSI300_95_CASH_5",
+            "CSI300",
             date(2026, 7, 9),
             date(2026, 7, 10),
             ak_module=FailingAkshare(),
@@ -226,7 +221,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         )
 
         self.assertEqual("sh.000300", baostock.call[0])
-        self.assertEqual("109.5000", result[1]["close"])
+        self.assertEqual("110.0000", result[1]["close"])
         self.assertEqual("BAOSTOCK", result[0]["provider"])
 
     def test_tencent_can_supply_long_csi300_benchmark_history(self):

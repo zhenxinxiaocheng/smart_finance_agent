@@ -179,6 +179,7 @@ class FundamentalAnalysisRequest(AnalysisRequest):
 
 class FundAnalysisRequest(AnalysisRequest):
     records: list[dict[str, Any]]
+    benchmark: dict[str, Any] | None = None
     fund_category: str | None = Field(
         default=None,
         validation_alias=AliasChoices("fund_category", "fundCategory"),
@@ -568,6 +569,7 @@ def fund_analysis(request: FundAnalysisRequest):
         request.horizons,
         request.primary_horizon,
         request.fund_category,
+        request.benchmark,
     )
 
 
