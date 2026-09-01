@@ -198,7 +198,7 @@
                 <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium">
                   <span class="flex items-center gap-2">
                     <span>专业指标</span>
-                    <span v-if="!hasFundBenchmarkMetrics" class="text-xs font-normal text-muted-foreground">数据待准备</span>
+                    <span v-if="!hasFundBenchmarkMetrics" class="text-xs font-normal text-muted-foreground">{{ fundBenchmarkStateLabel }}</span>
                   </span>
                   <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
                 </summary>
@@ -212,6 +212,9 @@
                       <span class="text-muted-foreground">指标样本</span>
                       <strong :class="fundBenchmarkSampleTone">{{ fundBenchmarkSampleLabel }}</strong>
                     </div>
+                    <p v-if="fundBenchmarkReason && !hasFundBenchmarkMetrics" class="mt-2 leading-5 text-muted-foreground">
+                      {{ fundBenchmarkReason }}
+                    </p>
                   </div>
                   <ActionPriceRow
                     label="基准收益"
@@ -509,6 +512,12 @@ const hasFundBenchmarkMetrics = computed(() => [
 ].some(key => hasMetric(activeFundPeriod.value?.[key])))
 const fundBenchmark = computed(() => technical.value.benchmark || {})
 const fundBenchmarkLabel = computed(() => fundBenchmark.value.name || fundBenchmark.value.code || '尚未准备')
+const fundBenchmarkReason = computed(() => fundBenchmark.value.reason || sourceStatus.value.benchmarkReason || '')
+const fundBenchmarkStateLabel = computed(() => {
+  if (fundBenchmark.value.status === 'READY') return '样本待准备'
+  if (fundBenchmarkReason.value) return '基准未就绪'
+  return '数据待准备'
+})
 const fundBenchmarkSampleLabel = computed(() => {
   const count = activeFundPeriod.value?.benchmarkMetricObservationCount
   const recommended = activeFundPeriod.value?.benchmarkMetricRecommendedObservationCount

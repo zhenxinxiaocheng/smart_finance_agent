@@ -133,6 +133,47 @@ class FakeFundSnapshotAkshare:
         ])
 
 
+class FakeGoldFundAkshare(FakeFundSnapshotAkshare):
+    def __init__(self, tracking_target="黄金9999"):
+        super().__init__([{
+            "基金代码": "000218",
+            "基金简称": "国泰黄金ETF联接A",
+            "2026-07-18-单位净值": "2.100",
+            "2026-07-17-单位净值": "2.000",
+        }])
+        self.tracking_target = tracking_target
+        self.sge_symbol = None
+
+    def fund_name_em(self):
+        self.name_calls += 1
+        return FakeFrame([{
+            "基金代码": "000218",
+            "基金简称": "国泰黄金ETF联接A",
+            "基金类型": "指数型-其他",
+        }])
+
+    def fund_overview_em(self, symbol):
+        assert symbol == "000218"
+        return FakeFrame([{
+            "成立日期/规模": "2016-04-13 / 2.00亿份",
+            "业绩比较基准": "上海黄金交易所挂盘交易的Au99.99合约收益率*95%+银行活期存款税后收益率*5%",
+            "跟踪标的": self.tracking_target,
+        }])
+
+    def index_stock_info(self):
+        return FakeFrame([])
+
+    def index_stock_info_sina(self):
+        return FakeFrame([])
+
+    def spot_hist_sge(self, symbol):
+        self.sge_symbol = symbol
+        return FakeFrame([
+            {"date": "2026-07-09", "close": "500.0"},
+            {"date": "2026-07-10", "close": "510.0"},
+        ])
+
+
 class FakeMonotonicClock:
     def __init__(self, value=100.0):
         self.value = value
@@ -395,6 +436,55 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("HYBRID_FUND", result["fundCategory"])
         self.assertEqual("AKSHARE_FUND_NAME_EM", result["classificationSource"])
         self.assertEqual("fund-classification-v1", result["classificationVersion"])
+
+    def test_resolve_gold_fund_uses_registry_instead_of_fund_code_mapping(self):
+        result = resolve_product_metadata(
+            "MUTUAL_FUND", "000218", ak_module=FakeGoldFundAkshare()
+        )
+
+        self.assertEqual("SGE_SPOT:AU99.99", result["benchmarkCode"])
+        self.assertEqual({"SGE_SPOT:AU99.99": 1.0}, result["benchmarkComponents"])
+        self.assertEqual("READY", result["benchmarkResolutionStatus"])
+        self.assertIsNone(result["benchmarkResolutionReason"])
+
+    def test_unknown_fund_target_reports_unsupported_without_fallback(self):
+        result = resolve_product_metadata(
+            "MUTUAL_FUND", "000218", ak_module=FakeGoldFundAkshare("未知商品指数")
+        )
+
+        self.assertIsNone(result["benchmarkCode"])
+        self.assertEqual({}, result["benchmarkComponents"])
+        self.assertEqual("UNSUPPORTED_BENCHMARK", result["benchmarkResolutionStatus"])
+        self.assertIn("未知商品指数", result["benchmarkResolutionReason"])
+
+    def test_sge_spot_benchmark_uses_generic_symbol_adapter(self):
+        provider = FakeGoldFundAkshare()
+
+        result = fetch_benchmark_history(
+            "SGE_SPOT:AU99.99",
+            date(2026, 7, 9),
+            date(2026, 7, 10),
+            ak_module=provider,
+        )
+
+        self.assertEqual("Au99.99", provider.sge_symbol)
+        self.assertEqual("AKSHARE_SGE", result[0]["provider"])
+        self.assertEqual("102.0000", result[1]["close"])
+
+    def test_composite_benchmark_combines_component_daily_returns(self):
+        result = fetch_benchmark_history(
+            "COMPOSITE:fixture",
+            date(2026, 7, 9),
+            date(2026, 7, 10),
+            components={
+                "SGE_SPOT:AU99.99": 0.5,
+                "GLOBAL_INDEX:纳斯达克100": 0.5,
+            },
+            ak_module=FakeAkshare(),
+        )
+
+        self.assertEqual("COMPOSITE", result[0]["provider"])
+        self.assertEqual("101.5000", result[1]["close"])
 
     def test_resolve_domestic_fund_prefers_latest_valued_dynamic_snapshot_column(self):
         provider = FakeFundSnapshotAkshare([{

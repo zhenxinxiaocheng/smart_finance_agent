@@ -936,12 +936,14 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         BenchmarkProfile profile = benchmarkProfileService.configuration(
                 product.getProductType(), product.getCode(), endDate
         );
+        String resolutionReason = null;
         if (profile == null || !Objects.equals(product.getCode(), profile.getProductCode())) {
             try {
                 AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
                         product.getProductType(), product.getCode()
                 );
                 benchmarkProfileService.configureImportedFundBenchmark(product, resolved);
+                resolutionReason = resolved.benchmarkResolutionReason();
                 profile = benchmarkProfileService.configuration(
                         product.getProductType(), product.getCode(), endDate
                 );
@@ -965,7 +967,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                     null,
                     List.of(),
                     "BENCHMARK_UNAVAILABLE",
-                    "未配置与当前基金代码精确匹配的官方基准"
+                    resolutionReason == null || resolutionReason.isBlank()
+                            ? "未配置与当前基金代码精确匹配的官方基准"
+                            : resolutionReason
             );
         }
         return benchmarkProfileService.resolveCached(

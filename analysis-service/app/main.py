@@ -61,6 +61,7 @@ class BenchmarkHistoryRequest(BaseModel):
     )
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
+    components: dict[str, float] | None = None
 
 
 class FundResearchUniverseRequest(BaseModel):
@@ -415,6 +416,7 @@ def daily_benchmark(request: BenchmarkHistoryRequest):
             request.benchmark_code,
             request.start_date,
             request.end_date,
+            components=request.components,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

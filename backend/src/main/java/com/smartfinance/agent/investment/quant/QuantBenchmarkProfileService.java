@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -71,7 +72,11 @@ public class QuantBenchmarkProfileService {
         profile.setDisplayName(resolved.trackingTarget() == null
                 ? resolved.benchmarkName()
                 : resolved.trackingTarget());
-        profile.setCompositionJson(writeJson(Map.of(resolved.benchmarkCode(), 1.0d)));
+        Map<String, BigDecimal> components = resolved.benchmarkComponents() == null
+                || resolved.benchmarkComponents().isEmpty()
+                ? Map.of(resolved.benchmarkCode(), BigDecimal.ONE)
+                : resolved.benchmarkComponents();
+        profile.setCompositionJson(writeJson(components));
         profile.setCurrency(product.getCurrency());
         profile.setFxRule("NONE");
         profile.setSourceUri(resolved.benchmarkSourceUri());
@@ -135,6 +140,7 @@ public class QuantBenchmarkProfileService {
         try {
             Map<String, Object> response = analysisClient.benchmarkHistory(
                     profile.getBenchmarkCode(),
+                    benchmarkComponents(profile),
                     startDate,
                     endDate
             );
@@ -306,12 +312,27 @@ public class QuantBenchmarkProfileService {
             if (Math.abs(weightSum - 1.0d) > 0.000001d) {
                 return "官方基准成分权重之和不等于1";
             }
-            if (composition.size() > 1) {
-                return "复合基准缺少全部成分的独立收益和来源版本";
-            }
             return null;
         } catch (JsonProcessingException exception) {
             return "官方基准成分合同无法解析";
+        }
+    }
+
+    private Map<String, BigDecimal> benchmarkComponents(BenchmarkProfile profile) {
+        try {
+            Map<String, Object> raw = objectMapper.readValue(
+                    profile.getCompositionJson(),
+                    new TypeReference<>() { }
+            );
+            Map<String, BigDecimal> components = new LinkedHashMap<>();
+            raw.forEach((code, weight) -> {
+                if (code != null && weight != null) {
+                    components.put(code, new BigDecimal(String.valueOf(weight)));
+                }
+            });
+            return components;
+        } catch (JsonProcessingException | NumberFormatException exception) {
+            throw new IllegalStateException("官方基准成分合同无法读取", exception);
         }
     }
 

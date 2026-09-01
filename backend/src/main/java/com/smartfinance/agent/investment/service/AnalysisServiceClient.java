@@ -32,7 +32,31 @@ public class AnalysisServiceClient {
                                   String classificationSource, String classificationVersion,
                                   String benchmarkName, String trackingTarget,
                                   String benchmarkCode, String benchmarkSourceUri,
-                                  String benchmarkSourceVersion) {
+                                  String benchmarkSourceVersion,
+                                  Map<String, BigDecimal> benchmarkComponents,
+                                  String benchmarkResolutionStatus,
+                                  String benchmarkResolutionReason) {
+        public ResolvedProduct(String productType, String code, String name, String market,
+                               String currency, String provider, LocalDate dataDate,
+                               BigDecimal latestPrice, BigDecimal previousClose,
+                               BigDecimal changeAmount, BigDecimal changePercent,
+                               BigDecimal openPrice, BigDecimal highPrice, BigDecimal lowPrice,
+                               BigDecimal volume, BigDecimal amount, BigDecimal turnoverRate,
+                               BigDecimal volumeRatio, BigDecimal amplitude,
+                               List<String> warnings, LocalDate inceptionDate,
+                               String fundTypeRaw, String fundCategory,
+                               String classificationSource, String classificationVersion,
+                               String benchmarkName, String trackingTarget,
+                               String benchmarkCode, String benchmarkSourceUri,
+                               String benchmarkSourceVersion) {
+            this(productType, code, name, market, currency, provider, dataDate, latestPrice,
+                    previousClose, changeAmount, changePercent, openPrice, highPrice, lowPrice,
+                    volume, amount, turnoverRate, volumeRatio, amplitude, warnings, inceptionDate,
+                    fundTypeRaw, fundCategory, classificationSource, classificationVersion,
+                    benchmarkName, trackingTarget, benchmarkCode, benchmarkSourceUri,
+                    benchmarkSourceVersion, Map.of(), null, null);
+        }
+
         public ResolvedProduct(String productType, String code, String name, String market,
                                String currency, String provider, LocalDate dataDate,
                                BigDecimal latestPrice, BigDecimal previousClose,
@@ -274,10 +298,20 @@ public class AnalysisServiceClient {
     public Map<String, Object> benchmarkHistory(String benchmarkCode,
                                                 LocalDate startDate,
                                                 LocalDate endDate) {
+        return benchmarkHistory(benchmarkCode, Map.of(), startDate, endDate);
+    }
+
+    public Map<String, Object> benchmarkHistory(String benchmarkCode,
+                                                Map<String, BigDecimal> components,
+                                                LocalDate startDate,
+                                                LocalDate endDate) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("benchmarkCode", benchmarkCode);
         body.put("startDate", startDate.toString());
         body.put("endDate", endDate.toString());
+        if (components != null && !components.isEmpty()) {
+            body.put("components", components);
+        }
         return postInternal(
                 benchmarkRestClient,
                 "/internal/v1/market-data/benchmarks/daily",
@@ -396,8 +430,22 @@ public class AnalysisServiceClient {
                 text(response, "trackingTarget"),
                 text(response, "benchmarkCode"),
                 text(response, "benchmarkSourceUri"),
-                text(response, "benchmarkSourceVersion")
+                text(response, "benchmarkSourceVersion"),
+                decimalMap(response.get("benchmarkComponents")),
+                text(response, "benchmarkResolutionStatus"),
+                text(response, "benchmarkResolutionReason")
         );
+    }
+
+    private static Map<String, BigDecimal> decimalMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) return Map.of();
+        Map<String, BigDecimal> result = new LinkedHashMap<>();
+        raw.forEach((key, item) -> {
+            if (key != null && item != null) {
+                result.put(String.valueOf(key), new BigDecimal(String.valueOf(item)));
+            }
+        });
+        return result;
     }
 
     private static String text(Map<String, Object> response, String key) {

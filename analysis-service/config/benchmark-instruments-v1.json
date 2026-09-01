@@ -1,0 +1,64 @@
+{
+  "version": "benchmark-instruments-v1",
+  "instruments": [
+    {
+      "benchmarkCode": "SGE_SPOT:AU99.99",
+      "providerSymbol": "Au99.99",
+      "aliases": [
+        "Au99.99",
+        "黄金9999",
+        "黄金99.99",
+        "上海黄金交易所Au99.99合约",
+        "上海黄金交易所挂盘交易的Au99.99合约"
+      ]
+    },
+    {
+      "benchmarkCode": "SGE_SPOT:AU99.95",
+      "providerSymbol": "Au99.95",
+      "aliases": [
+        "Au99.95",
+        "黄金9995",
+        "黄金99.95",
+        "上海黄金交易所Au99.95合约"
+      ]
+    },
+    {
+      "benchmarkCode": "SGE_SPOT:AG(T+D)",
+      "providerSymbol": "Ag(T+D)",
+      "aliases": [
+        "Ag(T+D)",
+        "白银T+D",
+        "上海黄金交易所Ag(T+D)合约"
+      ]
+    },
+    {
+      "benchmarkCode": "GLOBAL_INDEX_FX:纳斯达克100@USDCNY",
+      "providerSymbol": "纳斯达克",
+      "providerSymbols": {
+        "index_global_hist_em": "纳斯达克",
+        "index_us_stock_sina": ".NDX"
+      },
+      "aliases": [
+        "纳斯达克100",
+        "纳斯达克100指数",
+        "NASDAQ100",
+        "NASDAQ-100"
+      ]
+    }
+  ],
+  "fxInstruments": [
+    {
+      "symbol": "USDCNY",
+      "providerSymbols": {
+        "forex_hist_em": "USDCNY",
+        "currency_boc_sina": "美元"
+      },
+      "providerValueFields": {
+        "currency_boc_sina": "央行中间价"
+      },
+      "providerScales": {
+        "currency_boc_sina": 0.01
+      }
+    }
+  ]
+}

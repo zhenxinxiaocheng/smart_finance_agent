@@ -17,6 +17,12 @@ from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from .data_quality.models import AdjustType, DataSnapshotContext, ProductType
+from .benchmark_registry import (
+    benchmark_provider_symbol,
+    fx_provider_config,
+    normalize_benchmark_name,
+    resolve_fund_benchmark,
+)
 from .fund_classification import FundClassification, classify_fund_type
 from .strategy_config import load_strategy_config
 
@@ -421,6 +427,9 @@ def normalize_resolved_product(
     benchmark_name: str | None = None,
     tracking_target: str | None = None,
     benchmark_code: str | None = None,
+    benchmark_components: dict[str, float] | None = None,
+    benchmark_resolution_status: str | None = None,
+    benchmark_resolution_reason: str | None = None,
     benchmark_source_uri: str | None = None,
     benchmark_source_version: str | None = None,
 ) -> dict[str, Any]:
@@ -454,6 +463,9 @@ def normalize_resolved_product(
         "benchmarkName": benchmark_name,
         "trackingTarget": tracking_target,
         "benchmarkCode": benchmark_code,
+        "benchmarkComponents": dict(benchmark_components or {}),
+        "benchmarkResolutionStatus": benchmark_resolution_status,
+        "benchmarkResolutionReason": benchmark_resolution_reason,
         "benchmarkSourceUri": benchmark_source_uri,
         "benchmarkSourceVersion": benchmark_source_version,
     }
@@ -493,12 +505,57 @@ def _stock_inception_date(ak_module: Any, code: str) -> date | None:
 
 
 def _normalized_index_name(value: Any) -> str:
-    text = re.sub(r"[\s（）()·,，]", "", str(value or "")).strip()
-    for suffix in ("全收益指数", "净收益指数", "价格指数", "指数收益率", "收益率", "指数"):
-        if text.endswith(suffix):
-            text = text[:-len(suffix)]
-            break
-    return text.casefold()
+    return normalize_benchmark_name(value)
+
+
+def _benchmark_target_resolver(ak_module: Any):
+    aliases: dict[str, str] = {}
+    index_candidates: dict[str, set[str]] = {}
+    loaded = False
+
+    def load() -> None:
+        nonlocal loaded
+        if loaded:
+            return
+        loaded = True
+        for provider_name in ("index_stock_info", "index_stock_info_sina"):
+            provider = getattr(ak_module, provider_name, None)
+            if provider is None:
+                continue
+            try:
+                records = provider().to_dict("records")
+            except Exception:
+                continue
+            for item in records:
+                name = _first_text(
+                    item, "display_name", "index_name", "指数名称", "指数简称", "name"
+                )
+                raw_code = _first_text(
+                    item, "index_code", "symbol", "指数代码", "代码", "code"
+                )
+                digits = "".join(character for character in raw_code if character.isdigit())
+                normalized_name = _normalized_index_name(name)
+                if normalized_name and len(digits) >= 6:
+                    index_candidates.setdefault(normalized_name, set()).add(digits[-6:])
+        for name, codes in index_candidates.items():
+            aliases[name] = f"CN_INDEX:{sorted(codes)[0]}"
+        sge_provider = getattr(ak_module, "spot_symbol_table_sge", None)
+        if sge_provider is not None:
+            try:
+                records = sge_provider().to_dict("records")
+            except Exception:
+                records = []
+            for item in records:
+                symbol = _first_text(item, "品种", "symbol", "代码", "code")
+                normalized_name = _normalized_index_name(symbol)
+                if normalized_name and symbol:
+                    aliases.setdefault(normalized_name, f"SGE_SPOT:{symbol.upper()}")
+
+    def resolve(value: str) -> str | None:
+        load()
+        return aliases.get(_normalized_index_name(value))
+
+    return resolve
 
 
 def _fund_benchmark_metadata(ak_module: Any, code: str) -> dict[str, Any]:
@@ -517,42 +574,26 @@ def _fund_benchmark_metadata(ak_module: Any, code: str) -> dict[str, Any]:
     if tracking_target.startswith("该基金无"):
         tracking_target = ""
 
-    target_name = _normalized_index_name(tracking_target)
-    resolved_index_code = ""
-    if target_name:
-        for provider_name in ("index_stock_info", "index_stock_info_sina"):
-            index_provider = getattr(ak_module, provider_name, None)
-            if index_provider is None:
-                continue
-            try:
-                index_records = index_provider().to_dict("records")
-            except Exception:
-                continue
-            matches: list[str] = []
-            for item in index_records:
-                index_name = _first_text(
-                    item, "display_name", "index_name", "指数名称", "指数简称", "name"
-                )
-                raw_code = _first_text(
-                    item, "index_code", "symbol", "指数代码", "代码", "code"
-                )
-                digits = "".join(character for character in raw_code if character.isdigit())
-                if _normalized_index_name(index_name) == target_name and len(digits) >= 6:
-                    matches.append(digits[-6:])
-            canonical_matches = sorted(set(matches))
-            if canonical_matches:
-                resolved_index_code = canonical_matches[0]
-                break
+    resolution = resolve_fund_benchmark(
+        tracking_target,
+        benchmark_name,
+        _benchmark_target_resolver(ak_module),
+    )
 
     result = {
         "inceptionDate": None if inception_date is None else inception_date.isoformat(),
         "benchmarkName": benchmark_name or None,
         "trackingTarget": tracking_target or None,
         "benchmarkSourceUri": f"https://fundf10.eastmoney.com/jbgk_{code}.html",
-        "benchmarkSourceVersion": "AKSHARE-FUND-OVERVIEW-V1",
+        "benchmarkSourceVersion": (
+            f"AKSHARE-FUND-OVERVIEW-V2|{resolution.registry_version}"
+        ),
+        "benchmarkComponents": resolution.components,
+        "benchmarkResolutionStatus": resolution.status,
+        "benchmarkResolutionReason": resolution.reason,
     }
-    if resolved_index_code:
-        result["benchmarkCode"] = f"CN_INDEX:{resolved_index_code}"
+    if resolution.benchmark_code:
+        result["benchmarkCode"] = resolution.benchmark_code
     return result
 
 
@@ -702,6 +743,9 @@ def resolve_product_metadata(
         benchmark_name=fund_benchmark.get("benchmarkName"),
         tracking_target=fund_benchmark.get("trackingTarget"),
         benchmark_code=fund_benchmark.get("benchmarkCode"),
+        benchmark_components=fund_benchmark.get("benchmarkComponents"),
+        benchmark_resolution_status=fund_benchmark.get("benchmarkResolutionStatus"),
+        benchmark_resolution_reason=fund_benchmark.get("benchmarkResolutionReason"),
         benchmark_source_uri=fund_benchmark.get("benchmarkSourceUri"),
         benchmark_source_version=fund_benchmark.get("benchmarkSourceVersion"),
     )
@@ -1363,6 +1407,7 @@ def fetch_benchmark_history(
     start_date: date,
     end_date: date,
     *,
+    components: dict[str, float] | None = None,
     ak_module: Any = None,
     baostock_module: Any = None,
 ) -> list[dict[str, Any]]:
@@ -1375,10 +1420,33 @@ def fetch_benchmark_history(
         except ImportError as exc:
             raise ProviderUnavailable("AKShare is not installed") from exc
 
-    if normalized in {"NASDAQ100_TR_CNY", "NASDAQ100_FX_ADJUSTED"}:
-        frame = ak_module.index_global_hist_em(symbol="纳斯达克100")
-        rows = _benchmark_rows(frame, start_date, end_date)
-        fx_rows = _benchmark_fx_rows(ak_module, start_date, end_date)
+    normalized_components = {
+        str(code).strip(): float(weight)
+        for code, weight in (components or {}).items()
+        if str(code).strip()
+    }
+    if len(normalized_components) > 1:
+        return _composite_benchmark_history(
+            normalized_components,
+            start_date,
+            end_date,
+            ak_module=ak_module,
+            baostock_module=baostock_module,
+        )
+
+    if normalized.startswith("GLOBAL_INDEX_FX:"):
+        contract = benchmark_code.strip().split(":", 1)[1]
+        if "@" not in contract:
+            raise ValueError(f"invalid FX-adjusted global benchmark code: {benchmark_code}")
+        symbol, fx_symbol = (item.strip() for item in contract.rsplit("@", 1))
+        if not symbol or not fx_symbol:
+            raise ValueError(f"invalid FX-adjusted global benchmark code: {benchmark_code}")
+        rows, index_provider = _global_index_rows(
+            ak_module, benchmark_code, symbol, start_date, end_date
+        )
+        fx_rows, fx_provider = _benchmark_fx_rows(
+            ak_module, start_date, end_date, fx_symbol
+        )
         fx_by_date = {item[0]: item[1] for item in fx_rows}
         adjusted = [
             (data_date, value * fx_by_date[data_date])
@@ -1386,8 +1454,18 @@ def fetch_benchmark_history(
             if data_date in fx_by_date
         ]
         if len(adjusted) < 2:
-            raise ProviderUnavailable("AKSHARE 未返回足够的纳斯达克100汇率调整数据")
-        return _normalized_benchmark_level(adjusted)
+            raise ProviderUnavailable("AKSHARE 未返回足够的全球指数汇率调整数据")
+        return _normalized_benchmark_level(
+            adjusted, provider=f"{index_provider}+{fx_provider}"
+        )
+    if normalized in {"NASDAQ100_TR_CNY", "NASDAQ100_FX_ADJUSTED"}:
+        return fetch_benchmark_history(
+            "GLOBAL_INDEX_FX:纳斯达克100@USDCNY",
+            start_date,
+            end_date,
+            ak_module=ak_module,
+            baostock_module=baostock_module,
+        )
     if normalized.startswith("CN_INDEX:"):
         index_code = normalized.split(":", 1)[1]
         if len(index_code) != 6 or not index_code.isdigit():
@@ -1420,6 +1498,25 @@ def fetch_benchmark_history(
             except Exception as exc:
                 errors.append(f"{provider}: {exc}")
         raise ProviderUnavailable("；".join(errors))
+    if normalized.startswith("SGE_SPOT:"):
+        requested_symbol = benchmark_code.strip().split(":", 1)[1]
+        configured_symbol = benchmark_provider_symbol(benchmark_code, requested_symbol)
+        symbol = _sge_provider_symbol(ak_module, configured_symbol)
+        try:
+            frame = ak_module.spot_hist_sge(symbol=symbol)
+            rows = _benchmark_rows(frame, start_date, end_date)
+            return _normalized_benchmark_level(rows, provider="AKSHARE_SGE")
+        except Exception as exc:
+            raise ProviderUnavailable(f"AKSHARE_SGE: {exc}") from exc
+    if normalized.startswith("GLOBAL_INDEX:"):
+        symbol = benchmark_code.strip().split(":", 1)[1]
+        try:
+            rows, provider = _global_index_rows(
+                ak_module, benchmark_code, symbol, start_date, end_date
+            )
+            return _normalized_benchmark_level(rows, provider=provider)
+        except Exception as exc:
+            raise ProviderUnavailable(f"AKSHARE_GLOBAL_INDEX: {exc}") from exc
     if normalized == "CSI300":
         try:
             frame = ak_module.stock_zh_index_daily_em(symbol="sh000300")
@@ -1435,13 +1532,107 @@ def fetch_benchmark_history(
     raise ValueError(f"unsupported benchmark code: {benchmark_code}")
 
 
+def _sge_provider_symbol(ak_module: Any, requested_symbol: str) -> str:
+    provider = getattr(ak_module, "spot_symbol_table_sge", None)
+    if provider is None:
+        return requested_symbol
+    try:
+        records = provider().to_dict("records")
+    except Exception:
+        return requested_symbol
+    expected = requested_symbol.casefold()
+    for item in records:
+        symbol = _first_text(item, "品种", "symbol", "代码", "code")
+        if symbol.casefold() == expected:
+            return symbol
+    return requested_symbol
+
+
+def _global_index_rows(
+    ak_module: Any,
+    benchmark_code: str,
+    fallback_symbol: str,
+    start_date: date,
+    end_date: date,
+) -> tuple[list[tuple[date, Decimal]], str]:
+    providers = (
+        ("index_global_hist_em", "AKSHARE_EASTMONEY_GLOBAL", fallback_symbol),
+        ("index_us_stock_sina", "AKSHARE_SINA_US_INDEX", None),
+    )
+    errors: list[str] = []
+    for method_name, source, fallback in providers:
+        method = getattr(ak_module, method_name, None)
+        symbol = benchmark_provider_symbol(benchmark_code, fallback, method_name)
+        if method is None or symbol is None:
+            continue
+        try:
+            return _benchmark_rows(method(symbol=symbol), start_date, end_date), source
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise ProviderUnavailable("；".join(errors) or "未配置可用的全球指数行情源")
+
+
+def _composite_benchmark_history(
+    components: dict[str, float],
+    start_date: date,
+    end_date: date,
+    *,
+    ak_module: Any,
+    baostock_module: Any = None,
+) -> list[dict[str, Any]]:
+    if any(weight <= 0 for weight in components.values()):
+        raise ValueError("benchmark component weights must be positive")
+    if abs(sum(components.values()) - 1.0) > 0.000001:
+        raise ValueError("benchmark component weights must total one")
+    component_levels: dict[str, dict[date, Decimal]] = {}
+    for code in components:
+        records = fetch_benchmark_history(
+            code,
+            start_date,
+            end_date,
+            ak_module=ak_module,
+            baostock_module=baostock_module,
+        )
+        component_levels[code] = {
+            date.fromisoformat(str(record["data_date"])[:10]): Decimal(str(record["close"]))
+            for record in records
+        }
+    dates = sorted({data_date for levels in component_levels.values() for data_date in levels})
+    current: dict[str, Decimal] = {}
+    previous: dict[str, Decimal] | None = None
+    level = Decimal("1")
+    rows: list[tuple[date, Decimal]] = []
+    for data_date in dates:
+        for code, levels in component_levels.items():
+            if data_date in levels:
+                current[code] = levels[data_date]
+        if len(current) != len(components):
+            continue
+        if previous is None:
+            rows.append((data_date, level))
+            previous = dict(current)
+            continue
+        daily_return = sum(
+            Decimal(str(components[code])) * (current[code] / previous[code] - Decimal("1"))
+            for code in components
+        )
+        level *= Decimal("1") + daily_return
+        rows.append((data_date, level))
+        previous = dict(current)
+    if len(rows) < 2:
+        raise ProviderUnavailable("复合基准没有足够的共同历史区间")
+    return _normalized_benchmark_level(rows, provider="COMPOSITE")
+
+
 def _benchmark_rows(
     frame: Any,
     start_date: date,
     end_date: date,
+    *,
+    close_aliases: tuple[str, ...] = ("close", "收盘", "收盘价", "最新价", "单位净值"),
+    scale: Decimal = Decimal("1"),
 ) -> list[tuple[date, Decimal]]:
     date_aliases = ("date", "日期", "净值日期")
-    close_aliases = ("close", "收盘", "收盘价", "单位净值")
     rows: list[tuple[date, Decimal]] = []
     for raw in frame.to_dict("records"):
         raw_date = next((raw.get(key) for key in date_aliases if raw.get(key) is not None), None)
@@ -1450,6 +1641,8 @@ def _benchmark_rows(
             continue
         data_date = date.fromisoformat(str(raw_date)[:10])
         close = _decimal(raw_close)
+        if close is not None:
+            close *= scale
         if start_date <= data_date <= end_date and close is not None and close > 0:
             rows.append((data_date, close))
     result = sorted(dict(rows).items())
@@ -1470,9 +1663,41 @@ def _benchmark_fx_rows(
     ak_module: Any,
     start_date: date,
     end_date: date,
-) -> list[tuple[date, Decimal]]:
-    frame = ak_module.forex_hist_em(symbol="USDCNY")
-    return _benchmark_rows(frame, start_date, end_date)
+    symbol: str = "USDCNY",
+) -> tuple[list[tuple[date, Decimal]], str]:
+    providers = (
+        ("forex_hist_em", "AKSHARE_EASTMONEY_FX"),
+        ("currency_boc_sina", "AKSHARE_SINA_BOC_FX"),
+    )
+    errors: list[str] = []
+    for method_name, source in providers:
+        config = fx_provider_config(symbol, method_name)
+        method = getattr(ak_module, method_name, None)
+        if config is None or method is None:
+            continue
+        try:
+            if method_name == "currency_boc_sina":
+                frame = method(
+                    symbol=config["symbol"],
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                )
+            else:
+                frame = method(symbol=config["symbol"])
+            aliases = (config["valueField"],) if config.get("valueField") else (
+                "close", "收盘", "收盘价", "最新价"
+            )
+            rows = _benchmark_rows(
+                frame,
+                start_date,
+                end_date,
+                close_aliases=aliases,
+                scale=Decimal(str(config.get("scale", 1))),
+            )
+            return rows, source
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise ProviderUnavailable("；".join(errors) or f"未配置汇率行情源: {symbol}")
 
 
 def _baostock_benchmark_rows(
