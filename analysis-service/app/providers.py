@@ -1556,8 +1556,8 @@ def _global_index_rows(
     end_date: date,
 ) -> tuple[list[tuple[date, Decimal]], str]:
     providers = (
-        ("index_global_hist_em", "AKSHARE_EASTMONEY_GLOBAL", fallback_symbol),
-        ("index_us_stock_sina", "AKSHARE_SINA_US_INDEX", None),
+        ("index_global_hist_em", "AK_EM_GLOBAL", fallback_symbol),
+        ("index_us_stock_sina", "AK_SINA_US_INDEX", None),
     )
     errors: list[str] = []
     for method_name, source, fallback in providers:
@@ -1666,8 +1666,8 @@ def _benchmark_fx_rows(
     symbol: str = "USDCNY",
 ) -> tuple[list[tuple[date, Decimal]], str]:
     providers = (
-        ("forex_hist_em", "AKSHARE_EASTMONEY_FX"),
-        ("currency_boc_sina", "AKSHARE_SINA_BOC_FX"),
+        ("forex_hist_em", "AK_EM_FX"),
+        ("currency_boc_sina", "AK_SINA_BOC_FX"),
     )
     errors: list[str] = []
     for method_name, source in providers:
