@@ -1,9 +1,9 @@
 import { onBeforeUnmount, ref } from 'vue'
 import { feedback } from '@/lib/feedback'
+import { researchLabels } from './researchExplanation.js'
 
 export const labels = {
   ATTENTION_REQUIRED:'运行存在风险提示', WAITING_EXECUTION:'等待模拟成交', MONITORING:'持续监测中', WAITING_SIGNAL:'等待交易信号',
-  CORPORATE_ACTION_UNSUPPORTED:'检测到疑似分红、除权或价格异常，尚未完成还原核验',
   FILLED:'已全部成交', PARTIALLY_FILLED:'部分成交', PARTIALLY_FILLED_CANCELLED:'部分成交，余单已取消', REJECTED:'已拒绝',
   SUSPENDED_OR_PRICE_LIMIT:'停牌或触及涨跌停限制', INSUFFICIENT_CASH_OR_POSITION:'可用资金或持仓不足', INSUFFICIENT_CASH_AFTER_ROUNDING:'金额取整后可用资金不足',
   DRAWDOWN_LIMIT:'触发回撤限制', BEFORE_SIGNAL_START:'早于策略恢复日期', PAUSE:'组合暂停', STOP:'组合停止', LIQUIDATE:'模拟清仓',
@@ -13,10 +13,7 @@ export const labels = {
   TREND: '趋势策略', MULTI_FACTOR: '多因子策略', ML_ELASTIC_NET: 'Elastic Net', ML_XGBOOST: 'XGBoost',
   TRAINING: '模型训练', FACTOR: '因子研究', BACKTEST: '组合回测', BUY: '买入', SELL: '卖出',
   EXECUTING:'计算中', COMPLETED:'已完成', STOPPING:'等待清仓和结算',
-  CORPORATE_ACTIONS_NOT_VERIFIED:'缺少分红除权核验，当前不能认证部署',
-  INSUFFICIENT_EVALUATION_DATES:'有效评估日期不足', NO_EXECUTED_TRADES:'没有实际模拟成交',
-  DRAWDOWN_LIMIT_EXCEEDED:'最大回撤超过设定上限', MODEL_FINAL_HOLDOUT_UNQUALIFIED:'模型最终留出集未通过验证',
-  FINAL_HOLDOUT_IC_NOT_POSITIVE:'最终留出集预测相关性未大于零', FINAL_HOLDOUT_NOT_BETTER_THAN_TRAIN_MEAN:'最终留出集误差未优于训练均值基线',
+  ...researchLabels,
 }
 export const label = value => labels[value] || value || '—'
 export const format = value => value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)

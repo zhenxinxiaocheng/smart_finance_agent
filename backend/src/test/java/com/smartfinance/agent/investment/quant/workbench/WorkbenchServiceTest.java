@@ -68,6 +68,88 @@ class WorkbenchServiceTest {
     }
 
     @Test
+    void researchContextUsesFrozenSourcesAndDoesNotInflateLists() {
+        String pool = (String) universe().get("id");
+        String strategy = (String) strategy(pool).get("id");
+        var task = service.createTask(1L, "backtests", Map.of("strategyId", strategy,
+                "startDate", "2023-01-01", "endDate", "2023-03-02"));
+        String taskId = (String) task.get("id");
+        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
+        request.put("modelRef", "frozen-model");
+        request.put("modelTaskId", "frozen-training");
+        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.encode(request), taskId);
+        var result = Map.of("provenance", Map.of("modelRef", "different-model", "modelTaskId", "different-training"));
+        db.update("UPDATE quant_v2_task SET result_json=? WHERE id=?", service.encode(Map.of("result", result)), taskId);
+        service.save(1L, "strategies", strategy, Map.of("name", "新策略名称", "universeId", pool,
+                "config", Map.of("strategyType", "TREND", "lookback", 40)));
+        service.cancel(1L, "backtests", taskId);
+        service.deleteStrategy(1L, strategy);
+        service.delete(1L, "universes", pool);
+        var detail = service.get(1L, "backtests", taskId);
+        assertThat(detail).containsKey("researchContext");
+        var context = WorkbenchService.map(detail.get("researchContext"));
+        var lineage = WorkbenchService.map(context.get("lineage"));
+        assertThat(WorkbenchService.map(lineage.get("strategy")))
+                .containsEntry("name", "趋势测试").containsEntry("version", 1)
+                .containsEntry("currentStatus", "DELETED");
+        assertThat(context).containsEntry("modelRef", "frozen-model").containsEntry("modelTaskId", "frozen-training");
+        assertThat(detail.get("result")).isEqualTo(result);
+        assertThat((List<Map<String,Object>>) context.get("warnings"))
+                .anySatisfy(w -> assertThat(w).containsEntry("code", "SOURCE_REFERENCE_CONFLICT").containsEntry("source", "provenance.modelRef"))
+                .anySatisfy(w -> assertThat(w).containsEntry("code", "SOURCE_REFERENCE_CONFLICT").containsEntry("source", "provenance.modelTaskId"));
+        var data = (List<Map<String,Object>>) context.get("dataSnapshot");
+        assertThat(data).hasSize(1);
+        assertThat(data.get(0)).containsEntry("startDate", "2023-01-02")
+                .containsEntry("endDate", "2023-03-02").containsEntry("observations", 60)
+                .containsEntry("sources", List.of("TEST")).doesNotContainKey("bars");
+        assertThat(service.list(1L, "backtests").get(0)).doesNotContainKey("researchContext");
+        assertThatThrownBy(() -> service.get(2L, "backtests", taskId)).isInstanceOf(ResponseStatusException.class);
+    }
+
+    @Test
+    void eachTaskKeepsItsOwnUniverseAndFactorVersions() {
+        String pool = (String) universe().get("id");
+        var factor = service.save(1L, "factors", null, Map.of("name", "因子一", "assetClass", "FUND",
+                "factors", List.of(Map.of("key", "momentum", "weight", 1))));
+        var strategy = service.save(1L, "strategies", null, Map.of("name", "多因子", "universeId", pool,
+                "factorSetId", factor.get("id"), "config", Map.of("strategyType", "MULTI_FACTOR")));
+        var body = Map.<String,Object>of("strategyId", strategy.get("id"), "startDate", "2023-01-01", "endDate", "2023-03-02");
+        var first = service.createTask(1L, "backtests", body);
+        service.save(1L, "universes", pool, Map.of("name", "池二", "assetClass", "FUND", "assetIds", List.of(1)));
+        service.save(1L, "factors", (String) factor.get("id"), Map.of("name", "因子二", "assetClass", "FUND",
+                "factors", List.of(Map.of("key", "momentum", "weight", 2))));
+        var second = service.createTask(1L, "backtests", body);
+        assertThat(first.get("strategyVersionId")).isEqualTo(second.get("strategyVersionId"));
+        var a = WorkbenchService.map(WorkbenchService.map(first.get("researchContext")).get("lineage"));
+        var b = WorkbenchService.map(WorkbenchService.map(second.get("researchContext")).get("lineage"));
+        assertThat(WorkbenchService.map(a.get("universe"))).containsEntry("version", 1);
+        assertThat(WorkbenchService.map(b.get("universe"))).containsEntry("version", 2);
+        assertThat(WorkbenchService.map(a.get("factorSet"))).containsEntry("name", "因子一");
+        assertThat(WorkbenchService.map(b.get("factorSet"))).containsEntry("name", "因子二");
+    }
+
+    @Test
+    void invalidOrForeignVersionReferencesNeverExposeSnapshots() {
+        String pool = (String) universe().get("id");
+        String strategy = (String) strategy(pool).get("id");
+        var task = service.createTask(1L, "backtests", Map.of("strategyId", strategy,
+                "startDate", "2023-01-01", "endDate", "2023-03-02"));
+        String taskId = (String) task.get("id");
+        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
+        request.put("universeVersionId", task.get("strategyVersionId"));
+        request.put("factorVersionId", "foreign-version");
+        db.update("INSERT INTO quant_v2_version VALUES(?,?,?,?,?,?)", "foreign-version", 2L, "foreign-factor", 1,
+                "{\"name\":\"SECRET\"}", "2023-01-01");
+        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.encode(request), taskId);
+        var context = WorkbenchService.map(service.get(1L, "backtests", taskId).get("researchContext"));
+        assertThat(context).containsKey("warnings");
+        var lineage = WorkbenchService.map(context.get("lineage"));
+        assertThat(WorkbenchService.map(lineage.get("universe"))).doesNotContainKey("snapshot");
+        assertThat(WorkbenchService.map(lineage.get("factorSet"))).doesNotContainKey("snapshot");
+        assertThat(service.encode(context)).doesNotContain("SECRET");
+    }
+
+    @Test
     void frozenRequestSurvivesEditsAndServiceRecreation() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");

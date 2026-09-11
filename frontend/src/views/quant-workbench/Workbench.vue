@@ -44,6 +44,11 @@ const links = [['/quant', '策略'], ['/quant/universes', '资产池'], ['/quant
 .qw .quant-status { min-height:22px; padding:2px 7px; font-size:12px; line-height:16px; font-weight:500; white-space:normal }
 .qw .quant-validation { margin-bottom:16px; font-size:13px }
 .qw .quant-validation p { margin-top:6px }
+.qw .quant-research-summary { border-left:3px solid var(--border); padding:4px 0 4px 16px }
+.qw .quant-research-section { scroll-margin-top:24px }
+.qw .quant-research-section > .quant-secondary { margin-top:12px }
+.qw .quant-research-list { list-style:disc; padding-left:20px; margin-top:12px; font-size:13px }
+.qw .quant-research-list > li + li { margin-top:8px }
 .qw .quant-type-tabs { display:flex; flex-wrap:wrap; gap:2px; background:var(--muted); border-radius:8px; padding:3px }
 .qw .quant-type-tabs [aria-pressed=true] { background:var(--background); font-weight:600 }
 .qw .quant-field-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px }

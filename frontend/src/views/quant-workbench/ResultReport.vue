@@ -14,7 +14,7 @@ import { getChartTheme } from '@/lib/chartTheme'
 import { useAppearance } from '@/composables/useAppearance'
 const { mode, themeColor } = useAppearance()
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
-const props = defineProps({ result: { type: Object, default: () => ({}) }, hideQualificationStatus: Boolean })
+const props = defineProps({ result: { type: Object, default: () => ({}) }, hideQualificationStatus: Boolean, research: Boolean })
 const names = { annualReturn:'年化收益', annualizedReturn:'年化收益', totalReturn:'累计收益', maxDrawdown:'最大回撤', sharpe:'夏普比率', sharpeRatio:'夏普比率', volatility:'波动率', turnover:'换手率', totalFees:'总费用', totalSlippage:'总滑点', benchmarkReturn:'基准收益', excessReturn:'超额收益', initialCash:'初始资金', finalEquity:'最终权益' }
 const chart = computed(() => {
   mode.value; themeColor.value
@@ -82,20 +82,21 @@ const portfolioMetrics=computed(()=>{
 </script>
 <template>
   <div>
-    <div v-if="(!hideQualificationStatus&&result.qualification?.status)||result.qualification?.reasons?.length" class="quant-validation"><QuantStatusBadge v-if="!hideQualificationStatus" :status="result.qualification?.status" /><p v-for="(reason,index) in result.qualification?.reasons||[]" :key="index" class="muted">{{label(reason)}}</p></div>
+    <div v-if="!research&&((!hideQualificationStatus&&result.qualification?.status)||result.qualification?.reasons?.length)" class="quant-validation"><QuantStatusBadge v-if="!hideQualificationStatus" :status="result.qualification?.status" /><p v-for="(reason,index) in result.qualification?.reasons||[]" :key="index" class="muted">{{label(reason)}}</p></div>
     <section v-if="result.cash!=null" class="quant-section"><h3>资金概况</h3><MetricGrid :items="portfolioMetrics" /></section>
     <p v-if="result.valuation?.dataState==='INCOMPLETE'" class="muted mb-4">部分资产行情尚未到齐。当前显示各资产最新已知价格估值；组合交易仅处理至 {{ result.valuation.completeThrough || '暂无完整日期' }}，等待完整行情后再推进。</p>
     <section v-if="hasPerformance" class="quant-section"><h3>表现摘要</h3><MetricGrid :items="primaryMetrics" primary /><p v-if="result.benchmark?.status==='READY'" class="muted">基准：{{result.benchmark.name}}</p></section>
     <section v-else-if="professionalMetrics.length" class="quant-section"><h3>分析摘要</h3><MetricGrid :items="professionalMetrics.slice(0,4)" primary /></section>
     <div v-if="result.equityCurve?.length || result.equity?.length || result.drawdown?.length" class="panel"><h3>权益与回撤</h3><VChart :option="chart" autoresize class="quant-chart" /></div>
+    <slot name="research" />
     <section v-if="secondaryMetrics.length" class="quant-section"><h3>风险与交易统计</h3><MetricGrid :items="secondaryMetrics" /></section>
     <details v-if="professionalMetrics.length" class="quant-secondary"><summary>更多指标</summary><MetricGrid :items="professionalMetrics" /></details>
     <div v-if="factorRows.length" class="panel"><h3>因子效果</h3><DataTable :rows="factorRows" /></div>
     <div v-if="correlations.length" class="panel"><h3>因子相关性</h3><DataTable :rows="correlations" /></div>
     <div v-for="factor in result.factors || []" :key="factor.key" class="panel"><h3>{{ factor.key }} · 分组未来收益</h3><DataTable :rows="factor.groupReturns || []" /></div>
-    <details v-if="result.assumptions?.length" class="quant-secondary"><summary>模拟假设与有效性限制</summary><p v-for="(item,index) in result.assumptions" :key="index" class="muted">{{ format(item) }}</p></details>
+    <details v-if="!research&&result.assumptions?.length" class="quant-secondary"><summary>模拟假设与有效性限制</summary><p v-for="(item,index) in result.assumptions" :key="index" class="muted">{{ format(item) }}</p></details>
     <details v-for="[key,title] in sections.filter(([key]) => result[key] != null && (!Array.isArray(result[key]) || result[key].length > 0))" :key="key" class="quant-secondary" :open="key==='positions'"><summary>{{ title }}<span v-if="Array.isArray(result[key])" class="muted ml-2">{{result[key].length}} 条</span></summary><OrderTable v-if="key==='orders'" :rows="result[key]" /><DataTable v-else :rows="result[key]" /></details>
-    <details v-if="result.provenance" class="quant-secondary"><summary>数据来源与复现记录</summary><pre class="mt-3">{{ JSON.stringify(result.provenance,null,2) }}</pre></details>
+    <details v-if="!research&&result.provenance" class="quant-secondary"><summary>数据来源与复现记录</summary><pre class="mt-3">{{ JSON.stringify(result.provenance,null,2) }}</pre></details>
     <details v-if="Object.keys(result).length" class="quant-secondary"><summary>完整报告</summary><pre class="mt-3">{{ JSON.stringify(result,null,2) }}</pre></details>
   </div>
 </template>

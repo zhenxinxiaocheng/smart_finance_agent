@@ -233,6 +233,47 @@ def test_unverified_corporate_actions_do_not_get_qualified():
     assert "CORPORATE_ACTIONS_NOT_VERIFIED" in response["qualification"]["reasons"]
 
 
+def test_research_report_preserves_effective_inputs_and_eligibility_scope():
+    payload = request("FUND")
+    payload.update(universeId="pool-1", universeVersionId="pool-version-3",
+                   strategyVersionId="strategy-version-2", factorVersionId="factor-version-4")
+    payload["config"]["feeRate"] = 0
+    response = execute(payload)
+    provenance = response["result"]["provenance"]
+    assert response["qualification"]["scope"] == "PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION"
+    assert provenance["universeId"] == "pool-1"
+    assert provenance["universeVersion"] == "pool-version-3"
+    assert provenance["strategyVersionId"] == "strategy-version-2"
+    assert provenance["factorSetVersionId"] == "factor-version-4"
+    assert provenance["startDate"] == payload["startDate"]
+    assert provenance["endDate"] == payload["endDate"]
+    assert provenance["config"]["feeRate"] == 0
+    assert provenance["config"]["sellFeeRate"] == .002
+    assert provenance["config"]["fundShareDecimals"] == 4
+    assert all(provenance[key] for key in ("engineVersion", "codeHash", "dataHash", "configHash"))
+    assert response["result"]["assumptions"]
+    assert response["result"]["benchmark"]["type"] == "UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE"
+    changed = deepcopy(payload)
+    changed["config"]["feeRate"] = .003
+    other = execute(changed)["result"]["provenance"]
+    assert other["configHash"] != provenance["configHash"]
+    assert other["dataHash"] == provenance["dataHash"]
+
+
+def test_corporate_action_warning_keeps_affected_asset_dates():
+    payload = request("FUND")
+    bars = payload["assets"][0]["bars"]
+    affected_date = bars[100]["date"]
+    for bar in bars[100:]:
+        bar["close"] *= .5
+        bar["open"] *= .5
+    response = execute(payload)
+    assert response["status"] == "SUCCEEDED"
+    assert response["qualification"]["status"] == "UNQUALIFIED"
+    assert "CORPORATE_ACTION_UNSUPPORTED" in response["qualification"]["reasons"]
+    assert affected_date in response["result"]["corporateActionWarnings"]["asset-1"]
+
+
 def test_holdout_changes_do_not_refit_elastic_net(monkeypatch, tmp_path):
     monkeypatch.setenv("QUANT_V2_MODEL_DIR", str(tmp_path))
     payload = request()

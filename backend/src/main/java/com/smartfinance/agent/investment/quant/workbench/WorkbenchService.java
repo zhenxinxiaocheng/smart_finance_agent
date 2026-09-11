@@ -60,7 +60,13 @@ public class WorkbenchService {
     }
     public Map<String,Object> get(Long u,String kind,String id) {
         if(OBJECTS.contains(kind)) return view(object(u,kind,id));
-        if(TASKS.contains(kind)) {var r=row("quant_v2_task",u,id); require(kind.equals(r.get("kind")),"任务类型不匹配"); return view(r);}
+        if(TASKS.contains(kind)) {
+            var r=row("quant_v2_task",u,id);
+            require(kind.equals(r.get("kind")),"任务类型不匹配");
+            var out=view(r);
+            if("backtests".equals(kind)) out.put("researchContext",new WorkbenchResearchContext(this).resolve(u,r));
+            return out;
+        }
         require("deployments".equals(kind),"未知资源");
         var out=view(row("quant_v2_deployment",u,id)); var result=map(out.get("result"));
         var history=db.queryForList("SELECT kind,payload FROM quant_v2_paper_event WHERE user_id=? AND deployment_id=? ORDER BY created_at,id",u,id);
