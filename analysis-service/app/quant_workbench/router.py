@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
-from .engine import EngineError, execute, FACTOR_KEYS
+from .engine import EngineError, execute, FACTOR_KEYS, runtime_info
 from .parameters import parameter_catalog
+from .sensitivity import CandidateError, generate_candidates
 
 router = APIRouter(prefix="/quant/v2", tags=["quant-workbench"])
 
@@ -9,6 +10,19 @@ router = APIRouter(prefix="/quant/v2", tags=["quant-workbench"])
 @router.get("/parameters")
 def parameters() -> dict:
     return parameter_catalog()
+
+
+@router.get("/runtime-info")
+def runtime() -> dict:
+    return runtime_info()
+
+
+@router.post("/parameter-sensitivity/candidates")
+def sensitivity_candidates(payload: dict) -> dict:
+    try:
+        return generate_candidates(payload.get("config") or {}, str(payload.get("parameterKey") or ""))
+    except CandidateError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 @router.get("/factors")

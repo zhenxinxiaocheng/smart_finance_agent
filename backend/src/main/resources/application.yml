@@ -83,6 +83,12 @@ analysis-service:
   benchmark-connect-timeout: ${ANALYSIS_BENCHMARK_CONNECT_TIMEOUT:10s}
   benchmark-read-timeout: ${ANALYSIS_BENCHMARK_READ_TIMEOUT:90s}
 
+quant:
+  workbench:
+    snapshot:
+      max-uncompressed-bytes: ${QUANT_SNAPSHOT_MAX_UNCOMPRESSED_BYTES:134217728}
+      max-compressed-bytes: ${QUANT_SNAPSHOT_MAX_COMPRESSED_BYTES:33554432}
+
 investment:
   plan:
     zone: ${INVESTMENT_PLAN_ZONE:Asia/Shanghai}

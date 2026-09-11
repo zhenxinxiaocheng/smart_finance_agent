@@ -1,3 +1,7 @@
+DROP TABLE IF EXISTS quant_v2_experiment_run_attempt;
+DROP TABLE IF EXISTS quant_v2_experiment_run;
+DROP TABLE IF EXISTS quant_v2_experiment;
+DROP TABLE IF EXISTS quant_v2_research_snapshot;
 DROP TABLE IF EXISTS investment_data_quality_snapshot;
 DROP TABLE IF EXISTS investment_data_job;
 DROP TABLE IF EXISTS benchmark_profile;
@@ -690,3 +694,47 @@ CREATE TABLE benchmark_profile (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_benchmark_profile UNIQUE(product_type, product_code, effective_from)
 );
+
+CREATE TABLE quant_v2_research_snapshot (
+    id VARCHAR(36) PRIMARY KEY, user_id BIGINT NOT NULL, format_version VARCHAR(40) NOT NULL,
+    content_hash CHAR(64) NOT NULL, compression VARCHAR(16) NOT NULL, payload_blob BLOB NOT NULL,
+    metadata_json CLOB NOT NULL, uncompressed_bytes BIGINT NOT NULL, compressed_bytes BIGINT NOT NULL,
+    created_at VARCHAR(40) NOT NULL,
+    CONSTRAINT uk_qv2_research_snapshot_content UNIQUE(user_id, format_version, content_hash)
+);
+
+CREATE TABLE quant_v2_experiment (
+    id VARCHAR(36) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(160) NOT NULL,
+    status VARCHAR(24) NOT NULL, source_backtest_id VARCHAR(36) NOT NULL,
+    strategy_id VARCHAR(36) NOT NULL, strategy_version_id VARCHAR(36) NOT NULL,
+    universe_id VARCHAR(36) NOT NULL, universe_version_id VARCHAR(36) NOT NULL,
+    factor_id VARCHAR(36), factor_version_id VARCHAR(36), snapshot_id VARCHAR(36) NOT NULL,
+    model_ref VARCHAR(160), model_task_id VARCHAR(36), variable_definition_json CLOB NOT NULL,
+    baseline_values_json CLOB NOT NULL, candidate_values_json CLOB NOT NULL,
+    base_request_json CLOB NOT NULL, source_context_json CLOB NOT NULL, environment_json CLOB NOT NULL,
+    candidate_rule_version VARCHAR(64) NOT NULL, stability_algorithm_version VARCHAR(64) NOT NULL,
+    invariant_hash CHAR(64) NOT NULL, summary_json CLOB, request_key VARCHAR(80), request_hash CHAR(64),
+    revision INT NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL,
+    completed_at VARCHAR(40), cancelled_at VARCHAR(40),
+    CONSTRAINT uk_qv2_experiment_request UNIQUE(user_id, request_key)
+);
+CREATE INDEX idx_qv2_experiment_owner ON quant_v2_experiment(user_id, status, created_at);
+CREATE INDEX idx_qv2_experiment_strategy ON quant_v2_experiment(user_id, strategy_id, strategy_version_id);
+
+CREATE TABLE quant_v2_experiment_run (
+    id VARCHAR(36) PRIMARY KEY, user_id BIGINT NOT NULL, experiment_id VARCHAR(36) NOT NULL,
+    ordinal INT NOT NULL, variable_values_json CLOB NOT NULL, value_hash CHAR(64) NOT NULL,
+    baseline BOOLEAN NOT NULL, active_attempt_id VARCHAR(36), created_at VARCHAR(40) NOT NULL,
+    CONSTRAINT uk_qv2_experiment_run_value UNIQUE(experiment_id, value_hash),
+    CONSTRAINT uk_qv2_experiment_run_ordinal UNIQUE(experiment_id, ordinal)
+);
+CREATE INDEX idx_qv2_experiment_run_owner ON quant_v2_experiment_run(user_id, experiment_id);
+
+CREATE TABLE quant_v2_experiment_run_attempt (
+    id VARCHAR(36) PRIMARY KEY, user_id BIGINT NOT NULL, run_id VARCHAR(36) NOT NULL,
+    attempt_no INT NOT NULL, reason VARCHAR(32) NOT NULL, task_id VARCHAR(36) NOT NULL,
+    created_at VARCHAR(40) NOT NULL,
+    CONSTRAINT uk_qv2_experiment_attempt_number UNIQUE(run_id, attempt_no),
+    CONSTRAINT uk_qv2_experiment_attempt_task UNIQUE(task_id)
+);
+CREATE INDEX idx_qv2_experiment_attempt_owner ON quant_v2_experiment_run_attempt(user_id, run_id);

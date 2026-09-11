@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import numpy as np
-from .parameters import PARAMETERS
+from .parameters import CATALOG_VERSION, CANDIDATE_RULE_VERSION, PARAMETERS
 
 
 VERSION = "quant-v2.1"
@@ -38,6 +38,23 @@ def number(value, name, low=0, high=1e15):
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def runtime_info():
+    return {
+        "engineVersion": VERSION,
+        "codeHash": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "parameterCatalogVersion": CATALOG_VERSION,
+        "candidateRuleVersion": CANDIDATE_RULE_VERSION,
+    }
+
+
+def require_runtime(expected):
+    if expected is None:
+        return
+    current = runtime_info()
+    if not isinstance(expected, dict) or any(expected.get(key) != value for key, value in current.items()):
+        fail("EXPERIMENT_ENVIRONMENT_CHANGED", "The frozen experiment runtime is not active")
 
 
 def money(value):
@@ -587,13 +604,15 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
 
 
 def execute(payload):
+    require_runtime(payload.get("expectedRuntime"))
     c, assets = prepare(payload)
     kind = payload.get("kind", "BACKTEST")
     if kind not in ("BACKTEST", "TRAINING", "FACTOR_RESEARCH", "PAPER"):
         fail("INVALID_TASK_KIND", str(kind))
     snapshot = [{k: v for k, v in a.items() if k != "byDate"} for a in assets.values()]
+    runtime = runtime_info()
     provenance = {"dataHash": digest(snapshot), "configHash": digest(c), "config": c,
-                  "engineVersion": VERSION, "codeHash": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  "engineVersion": runtime["engineVersion"], "codeHash": runtime["codeHash"],
                   "seed": c["seed"], "startDate": payload.get("startDate"), "endDate": payload.get("endDate"),
                   "universeId": payload.get("universeId"), "universeVersion": payload.get("universeVersionId", payload.get("universeVersion")),
                   "strategyVersionId": payload.get("strategyVersionId"), "factorSetVersionId": payload.get("factorSetVersionId", payload.get("factorVersionId"))}

@@ -34,11 +34,13 @@ class InvestmentSqliteMigrationTest {
                                  "'investment_data_job','benchmark_profile','quant_benchmark_snapshot'," +
                                  "'investment_index_watchlist','investment_index_display_order'," +
                                  "'quant_v2_object','quant_v2_version','quant_v2_task'," +
-                                 "'quant_v2_deployment','quant_v2_paper_event')")) {
+                                 "'quant_v2_deployment','quant_v2_paper_event'," +
+                                 "'quant_v2_research_snapshot','quant_v2_experiment'," +
+                                 "'quant_v2_experiment_run','quant_v2_experiment_run_attempt')")) {
                 try (var result = statement.executeQuery()) {
                     int count = 0;
                     while (result.next()) count++;
-                    assertThat(count).isEqualTo(19);
+                    assertThat(count).isEqualTo(23);
                 }
             }
             try (var connection = DriverManager.getConnection(url);
@@ -85,6 +87,14 @@ class InvestmentSqliteMigrationTest {
             try (var connection = DriverManager.getConnection(url)) {
                 assertThat(indexExists(connection, "investment_account", "uk_investment_active_paper_user"))
                         .isFalse();
+                assertThat(indexColumns(connection, "quant_v2_experiment_run", "uk_qv2_experiment_run_value"))
+                        .containsExactly("experiment_id", "value_hash");
+                assertThat(indexColumns(connection, "quant_v2_experiment_run", "uk_qv2_experiment_run_ordinal"))
+                        .containsExactly("experiment_id", "ordinal");
+                assertThat(indexColumns(connection, "quant_v2_experiment_run_attempt", "uk_qv2_experiment_attempt_number"))
+                        .containsExactly("run_id", "attempt_no");
+                assertThat(indexColumns(connection, "quant_v2_experiment_run_attempt", "uk_qv2_experiment_attempt_task"))
+                        .containsExactly("task_id");
             }
             assertThat(flyway.info().pending()).isEmpty();
         } finally {
@@ -239,6 +249,19 @@ class InvestmentSqliteMigrationTest {
             statement.setString(2, index);
             try (var result = statement.executeQuery()) {
                 return result.next() && result.getInt(1) == 1;
+            }
+        }
+    }
+
+    private static java.util.List<String> indexColumns(Connection connection, String table, String index) throws Exception {
+        assertThat(indexExists(connection, table, index)).isTrue();
+        try (var statement = connection.prepareStatement(
+                "SELECT name FROM pragma_index_info(?) ORDER BY seqno")) {
+            statement.setString(1, index);
+            try (var result = statement.executeQuery()) {
+                var columns = new java.util.ArrayList<String>();
+                while (result.next()) columns.add(result.getString(1));
+                return columns;
             }
         }
     }

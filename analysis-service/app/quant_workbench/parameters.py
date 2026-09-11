@@ -25,10 +25,27 @@ SOURCES = {
     "volatility": {"title": "Moreira、Muir（2017），Volatility-Managed Portfolios", "url": "https://www.nber.org/papers/w22208"},
 }
 
+CATALOG_VERSION = "parameters-v2"
+CANDIDATE_RULE_VERSION = "parameter-sensitivity-v1"
+
+_TREND = ["TREND"]
+_TREND_AND_FACTOR = ["TREND", "MULTI_FACTOR"]
+_ALL_STRATEGIES = ["TREND", "MULTI_FACTOR", "ML_ELASTIC_NET", "ML_XGBOOST"]
+SENSITIVITY = {
+    "lookback": {"enabled": True, "strategyTypes": _TREND_AND_FACTOR, "relativeStep": .1, "minStep": 1, "precision": 0},
+    "slowWindow": {"enabled": True, "strategyTypes": _TREND_AND_FACTOR, "relativeStep": .1, "minStep": 1, "precision": 0},
+    "topN": {"enabled": True, "strategyTypes": _ALL_STRATEGIES, "relativeStep": .1, "minStep": 1, "precision": 0},
+    "rebalanceDays": {"enabled": True, "strategyTypes": _ALL_STRATEGIES, "relativeStep": .1, "minStep": 1, "precision": 0},
+    "targetVol": {"enabled": True, "strategyTypes": _TREND, "relativeStep": .1, "minStep": .001, "precision": 6},
+    "maxWeight": {"enabled": True, "strategyTypes": _ALL_STRATEGIES, "relativeStep": .1, "minStep": .001, "precision": 6},
+}
+
 
 def parameter_catalog():
-    return deepcopy({"version": "parameters-v1", "validationStatus": "UNVALIDATED",
+    return deepcopy({"version": CATALOG_VERSION, "candidateRuleVersion": CANDIDATE_RULE_VERSION,
+        "validationStatus": "UNVALIDATED",
         "notice": "方法有研究支持，具体默认数值尚未完成当前资产池的样本外验证。风险预算由资金承受能力决定，费用和到账期限需核对实际条款。",
         "parameters": [{"key": k, "default": d, "min": lo, "max": hi, "type": t,
-                        "category": category, "basis": basis, "source": SOURCES.get(source)}
+                        "category": category, "basis": basis, "source": SOURCES.get(source),
+                        "sensitivity": {"enabled": False} | SENSITIVITY.get(k, {})}
                        for k, d, lo, hi, t, category, basis, source in PARAMETERS]})
