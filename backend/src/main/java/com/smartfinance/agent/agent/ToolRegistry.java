@@ -60,9 +60,6 @@ public class ToolRegistry {
             Map.entry("\u6295\u8d44\u6301\u4ed3", "get_investment_positions"),
             Map.entry("\u7ec4\u5408\u5206\u6790", "get_investment_analysis"),
             Map.entry("\u6295\u8d44\u5efa\u8bae", "get_investment_recommendations"),
-            Map.entry("\u91cf\u5316\u4fe1\u53f7", "get_investment_quant_signal"),
-            Map.entry("\u91cf\u5316\u7b56\u7565\u72b6\u6001", "get_investment_quant_strategy_status"),
-            Map.entry("\u6a21\u62df\u76d8", "get_investment_paper_account"),
             Map.entry("\u5b9a\u65f6\u4efb\u52a1", "create_agent_schedule"),
             Map.entry("\u5468\u671f\u4efb\u52a1", "create_agent_schedule"),
             Map.entry("\u5b9a\u671f\u6267\u884c", "create_agent_schedule"),
@@ -138,12 +135,6 @@ public class ToolRegistry {
                 input -> investmentAgentTools.dataQuality());
         register("get_investment_recommendations", "读取规则引擎生成的风险提醒及证据，不推荐具体买卖数量。input: {}",
                 input -> investmentAgentTools.recommendations());
-        register("get_investment_quant_signal", "只读查询已验证并持久化的量化信号、因子贡献和风险原因；不得触发训练或绕过门禁。input: {assetId, horizonCode}",
-                input -> investmentAgentTools.quantSignal(longValue(input, "assetId", null), text(input, "horizonCode", "")));
-        register("get_investment_quant_strategy_status", "只读查询当前量化模型和策略的验证状态及版本。input: {}",
-                input -> investmentAgentTools.quantStrategyStatus());
-        register("get_investment_paper_account", "只读查询模拟盘资金和持仓；不能创建或修改订单。input: {}",
-                input -> investmentAgentTools.paperAccount());
         register("search_web", "搜索实时财经、汇率、市场新闻。input: {query}",
                 input -> webSearchTool.searchWeb(text(input, "query", "")));
         register("create_custom_skill", "Create a user-defined Skill draft. input: {name, description, triggerText, instructionText, boundTools, category, riskLevel}",

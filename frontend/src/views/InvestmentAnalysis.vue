@@ -3,7 +3,7 @@
     <header class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">我的投资</h1>
-        <p class="mt-1 text-sm text-muted-foreground">输入代码添加股票或基金，持仓信息可以随后编辑。</p>
+        <p class="mt-1 text-sm text-muted-foreground">管理股票、基金持仓，并关注主要市场指数。</p>
       </div>
       <div class="flex flex-wrap items-center gap-4 text-sm">
         <Button variant="outline" @click="horizonDialogOpen = true"><SlidersHorizontal />周期偏好</Button>
@@ -12,11 +12,16 @@
       </div>
     </header>
 
-    <InvestmentAddBar @added="refreshAfterAssetChange" />
+    <InvestmentIndexStrip
+      :indexes="indexes"
+      @add="openIndexWatchlist"
+      @remove="removeIndex"
+      @reorder="reorderIndexes"
+    />
 
     <section class="space-y-3">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div><h2 class="font-semibold">资产列表</h2><p class="text-sm text-muted-foreground">{{ assets.length }} 个标的</p></div>
+        <h2 class="font-semibold">资产列表</h2>
         <div class="relative w-full sm:w-72">
           <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input v-model="keyword" class="pl-9" placeholder="搜索代码或名称" />
@@ -28,10 +33,19 @@
         @select="openAsset"
         @edit="openEditor"
         @remove="removeAsset"
+        @add="openAssetWatchlist"
       />
     </section>
 
     <InvestmentAssetDrawer v-model:open="drawerOpen" :asset="selectedAsset" @saved="refreshAfterAssetChange" />
+
+    <InvestmentWatchlistDialog
+      v-model:open="watchlistDialogOpen"
+      :initial-type="watchlistInitialType"
+      :existing-index-codes="indexes.map(item => item.indexCode)"
+      @asset-added="refreshAfterAssetChange"
+      @index-added="refreshAfterIndexChange"
+    />
 
     <HorizonProfileDialog
       v-model:open="horizonDialogOpen"
@@ -76,21 +90,31 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import InvestmentAddBar from '@/components/investment/InvestmentAddBar.vue'
 import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer.vue'
 import InvestmentAssetTable from '@/components/investment/InvestmentAssetTable.vue'
+import InvestmentIndexStrip from '@/components/investment/InvestmentIndexStrip.vue'
+import InvestmentWatchlistDialog from '@/components/investment/InvestmentWatchlistDialog.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import { feedback } from '@/lib/feedback'
+import { readInvestmentIndexCache, writeInvestmentIndexCache } from '@/lib/investmentIndexCache'
 import { createPrioritizedRefreshRunner, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
+import { useAuthStore } from '@/stores/auth'
 import {
   deleteInvestmentAssetAPI,
+  deleteInvestmentIndexAPI,
   getInvestmentHorizonProfileAPI,
   listInvestmentAssetsAPI,
+  listInvestmentIndexesAPI,
+  reorderInvestmentIndexesAPI,
   refreshInvestmentAssetsAPI,
   updateInvestmentHorizonProfileAPI,
 } from '@/api/investment'
 
 const assets = ref([])
+const authStore = useAuthStore()
+const indexCacheAccount = computed(() => authStore.user?.id || authStore.user?.username || '')
+const indexCacheStorage = typeof window === 'undefined' ? null : window.sessionStorage
+const indexes = ref(readInvestmentIndexCache(indexCacheStorage, indexCacheAccount.value))
 const loading = ref(false)
 const keyword = ref('')
 const selectedAsset = ref(null)
@@ -101,6 +125,8 @@ const deletingAsset = ref(null)
 const horizonDialogOpen = ref(false)
 const horizonSaving = ref(false)
 const horizonProfile = ref({ settings: [] })
+const watchlistDialogOpen = ref(false)
+const watchlistInitialType = ref('STOCK')
 let stopRealtimePolling = null
 let disposed = false
 const router = useRouter()
@@ -126,6 +152,7 @@ const refreshAssets = createPrioritizedRefreshRunner(async (force = false, silen
 
 onMounted(() => {
   loadAssets().catch(() => {})
+  loadIndexes().catch(() => {})
   loadHorizonProfile()
   stopRealtimePolling = startInvestmentRealtimePolling(force => refreshAssets(force, true))
   window.addEventListener('focus', refreshOnFocus)
@@ -147,6 +174,17 @@ async function loadAssets(silent = false) {
   } finally {
     if (!silent && !disposed) loading.value = false
   }
+}
+
+async function loadIndexes() {
+  if (disposed) return
+  const response = await listInvestmentIndexesAPI()
+  if (!disposed) applyIndexes(response.data)
+}
+
+function applyIndexes(items) {
+  indexes.value = items || []
+  writeInvestmentIndexCache(indexCacheStorage, indexCacheAccount.value, indexes.value)
 }
 
 function applyAssets(items) {
@@ -172,9 +210,45 @@ async function saveHorizonProfile(payload) {
   }
 }
 
-function refreshOnFocus() { refreshAssets(true, true).catch(() => loadAssets().catch(() => {})) }
+function refreshOnFocus() {
+  refreshAssets(true, true).catch(() => loadAssets().catch(() => {}))
+  loadIndexes().catch(() => {})
+}
 
 function refreshAfterAssetChange() { refreshAssets(true, true, true).catch(() => {}) }
+
+function refreshAfterIndexChange() { loadIndexes().catch(() => {}) }
+
+function openAssetWatchlist() {
+  watchlistInitialType.value = 'STOCK'
+  watchlistDialogOpen.value = true
+}
+
+function openIndexWatchlist() {
+  watchlistInitialType.value = 'INDEX'
+  watchlistDialogOpen.value = true
+}
+
+async function reorderIndexes(indexCodes) {
+  const previousIndexes = [...indexes.value]
+  const indexesByCode = new Map(previousIndexes.map(item => [item.indexCode, item]))
+  const reordered = indexCodes.map(code => indexesByCode.get(code)).filter(Boolean)
+  if (reordered.length !== previousIndexes.length) return
+  applyIndexes(reordered)
+  try {
+    await reorderInvestmentIndexesAPI(indexCodes)
+  } catch (error) {
+    applyIndexes(previousIndexes)
+    feedback.error(error.response?.data?.message || '指数排序保存失败')
+  }
+}
+
+async function removeIndex(item) {
+  if (!item?.id) return
+  await deleteInvestmentIndexAPI(item.id)
+  applyIndexes(indexes.value.filter(index => index.id !== item.id))
+  feedback.success(`已移除 ${item.name}`)
+}
 
 function openAsset(asset) { router.push(`/stocks/${asset.id}`) }
 

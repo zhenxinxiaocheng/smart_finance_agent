@@ -19,32 +19,6 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
-    void quantRuntimeManifest_shouldExposeVersionedTrainingRuntime() {
-        RestClient.Builder builder = RestClient.builder();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        AnalysisServiceClient client = new AnalysisServiceClient(
-                builder,
-                "http://analysis.test",
-                "secret-token"
-        );
-        server.expect(requestTo("http://analysis.test/internal/v1/quant/runtime-manifest"))
-                .andExpect(method(HttpMethod.GET))
-                .andExpect(header("X-Internal-Token", "secret-token"))
-                .andRespond(withSuccess("""
-                        {"runtimeVersion":"%s","quantConfigVersion":"quant-research-v2",
-                         "configHash":"%s","codeHash":"%s","randomSeed":42}
-                        """.formatted("a".repeat(64), "b".repeat(64), "c".repeat(64)),
-                        MediaType.APPLICATION_JSON));
-
-        Map<String, Object> result = client.quantRuntimeManifest();
-
-        assertThat(result)
-                .containsEntry("runtimeVersion", "a".repeat(64))
-                .containsEntry("quantConfigVersion", "quant-research-v2");
-        server.verify();
-    }
-
-    @Test
     void benchmarkHistory_shouldUseVersionedBenchmarkContract() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -76,37 +50,31 @@ class AnalysisServiceClientTest {
     }
 
     @Test
-    void quantJobs_shouldUseAsynchronousInternalContract() {
+    void indexQuotesShouldUseTheDedicatedMarketIndexContract() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
-        server.expect(requestTo("http://analysis.test/internal/v1/quant/jobs"))
+        AnalysisServiceClient client = new AnalysisServiceClient(
+                builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/indexes/quotes"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("X-Internal-Token", "secret-token"))
                 .andExpect(content().json("""
-                        {"type":"FACTOR_ANALYSIS","datasetVersion":"%s","productType":"STOCK",
-                         "horizonCode":"WAVE","horizonDays":37,"records":[{"close":"10"}]}
-                        """.formatted("a".repeat(64))))
-                .andRespond(withSuccess("{\"jobId\":\"%s\",\"status\":\"QUEUED\"}"
-                        .formatted("b".repeat(32)), MediaType.APPLICATION_JSON));
-        server.expect(requestTo("http://analysis.test/internal/v1/quant/jobs/" + "b".repeat(32)))
-                .andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess("{\"jobId\":\"%s\",\"status\":\"SUCCEEDED\"}"
-                        .formatted("b".repeat(32)), MediaType.APPLICATION_JSON));
-        server.expect(requestTo("http://analysis.test/internal/v1/quant/jobs/" + "b".repeat(32) + "/cancel"))
-                .andExpect(method(HttpMethod.POST))
-                .andRespond(withSuccess("{\"jobId\":\"%s\",\"status\":\"CANCELLED\"}"
-                        .formatted("b".repeat(32)), MediaType.APPLICATION_JSON));
+                        {"indexCodes":["CN_INDEX:000300","GLOBAL_INDEX:NDX"]}
+                        """))
+                .andRespond(withSuccess("""
+                        {"items":[
+                          {"indexCode":"CN_INDEX:000300","name":"沪深300","market":"CN",
+                           "latestPrice":"4552.58","changePercent":"0.10","provider":"AKSHARE"},
+                          {"indexCode":"GLOBAL_INDEX:NDX","name":"纳斯达克100","market":"US",
+                           "latestPrice":"29143.33","changePercent":"0.23","provider":"AKSHARE"}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
 
-        Map<String, Object> created = client.createQuantJob(Map.of(
-                "type", "FACTOR_ANALYSIS", "datasetVersion", "a".repeat(64),
-                "productType", "STOCK", "horizonCode", "WAVE", "horizonDays", 37,
-                "records", List.of(Map.of("close", "10"))));
-        Map<String, Object> completed = client.quantJob(String.valueOf(created.get("jobId")));
-        Map<String, Object> cancelled = client.cancelQuantJob(String.valueOf(created.get("jobId")));
+        var result = client.indexQuotes(List.of("CN_INDEX:000300", "GLOBAL_INDEX:NDX"));
 
-        assertThat(completed.get("status")).isEqualTo("SUCCEEDED");
-        assertThat(cancelled.get("status")).isEqualTo("CANCELLED");
+        assertThat(result).extracting(AnalysisServiceClient.IndexQuote::indexCode)
+                .containsExactly("CN_INDEX:000300", "GLOBAL_INDEX:NDX");
+        assertThat(result.get(1).latestPrice()).isEqualByComparingTo("29143.33");
         server.verify();
     }
 

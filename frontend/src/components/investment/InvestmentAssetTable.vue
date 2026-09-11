@@ -6,8 +6,8 @@
     </div>
     <div v-else-if="assets.length === 0" class="grid place-items-center px-6 py-20 text-center">
       <div class="mb-4 grid size-12 place-items-center rounded-full bg-muted"><ChartNoAxesCombined class="size-6 text-muted-foreground" /></div>
-      <p class="font-medium">输入股票或基金代码开始添加</p>
-      <p class="mt-1 text-sm text-muted-foreground">无需先创建账户，也不需要填写复杂流水。</p>
+      <p class="font-medium">点击下方“＋”添加股票或基金</p>
+      <p class="mt-1 text-sm text-muted-foreground">添加后可再填写持仓数量和成本。</p>
     </div>
     <div v-else class="investment-table-scroll overflow-x-auto">
       <Table>
@@ -55,11 +55,20 @@
         </TableBody>
       </Table>
     </div>
+    <button
+      type="button"
+      title="新增资产"
+      aria-label="新增资产"
+      class="group flex h-11 w-full items-center justify-center border-t bg-muted/20 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+      @click="$emit('add')"
+    >
+      <Plus class="size-5 transition-transform group-hover:scale-110" />
+    </button>
   </div>
 </template>
 
 <script setup>
-import { ChartNoAxesCombined, LoaderCircle, Pencil, Trash2 } from '@lucide/vue'
+import { ChartNoAxesCombined, LoaderCircle, Pencil, Plus, Trash2 } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -67,7 +76,7 @@ import { formatQuoteTime } from '@/lib/investmentRealtime'
 import { signedPercent } from '@/lib/investmentQuoteMetrics'
 
 defineProps({ assets: { type: Array, default: () => [] }, loading: Boolean })
-defineEmits(['select', 'edit', 'remove'])
+defineEmits(['select', 'edit', 'remove', 'add'])
 
 function typeLabel(value) { return value === 'MUTUAL_FUND' ? '基金' : '股票' }
 function statusLabel(value) { return ({ SUCCESS: '数据正常', PARTIAL: '部分数据', PENDING: '等待刷新', RUNNING: '刷新中', FAILED: '数据延迟', NOT_SYNCED: '未同步' }[value] || '未同步') }

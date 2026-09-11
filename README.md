@@ -1,6 +1,6 @@
 # 智财 Agent
 
-智财 Agent 是一个个人智能财务代理系统，覆盖记账、账单导入、统计分析、财务画像、Agent 对话、长期记忆、反思、周期任务、待确认动作和 Skills 管理。
+智财 Agent 是一个个人智能财务代理系统，覆盖记账、账单导入、统计分析、财务画像、投资分析、量化研究与模拟运行，以及 Agent 对话、长期记忆、反思、周期任务、待确认动作和 Skills 管理。
 
 项目不是单纯的聊天机器人，而是把个人财务工作流逐步 Agent 化：
 
@@ -46,6 +46,10 @@
 - Agent 周期任务，支持创建、启停、重试和运行记录查看
 - Agent Skills，支持内置 Skill、外部说明型 Skill 和自定义 Skill
 - 待确认动作，保证记账、预算设置、自定义 Skill 安装等关键写操作先审后执
+- 投资资产管理，支持股票、ETF 和场外基金的行情、历史数据及分析结果
+- 指数关注列表，支持搜索、添加、排序和行情更新
+- 量化工作台，支持资产池、因子组合、策略配置、训练、回测和结果比较
+- 模拟交易组合，基于已验证回测持续生成信号、模拟成交并记录完整账本
 - 侧边栏默认进入新对话页，登录后主页直接落到 `/chat`
 
 ## 技术栈
@@ -54,6 +58,7 @@
 | --- | --- |
 | 前端 | Vue 3, Vite 8, Pinia, Vue Router, Tailwind CSS 4, Reka UI, VueUse, ECharts 6 |
 | 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL, JWT |
+| 分析服务 | Python 3, FastAPI, Pandas, NumPy, SciPy, scikit-learn, XGBoost |
 | AI | LangChain4j, DashScope Chat/Embedding, RAG, Tavily Search |
 | 测试 | JUnit 5, Mockito, Spring Boot Test, H2 |
 
@@ -72,6 +77,9 @@ smart_finance_agent/
 │   ├── src/layouts/         # Admin 风格主布局
 │   ├── src/router/          # 页面路由
 │   └── src/views/           # 页面视图
+├── analysis-service/        # 行情适配、投资分析和量化计算服务
+│   ├── app/                 # FastAPI、数据提供器和量化引擎
+│   └── tests/               # Python 测试
 ├── env.example              # 本地配置示例
 ├── start-dev.ps1            # 一键启动前后端脚本
 └── README.md
@@ -93,6 +101,13 @@ smart_finance_agent/
 | `/schedules` | 周期任务 |
 | `/reflections` | Agent 反思 |
 | `/pending-actions` | 待确认动作 |
+| `/stocks` | 投资资产列表、指数关注和资产导入 |
+| `/stocks/:assetId` | 资产详情、历史行情与投资分析 |
+| `/quant` | 量化策略列表和策略配置 |
+| `/quant/universes` | 量化资产池 |
+| `/quant/factors` | 因子组合与因子研究 |
+| `/quant/tasks` | 训练、回测、因子任务及结果比较 |
+| `/quant/deployments` | 模拟交易组合和运行账本 |
 
 ## 后端接口
 
@@ -114,6 +129,21 @@ smart_finance_agent/
 | Agent 反思 | `/api/agent-reflections` | 反思结果确认/忽略 |
 | Agent 上下文 | `/api/agent-context` | 上下文压缩、配置和使用情况 |
 | 待确认动作 | `/api/pending-actions` | 确认或取消 AI 生成动作 |
+| 投资资产 | `/api/investment` | 资产、行情、历史数据和投资分析 |
+| 指数关注 | `/api/investment/indexes` | 指数搜索、关注列表和排序 |
+| 量化工作台 | `/api/quant/v2` | 资产池、因子、策略、任务、回测和模拟组合 |
+
+## 量化工作台
+
+量化工作台采用“研究 → 验证 → 模拟运行”的流程：
+
+1. 从已有投资资产创建资产池。
+2. 选择规则策略、多因子策略或机器学习策略，并保存不可变版本。
+3. 使用共同有效交易日期训练或回测，查看收益、回撤、基准和交易明细。
+4. 只有验证通过的回测可以创建模拟组合。
+5. 模拟组合跟随本地已入库行情运行，记录信号、委托、成交、持仓和现金账本。
+
+模拟结果只用于研究和验证。其完整性取决于行情采集、复权、基金净值公布和交易规则假设，不代表真实券商成交或未来收益。
 
 ## Agent 机制
 
@@ -191,6 +221,7 @@ Skills 是 Agent 可读取的能力说明和工具绑定，不直接执行第三
 - MySQL 8.0+
 - Node.js 18+
 - npm 9+
+- Python 3.11+
 
 ### 数据库
 
@@ -240,8 +271,9 @@ search:
 
 默认端口：
 
-- 后端：`http://localhost:8080`
+- 后端：`http://localhost:8088`
 - 前端：`http://127.0.0.1:3000`
+- 分析服务：`http://127.0.0.1:8090`
 
 ### 手动启动
 
@@ -250,6 +282,15 @@ search:
 ```powershell
 cd backend
 mvn spring-boot:run
+```
+
+分析服务：
+
+```powershell
+cd analysis-service
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090
 ```
 
 前端：
@@ -283,11 +324,18 @@ cd backend
 mvn clean compile
 ```
 
+分析服务测试：
+
+```powershell
+cd analysis-service
+.\.venv\Scripts\python.exe -m pytest
+```
+
 ## 开发备注
 
 - 前端通过 Vite 代理把 `/api` 请求转发到后端。
 - 聊天页、审计页、周期任务页和反思页都围绕同一套 Agent 运行链路工作。
 - 账单导入识别结果只作为候选数据，必须经过用户确认才会写入正式交易表。
-- 股票分析入口已在侧边栏预留，目前标注为“开发中”。
+- 投资分析和量化工作台依赖分析服务；使用一键启动脚本时会同时启动三个服务。
 - 涉及实时行情、新闻、政策、汇率的问题需要联网检索后再回答。
 - 外部 Skill 当前只读取说明和元数据；如果未来支持脚本型 Skill，需要单独设计沙箱、权限、超时和审计。

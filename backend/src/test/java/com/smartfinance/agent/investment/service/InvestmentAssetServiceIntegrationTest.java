@@ -7,6 +7,7 @@ import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.ChinaTradingCalendarService;
 import com.smartfinance.agent.investment.service.InvestmentAssetService;
@@ -17,6 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.jdbc.Sql;
 
 import java.math.BigDecimal;
@@ -61,10 +63,14 @@ class InvestmentAssetServiceIntegrationTest {
     private InvestmentProductMapper productMapper;
     @Autowired
     private InvestmentDataJobMapper dataJobMapper;
+    @Autowired
+    private JdbcTemplate jdbc;
     @MockBean
     private AnalysisServiceClient analysisServiceClient;
     @MockBean
     private ChinaTradingCalendarService tradingCalendar;
+    @MockBean
+    private QuantBenchmarkProfileService benchmarkProfileService;
 
     @BeforeEach
     void setUpResolver() {
@@ -296,6 +302,59 @@ class InvestmentAssetServiceIntegrationTest {
         assertThat(assetService.list(7L)).isEmpty();
         assertThat(investmentService.listTransactions(7L, updated.getAccountId(), 20))
                 .extracting("eventType").containsExactly("REVERSAL", "TRANSFER_IN", "REVERSAL", "TRANSFER_IN");
+    }
+
+    @Test
+    void quoteRefresh_shouldNotRestoreAStaleHoldingTransaction() throws Exception {
+        var asset = assetService.create(7L, createRequest("STOCK", "600519"));
+        assetService.update(7L, asset.getId(), updateRequest("10", "1500", "首次录入"));
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch releaseRefresh = new CountDownLatch(1);
+        when(analysisServiceClient.realtimeQuote("600519", "SSE")).thenAnswer(invocation -> {
+            refreshStarted.countDown();
+            assertThat(releaseRefresh.await(2, TimeUnit.SECONDS)).isTrue();
+            return realtimeQuote(LocalDateTime.now());
+        });
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var refresh = executor.submit(() -> assetService.refresh(7L, asset.getId(), true));
+            assertThat(refreshStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+            assetService.update(7L, asset.getId(), updateRequest("8", "1480", "调整持仓"));
+            releaseRefresh.countDown();
+            refresh.get(2, TimeUnit.SECONDS);
+
+            var latest = assetService.update(7L, asset.getId(),
+                    updateRequest("7", "1470", "再次调整"));
+            assertThat(latest.getQuantity()).isEqualByComparingTo("7");
+        } finally {
+            releaseRefresh.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void update_shouldRecoverAStaleCurrentTransactionReference() {
+        var asset = assetService.create(7L, createRequest("STOCK", "600519"));
+        assetService.update(7L, asset.getId(), updateRequest("10", "1500", "首次录入"));
+        assetService.update(7L, asset.getId(), updateRequest("8", "1480", "调整持仓"));
+        var transactions = investmentService.listTransactions(7L, asset.getAccountId(), 20);
+        Long staleTransactionId = transactions.stream()
+                .filter(item -> "TRANSFER_IN".equals(item.getEventType()))
+                .map(item -> item.getId())
+                .min(Long::compareTo)
+                .orElseThrow();
+        jdbc.update("UPDATE investment_asset SET current_transaction_id = ? WHERE id = ?",
+                staleTransactionId, asset.getId());
+
+        var updated = assetService.update(7L, asset.getId(),
+                updateRequest("7", "1470", "修复后调整"));
+        var position = investmentService.overview(7L).getPositions().stream()
+                .filter(item -> asset.getProductId().equals(item.getProductId()))
+                .findFirst().orElseThrow();
+
+        assertThat(updated.getQuantity()).isEqualByComparingTo("7");
+        assertThat(position.getQuantity()).isEqualByComparingTo("7");
     }
 
     @Test

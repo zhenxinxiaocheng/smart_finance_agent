@@ -3,9 +3,7 @@ package com.smartfinance.agent.investment.service;
 import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
 import com.smartfinance.agent.investment.dto.InvestmentAssetDetailResponse;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
-import com.smartfinance.agent.investment.quant.QuantAutomationService;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkPreparationService;
-import com.smartfinance.agent.investment.quant.QuantResearchUniversePreparationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -26,7 +24,6 @@ public class InvestmentDataJobWorker {
     private static final ZoneId RUNTIME_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int BATCH_LIMIT = 2;
     private static final int LEASE_SECONDS = 120;
-    private static final int RESEARCH_UNIVERSE_LEASE_SECONDS = 900;
     private static final int MAX_ATTEMPTS = 3;
     private static final int MAX_ERROR_LENGTH = 1000;
 
@@ -34,27 +31,21 @@ public class InvestmentDataJobWorker {
     private final InvestmentAnalysisService analysisService;
     private final InvestmentHorizonProperties horizonProperties;
     private final Clock clock;
-    private final QuantAutomationService quantAutomationService;
     private final QuantBenchmarkPreparationService benchmarkPreparationService;
-    private final QuantResearchUniversePreparationService researchUniversePreparationService;
     private final InvestmentHistoryPreparationService historyPreparationService;
 
     @Autowired
     public InvestmentDataJobWorker(InvestmentDataJobService jobService,
                                    InvestmentAnalysisService analysisService,
                                    InvestmentHorizonProperties horizonProperties,
-                                   QuantAutomationService quantAutomationService,
                                    QuantBenchmarkPreparationService benchmarkPreparationService,
-                                   QuantResearchUniversePreparationService researchUniversePreparationService,
                                    InvestmentHistoryPreparationService historyPreparationService) {
         this(
                 jobService,
                 analysisService,
                 horizonProperties,
                 Clock.system(RUNTIME_ZONE),
-                quantAutomationService,
                 benchmarkPreparationService,
-                researchUniversePreparationService,
                 historyPreparationService
         );
     }
@@ -63,17 +54,13 @@ public class InvestmentDataJobWorker {
                             InvestmentAnalysisService analysisService,
                             InvestmentHorizonProperties horizonProperties,
                             Clock clock,
-                            QuantAutomationService quantAutomationService,
                             QuantBenchmarkPreparationService benchmarkPreparationService,
-                            QuantResearchUniversePreparationService researchUniversePreparationService,
                             InvestmentHistoryPreparationService historyPreparationService) {
         this.jobService = jobService;
         this.analysisService = analysisService;
         this.horizonProperties = horizonProperties;
         this.clock = clock;
-        this.quantAutomationService = quantAutomationService;
         this.benchmarkPreparationService = benchmarkPreparationService;
-        this.researchUniversePreparationService = researchUniversePreparationService;
         this.historyPreparationService = historyPreparationService;
     }
 
@@ -85,6 +72,7 @@ public class InvestmentDataJobWorker {
     }
 
     @EventListener(ApplicationReadyEvent.class)
+    @Scheduled(fixedDelayString = "${investment.history-job.recovery-scan-delay-ms:60000}")
     public void requeueIncompleteHistoryJobs() {
         try {
             int requeued = jobService.requeueIncompleteHistoryJobs();
@@ -99,10 +87,7 @@ public class InvestmentDataJobWorker {
     private void run(InvestmentDataJob job) {
         LocalDateTime claimTime = LocalDateTime.now(clock);
         String leaseToken = UUID.randomUUID().toString();
-        int leaseSeconds = "RESEARCH_UNIVERSE_HISTORY".equals(job.getJobType())
-                ? RESEARCH_UNIVERSE_LEASE_SECONDS
-                : LEASE_SECONDS;
-        if (!jobService.claim(job.getId(), claimTime, claimTime.plusSeconds(leaseSeconds), leaseToken)) {
+        if (!jobService.claim(job.getId(), claimTime, claimTime.plusSeconds(LEASE_SECONDS), leaseToken)) {
             return;
         }
         InvestmentDataJob claimedJob = jobService.claimedSnapshot(job.getId(), leaseToken);
@@ -114,8 +99,6 @@ public class InvestmentDataJobWorker {
             InvestmentHistoryPreparationService.PreparationResult historyResult = null;
             if ("BENCHMARK_HISTORY".equals(claimedJob.getJobType())) {
                 recordCount = benchmarkPreparationService.prepare(claimedJob);
-            } else if ("RESEARCH_UNIVERSE_HISTORY".equals(claimedJob.getJobType())) {
-                recordCount = researchUniversePreparationService.prepare(claimedJob);
             } else if (isAssetHistoryJob(claimedJob)) {
                 historyResult = historyPreparationService.prepare(claimedJob);
                 recordCount = historyResult.recordCount();
@@ -126,9 +109,7 @@ public class InvestmentDataJobWorker {
                 recordCount = detail == null || detail.getQuoteSeries() == null
                         ? 0 : detail.getQuoteSeries().size();
             }
-            int minimum = "RESEARCH_UNIVERSE_HISTORY".equals(claimedJob.getJobType())
-                    ? 1
-                    : horizonProperties.getMinimumHistoryTradingDays();
+            int minimum = horizonProperties.getMinimumHistoryTradingDays();
             LocalDateTime completionTime = LocalDateTime.now(clock);
             if (historyResult != null
                     && !jobService.recordCoverage(claimedJob.getId(), leaseToken, historyResult)) {
@@ -148,15 +129,12 @@ public class InvestmentDataJobWorker {
                     requireFreshAnalysis(claimedJob);
                     completionTime = LocalDateTime.now(clock);
                 }
-                boolean completed = jobService.markSucceeded(
+                jobService.markSucceeded(
                         claimedJob.getId(),
                         leaseToken,
                         recordCount,
                         completionTime
                 );
-                if (completed) {
-                    triggerQuantAutomation(claimedJob);
-                }
             } else if (recordCount > 0) {
                 jobService.markPartial(claimedJob.getId(), leaseToken, recordCount,
                         truncate("历史记录仅 " + recordCount + " 条，低于最低要求 " + minimum + " 条"),
@@ -185,18 +163,6 @@ public class InvestmentDataJobWorker {
     private static boolean isAssetHistoryJob(InvestmentDataJob job) {
         return "STOCK_HISTORY".equals(job.getJobType())
                 || "FUND_NAV_HISTORY".equals(job.getJobType());
-    }
-
-    private void triggerQuantAutomation(InvestmentDataJob job) {
-        try {
-            quantAutomationService.onDataReady(job.getUserId(), job.getAssetId());
-        } catch (RuntimeException exception) {
-            log.warn(
-                    "Quant automation deferred after data refresh: assetId={}",
-                    job.getAssetId(),
-                    exception
-            );
-        }
     }
 
     private void retryOrFail(InvestmentDataJob job, String leaseToken,

@@ -40,7 +40,7 @@
         <div class="flex flex-wrap items-center gap-2 pl-11 xl:pl-0">
           <Button variant="outline" @click="preferenceOpen = true"><SlidersHorizontal />分析周期</Button>
           <Button variant="outline" @click="editOpen = true"><Pencil />编辑持仓</Button>
-          <Button variant="outline" @click="openQuantLab"><FlaskConical />量化模型管理</Button>
+          <Button variant="outline" @click="openQuantLab"><FlaskConical />策略工作台</Button>
           <Button variant="outline" :disabled="refreshingData" @click="refreshData"><RefreshCw :class="refreshingData && 'animate-spin'" />重新拉取数据</Button>
         </div>
       </header>
@@ -134,7 +134,6 @@
                 </div>
               </div>
               <p class="mt-3 text-2xl font-semibold" :class="verdictTone(activeVerdict)">{{ activeHeadline }}</p>
-              <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ fundAdviceUnavailable ? fundAdviceMessage : fundAdviceExperimental ? '根据当前周期的净值趋势、基准相对表现、波动与回撤状态生成。' : '根据净值趋势、波动和回撤状态生成。' }}</p>
             </div>
 
             <div v-if="!isFund && activeOutlook.risks?.length" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
@@ -217,44 +216,52 @@
                     </p>
                   </div>
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.benchmarkReturn)"
                     label="基准收益"
                     :help="fundMetricHelp.benchmarkReturn"
                     :value="percent(activeFundPeriod.benchmarkReturn)"
                     :tone="tone(activeFundPeriod.benchmarkReturn)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.trackingDifference)"
                     label="跟踪差"
                     :help="fundMetricHelp.trackingDifference"
                     :value="percent(activeFundPeriod.trackingDifference)"
                     :tone="tone(activeFundPeriod.trackingDifference)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.trackingError)"
                     label="年化跟踪误差"
                     :help="fundMetricHelp.trackingError"
                     :value="percent(activeFundPeriod.trackingError, false)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.correlation)"
                     label="相关系数"
                     :help="fundMetricHelp.correlation"
                     :value="decimal(activeFundPeriod.correlation)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.beta)"
                     label="Beta"
                     :help="fundMetricHelp.beta"
                     :value="decimal(activeFundPeriod.beta)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.regressionAlpha)"
                     label="回归 Alpha（年化）"
                     :help="fundMetricHelp.alpha"
                     :value="percent(activeFundPeriod.regressionAlpha)"
                     :tone="tone(activeFundPeriod.regressionAlpha)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.rSquared)"
                     label="R²"
                     :help="fundMetricHelp.rSquared"
                     :value="decimal(activeFundPeriod.rSquared)"
                   />
                   <ActionPriceRow
+                    v-if="hasMetric(activeFundPeriod.informationRatio)"
                     label="信息比率 IR"
                     :help="fundMetricHelp.informationRatio"
                     :value="decimal(activeFundPeriod.informationRatio)"
@@ -277,16 +284,6 @@
               <div class="mt-1 text-sm font-semibold">{{ invalidationText(activeOutlook.invalidation, singlePrice) }}</div>
             </div>
 
-            <details v-if="hasUsableQuantModel" class="rounded-lg border bg-muted/10 px-3 py-2.5">
-              <summary class="cursor-pointer select-none text-sm font-medium">量化模型（独立结果）</summary>
-              <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">盈利概率</span><strong class="mt-1 block">{{ probabilityPercent(quant.profitProbability) }}</strong></div>
-                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">扣费后收益</span><strong class="mt-1 block" :class="tone(quant.expectedNetReturn)">{{ decimalPercent(quant.expectedNetReturn) }}</strong></div>
-                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">亏损概率</span><strong class="mt-1 block">{{ probabilityPercent(quant.lossProbability) }}</strong></div>
-                <div class="rounded-md border bg-background p-2"><span class="text-muted-foreground">模型动作</span><strong class="mt-1 block">{{ quantActionLabel(quant.action) }}</strong></div>
-              </div>
-              <p v-if="quant.riskFlags?.length" class="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{{ quant.riskFlags.map(riskFlagLabel).join('；') }}</p>
-            </details>
           </div>
         </Card>
       </section>
@@ -416,7 +413,7 @@
         </details>
       </section>
 
-      <InvestmentAssetDrawer v-model:open="editOpen" :asset="asset" @saved="loadAll" />
+      <InvestmentAssetDrawer v-model:open="editOpen" :asset="asset" @saved="reloadAfterHoldingSaved" />
 
       <HorizonProfileDialog
         v-model:open="preferenceOpen"
@@ -451,7 +448,6 @@ import { normalizeAiExplanation } from '@/lib/investmentExplanation'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
 import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
-import { isUsableQuantAnalysis } from '@/lib/quantDisplay'
 import {
   confidenceLabel,
   directionLabel as outlookDirectionLabel,
@@ -463,8 +459,6 @@ import {
   clearInvestmentAssetHorizonOverrideAPI,
   getInvestmentAssetDetailAPI,
   getInvestmentHistoryJobAPI,
-  getQuantActionPlanAPI,
-  getInvestmentQuantAnalysisAPI,
   refreshInvestmentAssetDataQualityAPI,
   updateInvestmentAssetHorizonOverrideAPI,
 } from '@/api/investment'
@@ -476,7 +470,6 @@ const refreshingData = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
 const detail = ref(null)
-const quant = ref({ status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_UNAVAILABLE'] })
 const activeHorizon = ref('')
 const editOpen = ref(false)
 const preferenceOpen = ref(false)
@@ -495,7 +488,7 @@ const historyJobNotice = computed(() => ({
   RUNNING: '历史行情和分析正在后台准备，完成后页面会自动更新。',
   RETRY_WAIT: '服务正在稍后重试，当前已保存的数据仍可继续查看。',
   PARTIAL: '部分历史数据暂不可用，页面已更新可用结果。',
-  FAILED: '本次准备未完成，可点击“重新拉取数据”再次尝试。',
+  FAILED: '数据源暂未完成同步，系统会自动重试并补齐历史数据。',
 }[historyJobStatus.value] || ''))
 const qualityBlocked = computed(() => sourceStatus.value.dataState === 'BLOCKED')
 const qualityWaiting = computed(() => sourceStatus.value.dataState === 'WAITING')
@@ -571,7 +564,6 @@ const activeOutlook = computed(() => activeAnalysis.value.outlook || technical.v
 const activeDirection = computed(() => directionMeta(activeOutlook.value.direction))
 const activeBacktest = computed(() => backtest.value.horizons?.[activeHorizon.value] || backtest.value)
 const activeLevels = computed(() => activeAnalysis.value.levels || technical.value.levels || {})
-const hasUsableQuantModel = computed(() => isUsableQuantAnalysis(quant.value))
 const priceZones = computed(() => isFund.value
   ? technical.value.actionZones || {}
   : activeAnalysis.value.actionZones || technical.value.actionZones || {})
@@ -648,7 +640,6 @@ watch(horizonOptions, options => {
   if (options.some(item => item.value === activeHorizon.value)) return
   activeHorizon.value = options.find(item => item.primary)?.value || options[0]?.value || ''
 }, { immediate: true })
-watch(activeHorizon, value => { if (value) loadQuantAnalysis() })
 
 onBeforeUnmount(() => {
   componentDisposed = true
@@ -697,25 +688,17 @@ function syncHistoryJobPolling() {
   if (!componentDisposed) historyJobPolling.update(route.params.assetId, historyJobStatus.value)
 }
 
-async function loadQuantAnalysis() {
-  if (!route.params.assetId || !activeHorizon.value) return
-  try {
-    const [analysisResponse, actionPlanResponse] = await Promise.all([
-      getInvestmentQuantAnalysisAPI(route.params.assetId, activeHorizon.value),
-      getQuantActionPlanAPI(route.params.assetId, activeHorizon.value),
-    ])
-    quant.value = {
-      ...(analysisResponse.data || {}),
-      ...(actionPlanResponse.data || {}),
-    }
-  } catch {
-    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['RESULT_UNAVAILABLE'], userMessage: '暂无有效量化模型' }
+async function reloadAfterHoldingSaved(savedAsset) {
+  const assetId = route.params.assetId
+  if (savedAsset && String(savedAsset.id) === String(assetId)) {
+    detail.value = { ...detail.value, asset: savedAsset }
   }
+  await loadAll(assetId)
 }
 
 function openQuantLab() {
   router.push({
-    path: '/quant-lab',
+    path: '/quant',
     query: { assetId: route.params.assetId, horizonCode: activeHorizon.value }
   })
 }
@@ -731,7 +714,6 @@ async function savePreference(payload) {
   try {
     const response = await updateInvestmentAssetHorizonOverrideAPI(route.params.assetId, payload)
     detail.value = response.data
-    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已更新，系统将自动重新训练该周期的量化模型。' }
     preferenceOpen.value = false
     feedback.success('该资产的周期设置已保存')
   } finally { savingPreference.value = false }
@@ -743,7 +725,6 @@ async function clearPreference() {
   try {
     const response = await clearInvestmentAssetHorizonOverrideAPI(route.params.assetId)
     detail.value = response.data
-    quant.value = { status: 'UNAVAILABLE', action: 'PAUSE', riskFlags: ['MODEL_REFRESH_REQUIRED'], userMessage: '周期已恢复为全局设置，系统将自动重新训练该周期的量化模型。' }
     preferenceOpen.value = false
     feedback.success('已恢复全局周期设置')
   } finally { savingPreference.value = false }
@@ -801,11 +782,8 @@ function percent(value, signed = true) { if (value == null) return '-'; const n 
 function decimal(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(Number(value)) }
 function hasMetric(value) { return value !== null && value !== undefined && Number.isFinite(Number(value)) }
 function tone(value) { const n = Number(value || 0); return n > 0 ? 'text-emerald-600 dark:text-emerald-400' : n < 0 ? 'text-destructive' : '' }
-function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', MODEL_DRIFT: '模型表现漂移', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
-function quantActionLabel(value) { return ({ BUY_WATCH: '买入观察', ADD: '加仓', HOLD: '持有', REDUCE: '减仓', EXIT: '退出', NO_TRADE: '暂不交易' }[value] || '暂不交易') }
-function probabilityPercent(value) { return value == null ? '-' : `${(Number(value) * 100).toFixed(1)}%` }
+function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
 function decimalPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${(Number(value) * 100).toFixed(2)}%` }
-function riskFlagLabel(value) { return ({ MODEL_NOT_VALIDATED: '模型尚未通过样本外验证，当前不交易', MODEL_UNAVAILABLE: '模型尚未完成训练，当前不交易', DATA_NOT_READY: '可靠数据正在准备中，当前不交易', RESULT_UNAVAILABLE: '有效模型结果正在准备中', MODEL_REFRESH_REQUIRED: '周期已变化，需要更新模型', CASH_BENCHMARK: '当前使用现金收益作为比较基准', FUNDAMENTALS_UNAVAILABLE: '历史基本面公告数据不足，本次模型主要使用行情因子' }[value] || '当前风险条件不支持交易') }
 function drawdownStatusLabel(value) {
   return ({ RECOVERED: '已回到前高', RECOVERING: '修复中', IN_DRAWDOWN: '回撤中' }[value] || '等待数据')
 }

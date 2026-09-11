@@ -26,6 +26,7 @@ class QuantBenchmarkProfileServiceTest {
         when(mapper.selectList(any())).thenReturn(List.of(fallback, exact));
         when(client.benchmarkHistory(
                 "CSI300",
+                Map.of("CSI300", new java.math.BigDecimal("1.0")),
                 LocalDate.parse("2024-01-01"),
                 LocalDate.parse("2026-07-24")
         )).thenReturn(Map.of(

@@ -26,11 +26,14 @@ function itemClass(type) {
 
 function onFeedback(event) {
   const payload = event.detail || {}
+  const title = payload.title || payload.message || '提示'
+  const message = payload.title ? payload.message : ''
+  if (items.value.some(current => current.type === (payload.type || 'info') && current.title === title && current.message === message)) return
   const item = {
     id: nextId++,
     type: payload.type || 'info',
-    title: payload.title || payload.message || '提示',
-    message: payload.title ? payload.message : ''
+    title,
+    message
   }
   items.value.push(item)
   window.setTimeout(() => {

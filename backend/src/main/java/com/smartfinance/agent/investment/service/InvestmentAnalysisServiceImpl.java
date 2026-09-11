@@ -12,12 +12,8 @@ import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
-import com.smartfinance.agent.investment.quant.QuantModelMonitor;
-import com.smartfinance.agent.investment.quant.QuantModelMonitorMapper;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import com.smartfinance.agent.investment.quant.BenchmarkProfile;
-import com.smartfinance.agent.investment.quant.QuantStrategyVersion;
-import com.smartfinance.agent.investment.quant.QuantStrategyVersionMapper;
 import com.smartfinance.agent.mapper.FinancialProfileMapper;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -52,8 +48,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final ObjectMapper objectMapper;
     private final InvestmentDataJobService dataJobService;
     private final InvestmentFinancialWarningEngine warningEngine;
-    private final QuantStrategyVersionMapper quantStrategyMapper;
-    private final QuantModelMonitorMapper quantMonitorMapper;
     private final QuantBenchmarkProfileService benchmarkProfileService;
 
     public InvestmentAnalysisServiceImpl(InvestmentAssetService assetService,
@@ -72,8 +66,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          ObjectMapper objectMapper,
                                          InvestmentDataJobService dataJobService,
                                          InvestmentFinancialWarningEngine warningEngine,
-                                         QuantStrategyVersionMapper quantStrategyMapper,
-                                         QuantModelMonitorMapper quantMonitorMapper,
                                          QuantBenchmarkProfileService benchmarkProfileService) {
         this.assetService = assetService;
         this.productMapper = productMapper;
@@ -91,8 +83,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.objectMapper = objectMapper;
         this.dataJobService = dataJobService;
         this.warningEngine = warningEngine;
-        this.quantStrategyMapper = quantStrategyMapper;
-        this.quantMonitorMapper = quantMonitorMapper;
         this.benchmarkProfileService = benchmarkProfileService;
     }
 
@@ -204,6 +194,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         material.put("classificationVersion", classificationVersion);
         material.put("quoteHistory", quoteHistoryMaterial);
         material.put("benchmark", benchmarkMaterial);
+        material.put("fundReturnBasis", "DIVIDEND_REINVESTED");
+        material.put("fundBenchmarkAlignment", "COMMON_DATES_V1");
         return hash(writeJson(material));
     }
 
@@ -437,7 +429,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 : latestRecordDate(quality.records());
         Map<String, Object> fundBenchmark = qualityBlocked
                 ? Map.of()
-                : benchmarkPayload(product, quality.records());
+                : benchmarkPayload(product, quotes.stream()
+                    .map(InvestmentAnalysisServiceImpl::quoteRecord).toList());
         if (!fundBenchmark.isEmpty()) {
             sourceStatus.put("benchmarkStatus", fundBenchmark.get("status"));
             sourceStatus.put("benchmarkCode", fundBenchmark.get("code"));
@@ -853,6 +846,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         item.put("high", quote.getHighPrice());
         item.put("low", quote.getLowPrice());
         item.put("close", quote.getClosePrice());
+        item.put("total_return_index", quote.getTotalReturnIndex());
         item.put("volume", quote.getVolume());
         return item;
     }
@@ -1005,6 +999,9 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 material.put(key, benchmark.get(key));
             }
         }
+        if (benchmark.get("records") instanceof List<?> records) {
+            material.put("recordCount", records.size());
+        }
         return material;
     }
 
@@ -1039,11 +1036,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             Map<String, Object> source,
             String horizonCode
     ) {
-        QuantRiskContext model = quantRiskContext(
-                userId,
-                asset.getId(),
-                horizonCode
-        );
         Map<String, Object> fullHistory = asMap(technical.get("fullHistory"));
         return warningEngine.evaluate(new InvestmentFinancialWarningEngine.Input(
                 asset.getId(),
@@ -1063,10 +1055,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                         source.get("qualityDecision"),
                         source.get("decision")
                 ),
-                model.driftStatus(),
                 horizonCode,
-                text(source.get("datasetVersion")),
-                model.modelVersion()
+                text(source.get("datasetVersion"))
         ));
     }
 
@@ -1118,39 +1108,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 product, horizonCode, snapshot
         ));
         return result;
-    }
-
-    private QuantRiskContext quantRiskContext(
-            Long userId,
-            Long assetId,
-            String horizonCode
-    ) {
-        QuantStrategyVersion strategy = quantStrategyMapper.selectOne(
-                new LambdaQueryWrapper<QuantStrategyVersion>()
-                        .eq(QuantStrategyVersion::getUserId, userId)
-                        .eq(QuantStrategyVersion::getAssetId, assetId)
-                        .eq(QuantStrategyVersion::getHorizonCode, horizonCode)
-                        .orderByDesc(QuantStrategyVersion::getActivatedAt)
-                        .orderByDesc(QuantStrategyVersion::getUpdatedAt)
-                        .last("LIMIT 1")
-        );
-        if (strategy == null || strategy.getModelVersion() == null) {
-            return new QuantRiskContext(null, "NOT_MONITORED");
-        }
-        QuantModelMonitor monitor = quantMonitorMapper.selectOne(
-                new LambdaQueryWrapper<QuantModelMonitor>()
-                        .eq(
-                                QuantModelMonitor::getModelVersion,
-                                strategy.getModelVersion()
-                        )
-                        .orderByDesc(QuantModelMonitor::getMonitoredOn)
-                        .orderByDesc(QuantModelMonitor::getCreatedAt)
-                        .last("LIMIT 1")
-        );
-        return new QuantRiskContext(
-                strategy.getModelVersion(),
-                monitor == null ? "NOT_MONITORED" : monitor.getDriftStatus()
-        );
     }
 
     private Map<String, Object> disclaimer(
@@ -1307,12 +1264,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         } catch (NumberFormatException ignored) {
             return null;
         }
-    }
-
-    private record QuantRiskContext(
-            String modelVersion,
-            String driftStatus
-    ) {
     }
 
     private Map<String, Object> readMap(String json) {

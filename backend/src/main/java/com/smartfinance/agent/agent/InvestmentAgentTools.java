@@ -4,21 +4,17 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.common.UserIdContext;
 import com.smartfinance.agent.investment.service.InvestmentService;
-import com.smartfinance.agent.investment.quant.QuantService;
 import org.springframework.stereotype.Component;
 
 @Component
 public class InvestmentAgentTools {
 
     private final InvestmentService investmentService;
-    private final QuantService quantService;
     private final ObjectMapper objectMapper;
 
     public InvestmentAgentTools(InvestmentService investmentService,
-                                QuantService quantService,
                                 ObjectMapper objectMapper) {
         this.investmentService = investmentService;
-        this.quantService = quantService;
         this.objectMapper = objectMapper;
     }
 
@@ -40,19 +36,6 @@ public class InvestmentAgentTools {
 
     public String recommendations() {
         return json(investmentService.recommendations(requiredUserId()));
-    }
-
-    public String quantSignal(Long assetId, String horizonCode) {
-        if (assetId == null || assetId < 1) throw new IllegalArgumentException("量化信号需要有效资产编号");
-        return json(quantService.latestAnalysis(requiredUserId(), assetId, horizonCode));
-    }
-
-    public String quantStrategyStatus() {
-        return json(quantService.strategyStatus(requiredUserId()));
-    }
-
-    public String paperAccount() {
-        return json(quantService.paperAccount(requiredUserId()));
     }
 
     private Long requiredUserId() {

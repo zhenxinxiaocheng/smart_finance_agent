@@ -27,7 +27,9 @@ request.interceptors.response.use(
         return handleSessionExpired().then(() => Promise.reject(new Error(res.message)))
       }
       feedback.error(res.message || '请求失败')
-      return Promise.reject(new Error(res.message))
+      const apiError = new Error(res.message || '请求失败')
+      apiError.__feedbackShown = true
+      return Promise.reject(apiError)
     }
     return res
   },
@@ -35,11 +37,14 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       return handleSessionExpired().then(() => Promise.reject(error))
     }
+    const detail = error.response?.data?.detail
+    const message = error.response?.data?.message || (typeof detail === 'string' ? detail : detail?.message) || error.message || '网络错误'
     if (error.code === 'ECONNABORTED') {
       feedback.warning('请求超时，AI回复较慢，请稍后重试')
     } else {
-      feedback.error(error.message || '网络错误')
+      feedback.error(message)
     }
+    error.__feedbackShown = true
     return Promise.reject(error)
   }
 )

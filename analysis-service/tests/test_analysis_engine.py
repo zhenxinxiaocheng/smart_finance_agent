@@ -25,6 +25,7 @@ def price_records(count: int = 320, *, step: float = 0.18) -> list[dict[str, str
             "high": f"{close + 0.65:.4f}",
             "low": f"{close - 0.75:.4f}",
             "close": f"{close:.4f}",
+            "total_return_index": f"{close:.4f}",
             "volume": f"{100000 + index * 200}",
         })
     return records
@@ -121,6 +122,7 @@ class AnalysisEngineTest(unittest.TestCase):
     def test_fund_analysis_reports_returns_volatility_and_drawdown(self):
         records = price_records(260, step=0.04)
         records[180]["close"] = "16.0"
+        records[180]["total_return_index"] = "16.0"
 
         result = analyze_fund(records, fund_category="INDEX_FUND")
 
@@ -142,6 +144,7 @@ class AnalysisEngineTest(unittest.TestCase):
             {
                 "data_date": item["data_date"],
                 "nav": item["close"],
+                "total_return_index": item["total_return_index"],
             }
             for item in price_records(260, step=0.04)
         ]
@@ -178,6 +181,7 @@ class AnalysisEngineTest(unittest.TestCase):
     def test_fund_analysis_separates_full_history_from_user_horizons(self):
         records = price_records(620, step=0.04)
         records[-200]["close"] = "200.0"
+        records[-200]["total_return_index"] = "200.0"
         result = analyze_fund(
             records,
             {
@@ -200,7 +204,7 @@ class AnalysisEngineTest(unittest.TestCase):
             "IN_DRAWDOWN",
         })
         self.assertEqual(620, result["fullHistory"]["recordCount"])
-        self.assertEqual("VALIDATED_ANALYSIS_WINDOW", result["fullHistory"]["scope"])
+        self.assertEqual("FULL_AVAILABLE_HISTORY", result["fullHistory"]["scope"])
         self.assertEqual(620, len(result["series"]))
         self.assertEqual("WAIT", result["horizons"]["SHORT"]["action"])
         self.assertNotIn("trendVerdict", result["horizons"]["SHORT"])
@@ -220,6 +224,7 @@ class AnalysisEngineTest(unittest.TestCase):
             {
                 "data_date": (start + timedelta(days=index)).isoformat(),
                 "close": str(value),
+                "total_return_index": str(value),
             }
             for index, value in enumerate(fund_values)
         ]
@@ -270,7 +275,8 @@ class AnalysisEngineTest(unittest.TestCase):
             fund_values.append(fund_values[-1] * (1 + fund_return))
             benchmark_values.append(benchmark_values[-1] * (1 + benchmark_return))
         records = [
-            {"data_date": (start + timedelta(days=index)).isoformat(), "close": str(value)}
+            {"data_date": (start + timedelta(days=index)).isoformat(), "close": str(value),
+             "total_return_index": str(value)}
             for index, value in enumerate(fund_values)
         ]
         benchmark_records = [

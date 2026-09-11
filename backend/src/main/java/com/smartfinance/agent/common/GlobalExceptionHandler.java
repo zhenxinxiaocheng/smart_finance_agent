@@ -8,10 +8,18 @@ import org.springframework.validation.BindException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.ResponseEntity;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Result<Void>> handleResponseStatus(ResponseStatusException e) {
+        String message = e.getReason() == null ? "请求无法完成" : e.getReason();
+        return ResponseEntity.status(e.getStatusCode()).body(Result.error(e.getStatusCode().value(), message));
+    }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public Result<Void> handleIllegalArgument(IllegalArgumentException e) {

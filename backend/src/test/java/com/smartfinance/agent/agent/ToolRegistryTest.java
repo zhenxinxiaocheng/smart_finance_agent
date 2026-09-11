@@ -184,20 +184,6 @@ class ToolRegistryTest {
                 any(), eq(true), eq(false), any(Long.class), any(), any());
     }
 
-    @Test
-    void execute_quantStrategyStatus_shouldRemainReadOnly() {
-        when(agentSkillService.resolveInvocationSkill(1L, "get_investment_quant_strategy_status", null))
-                .thenReturn(builtInSkill("get_investment_quant_strategy_status", "投资分析", "BUILT_IN", "READ_ONLY", 1));
-        when(investmentAgentTools.quantStrategyStatus()).thenReturn("{\"status\":\"READY\"}");
-
-        ToolRegistry.ToolObservation observation = registry.execute(
-                "get_investment_quant_strategy_status", null, 1L, "trace-quant");
-
-        assertThat(observation.isSuccess()).isTrue();
-        assertThat(observation.getRawResult()).contains("READY");
-        verify(investmentAgentTools).quantStrategyStatus();
-    }
-
     private AgentSkill builtInSkill(String key, String category, String sourceType, String riskLevel, int enabled) {
         AgentSkill skill = new AgentSkill();
         skill.setSkillKey(key);

@@ -18,6 +18,8 @@ public class ProductDailyQuote {
     private BigDecimal highPrice;
     private BigDecimal lowPrice;
     private BigDecimal closePrice;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal totalReturnIndex;
     private BigDecimal previousClose;
     private BigDecimal changeAmount;
     private BigDecimal changePercent;

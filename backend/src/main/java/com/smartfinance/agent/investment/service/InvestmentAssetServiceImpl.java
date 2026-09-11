@@ -1,6 +1,7 @@
 package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.smartfinance.agent.investment.dto.*;
 import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.*;
@@ -20,6 +21,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -27,11 +29,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class InvestmentAssetServiceImpl implements InvestmentAssetService {
 
     private static final String DEFAULT_ACCOUNT_NAME = "默认投资账户";
+    private static final Set<String> HOLDING_SNAPSHOT_SOURCES = Set.of(
+            "ASSET_CRUD", "RECURRING_PLAN");
 
     private final InvestmentAssetMapper assetMapper;
     private final InvestmentProductMapper productMapper;
     private final InvestmentAccountMapper accountMapper;
     private final InvestmentPositionMapper positionMapper;
+    private final InvestmentTransactionMapper transactionMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentService investmentService;
@@ -48,6 +53,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentProductMapper productMapper,
                                       InvestmentAccountMapper accountMapper,
                                       InvestmentPositionMapper positionMapper,
+                                      InvestmentTransactionMapper transactionMapper,
                                       ProductDailyQuoteMapper quoteMapper,
                                       AnalysisServiceClient analysisClient,
                                       InvestmentService investmentService,
@@ -60,6 +66,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
         this.positionMapper = positionMapper;
+        this.transactionMapper = transactionMapper;
         this.quoteMapper = quoteMapper;
         this.analysisClient = analysisClient;
         this.investmentService = investmentService;
@@ -267,7 +274,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private void applyOutcome(InvestmentAsset asset, RefreshOutcome outcome) {
         asset.setSyncStatus(outcome.status());
         asset.setSyncError(outcome.error());
-        assetMapper.updateById(asset);
+        assetMapper.update(null, new LambdaUpdateWrapper<InvestmentAsset>()
+                .eq(InvestmentAsset::getId, asset.getId())
+                .set(InvestmentAsset::getSyncStatus, outcome.status())
+                .set(InvestmentAsset::getSyncError, outcome.error()));
     }
 
     private void queueBenchmarkHistory(InvestmentAsset asset) {
@@ -374,8 +384,32 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     private void reverseCurrent(Long userId, InvestmentAsset asset) {
-        if (asset.getCurrentTransactionId() != null) {
-            investmentService.reverseTransaction(userId, asset.getCurrentTransactionId(), "资产列表持仓更正");
+        List<InvestmentTransaction> snapshots = transactionMapper.selectList(
+                new LambdaQueryWrapper<InvestmentTransaction>()
+                        .eq(InvestmentTransaction::getUserId, userId)
+                        .eq(InvestmentTransaction::getAccountId, asset.getAccountId())
+                        .eq(InvestmentTransaction::getProductId, asset.getProductId())
+                        .in(InvestmentTransaction::getSource, HOLDING_SNAPSHOT_SOURCES)
+                        .orderByDesc(InvestmentTransaction::getId));
+        if (snapshots.isEmpty()) {
+            return;
+        }
+        Set<Long> snapshotIds = snapshots.stream()
+                .map(InvestmentTransaction::getId)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<Long> reversedIds = transactionMapper.selectList(
+                        new LambdaQueryWrapper<InvestmentTransaction>()
+                                .eq(InvestmentTransaction::getUserId, userId)
+                                .eq(InvestmentTransaction::getEventType, "REVERSAL")
+                                .in(InvestmentTransaction::getReversalTransactionId, snapshotIds))
+                .stream()
+                .map(InvestmentTransaction::getReversalTransactionId)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        for (InvestmentTransaction snapshot : snapshots) {
+            if (!reversedIds.contains(snapshot.getId())) {
+                investmentService.reverseTransaction(userId, snapshot.getId(), "资产列表持仓更正");
+            }
         }
     }
 

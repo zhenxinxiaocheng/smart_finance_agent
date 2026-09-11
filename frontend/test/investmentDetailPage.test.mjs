@@ -35,7 +35,6 @@ test('分析周期来自后端画像且单资产设置可恢复为全局配置',
 test('数据不足的周期不展示伪造评分', () => {
   assert.match(pageSource, /item\.data\.status === 'INSUFFICIENT'/)
   assert.match(pageSource, /历史数据不足，暂不判断走势/)
-  assert.match(pageSource, /hasUsableQuantModel/)
 })
 
 test('风险警告与技术结果在页面上分区呈现', () => {
@@ -75,7 +74,6 @@ test('只解释专业指标且说明用户如何阅读结果', () => {
   assert.doesNotMatch(pageSource, /helpText\.aiExplanation/)
   assert.doesNotMatch(pageSource, /helpText\.financialWarnings/)
   assert.match(investmentHelpText.technicalOutlook, /趋势、动量、量价、波动和价格结构/)
-  assert.match(investmentHelpText.quantProbability, /扣除交易成本/)
   assert.match(investmentHelpText.priceZones, /买入\/加仓/)
   assert.match(investmentHelpText.backtest, /样本次数/)
   assert.doesNotMatch(JSON.stringify(investmentHelpText), /方便理解|用通俗中文解释|不保证未来一定上涨/)
@@ -85,7 +83,7 @@ test('基金收益窗口由策略结果动态渲染', () => {
   assert.match(pageSource, /activeFundPeriod/)
   assert.match(pageSource, /fundFullHistoryMetrics/)
   assert.match(pageSource, /周期最大回撤/)
-  assert.match(pageSource, /分析数据区间最大回撤/)
+  assert.match(pageSource, /历史最大回撤/)
   assert.doesNotMatch(pageSource, /成立以来/)
   assert.match(pageSource, /当前回撤/)
   assert.match(pageSource, /drawdownStatusLabel/)
@@ -123,23 +121,6 @@ test('当前周期的关键价位和主要结论来自同一技术走势规则',
   assert.match(pageSource, /activeAnalysis\.value\.actionZones/)
   assert.match(pageSource, /activeAnalysis\.value\.outlook/)
   assert.doesNotMatch(pageSource, /label:\s*'技术评分'.*topMetrics/)
-})
-
-test('只有存在可用模型时才把量化结果作为独立次级模块展示', () => {
-  assert.match(investmentApiSource, /getInvestmentQuantAnalysisAPI/)
-  assert.match(investmentApiSource, /getQuantActionPlanAPI/)
-  assert.match(pageSource, /v-if="hasUsableQuantModel"/)
-  assert.match(pageSource, /量化模型（独立结果）/)
-  assert.doesNotMatch(pageSource, /refreshInvestmentQuantAnalysisAPI/)
-  assert.doesNotMatch(pageSource, /getInvestmentQuantJobAPI/)
-  assert.match(pageSource, /profitProbability/)
-  assert.match(pageSource, /expectedNetReturn/)
-  assert.match(pageSource, /lossProbability/)
-  assert.doesNotMatch(pageSource, /orderAmountCny/)
-  assert.doesNotMatch(pageSource, /probabilityPositiveExcess/)
-  assert.doesNotMatch(pageSource, /topFactors/)
-  assert.match(pageSource, /NO_TRADE/)
-  assert.match(horizonDialogSource, /targetHoldingDays/)
 })
 
 test('详情页自动分析且不提供手动刷新分析按钮', () => {

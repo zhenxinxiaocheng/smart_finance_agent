@@ -300,6 +300,11 @@ public class QuantBenchmarkProfileService {
             if (composition.isEmpty()) {
                 return "官方基准成分合同为空";
             }
+            if (composition.size() > 1
+                    && (profile.getBenchmarkCode() == null
+                    || !profile.getBenchmarkCode().startsWith("COMPOSITE:"))) {
+                return "旧版复合基准合同尚未被当前适配器完整执行";
+            }
             boolean legacyWeights = composition.values().stream()
                     .allMatch(Number.class::isInstance);
             if (!legacyWeights) {

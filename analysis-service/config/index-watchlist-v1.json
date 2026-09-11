@@ -1,0 +1,21 @@
+{
+  "version": "index-watchlist-v1",
+  "instruments": [
+    {
+      "indexCode": "CN_INDEX:000300",
+      "displayName": "沪深300",
+      "market": "CN",
+      "aliases": ["沪深300", "CSI300", "000300"]
+    },
+    {
+      "indexCode": "GLOBAL_INDEX:NDX",
+      "displayName": "纳斯达克100",
+      "market": "US",
+      "aliases": ["纳斯达克100", "纳指100", "NASDAQ100", "NASDAQ-100", "NDX"],
+      "fallback": {
+        "provider": "SINA_US_INDEX_HISTORY",
+        "symbol": ".NDX"
+      }
+    }
+  ]
+}

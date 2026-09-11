@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
 import threading
@@ -17,6 +16,7 @@ from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from .data_quality.models import AdjustType, DataSnapshotContext, ProductType
+from .fund_returns import attach_fund_returns
 from .benchmark_registry import (
     benchmark_provider_symbol,
     fx_provider_config,
@@ -24,6 +24,7 @@ from .benchmark_registry import (
     resolve_fund_benchmark,
 )
 from .fund_classification import FundClassification, classify_fund_type
+from .index_registry import INDEX_WATCHLIST_REGISTRY
 from .strategy_config import load_strategy_config
 
 
@@ -140,12 +141,13 @@ class NormalizedQuote:
     provider: str
     adapter_version: str
     fetched_at: datetime
+    total_return_index: Decimal | None = None
 
     def json_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["data_date"] = self.data_date.isoformat()
         value["fetched_at"] = self.fetched_at.isoformat()
-        for key in ("open", "high", "low", "close", "volume"):
+        for key in ("open", "high", "low", "close", "volume", "total_return_index"):
             value[key] = None if value[key] is None else str(value[key])
         return value
 
@@ -231,7 +233,9 @@ class ProviderBatch:
                 "volume": None if is_fund else record.volume,
                 "nav": record.close if is_fund else None,
                 "trading_status": None,
-                "adjustment_factor": None,
+                # Keep UNIT_NAV unchanged; the factor carries reinvested returns.
+                "adjustment_factor": ((record.total_return_index / record.close).quantize(Decimal("0.0000000001"))
+                                      if is_fund and record.total_return_index is not None else None),
                 "corporate_action_reference": None,
                 "nav_type": "UNIT_NAV" if is_fund else None,
                 "estimated": False if is_fund else None,
@@ -279,6 +283,7 @@ def normalize_quote(
         provider=provider.strip().upper(),
         adapter_version=adapter_version,
         fetched_at=fetched_at if fetched_at is not None else datetime.now(timezone.utc),
+        total_return_index=_decimal(raw.get("total_return_index")),
     )
 
 
@@ -371,6 +376,162 @@ def fetch_realtime_stock_quote(code: str, market: str, opener=urlopen, clock=Non
         )
 
     raise ProviderUnavailable("；".join(errors))
+
+
+def _index_quote(raw: dict[str, Any], scope: str) -> dict[str, Any] | None:
+    raw_code = _first_text(raw, "代码", "code", "symbol")
+    name = _first_text(raw, "名称", "name")
+    latest = _decimal(_first_text(raw, "最新价", "close", "latest"))
+    if not raw_code or not name or latest is None:
+        return None
+    if scope == "CN":
+        digits = "".join(character for character in raw_code if character.isdigit())
+        if len(digits) < 6:
+            return None
+        index_code = f"CN_INDEX:{digits[-6:]}"
+        market = "CN"
+        previous_close = _decimal(_first_text(raw, "昨收", "昨收价", "previousClose"))
+        open_price = _decimal(_first_text(raw, "今开", "开盘价", "open"))
+        high_price = _decimal(_first_text(raw, "最高", "最高价", "high"))
+        low_price = _decimal(_first_text(raw, "最低", "最低价", "low"))
+        provider = "AKSHARE_SINA_CN_INDEX"
+        data_time = _first_text(raw, "时间", "最新行情时间", "dataTime") or None
+    else:
+        normalized_code = raw_code.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9._-]{1,20}", normalized_code):
+            return None
+        index_code = f"GLOBAL_INDEX:{normalized_code}"
+        market = "GLOBAL"
+        previous_close = _decimal(_first_text(raw, "昨收价", "昨收", "previousClose"))
+        open_price = _decimal(_first_text(raw, "开盘价", "今开", "open"))
+        high_price = _decimal(_first_text(raw, "最高价", "最高", "high"))
+        low_price = _decimal(_first_text(raw, "最低价", "最低", "low"))
+        provider = "AKSHARE_EASTMONEY_GLOBAL_INDEX"
+        data_time = _first_text(raw, "最新行情时间", "时间", "dataTime") or None
+    change_amount = _decimal(_first_text(raw, "涨跌额", "changeAmount"))
+    change_percent = _decimal(_first_text(raw, "涨跌幅", "changePercent"))
+    if change_amount is None and previous_close is not None:
+        change_amount = latest - previous_close
+    if change_percent is None and change_amount is not None and previous_close:
+        change_percent = change_amount / previous_close * Decimal("100")
+    return {
+        "indexCode": index_code,
+        "name": name,
+        "market": market,
+        "latestPrice": _decimal_string(latest),
+        "changePercent": _decimal_string(change_percent),
+        "changeAmount": _decimal_string(change_amount),
+        "previousClose": _decimal_string(previous_close),
+        "openPrice": _decimal_string(open_price),
+        "highPrice": _decimal_string(high_price),
+        "lowPrice": _decimal_string(low_price),
+        "dataTime": data_time,
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        "provider": provider,
+    }
+
+
+def _historical_index_quote(
+    records: Sequence[dict[str, Any]],
+    configured: dict[str, str],
+) -> dict[str, Any] | None:
+    usable = []
+    for raw in records:
+        close = _decimal(_first_text(raw, "close", "收盘"))
+        if close is not None:
+            usable.append((raw, close))
+    if not usable:
+        return None
+    latest_raw, latest = usable[-1]
+    previous_close = usable[-2][1] if len(usable) > 1 else None
+    change_amount = latest - previous_close if previous_close is not None else None
+    return {
+        "indexCode": configured["indexCode"],
+        "name": configured["name"],
+        "market": configured["market"],
+        "latestPrice": _decimal_string(latest),
+        "changePercent": _decimal_string(_percentage(change_amount, previous_close))
+        if change_amount is not None else None,
+        "changeAmount": _decimal_string(change_amount),
+        "previousClose": _decimal_string(previous_close),
+        "openPrice": _decimal_string(_decimal(_first_text(latest_raw, "open", "开盘"))),
+        "highPrice": _decimal_string(_decimal(_first_text(latest_raw, "high", "最高"))),
+        "lowPrice": _decimal_string(_decimal(_first_text(latest_raw, "low", "最低"))),
+        "dataTime": _first_text(latest_raw, "date", "日期") or None,
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        "provider": f"AKSHARE_{configured['provider']}",
+    }
+
+
+def _index_market_catalog(ak_module: Any = None) -> list[dict[str, Any]]:
+    if ak_module is None:
+        try:
+            import akshare as ak_module
+        except ImportError as exc:
+            raise ProviderUnavailable("AKShare is not installed") from exc
+    items: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    for scope, method_name in (
+        ("CN", "stock_zh_index_spot_sina"),
+        ("GLOBAL", "index_global_spot_em"),
+    ):
+        loader = getattr(ak_module, method_name, None)
+        if loader is None:
+            errors.append(f"{method_name}: 接口不可用")
+            continue
+        try:
+            records = loader().to_dict("records")
+        except Exception as exc:
+            errors.append(f"{method_name}: {exc}")
+            continue
+        for raw in records:
+            quote = _index_quote(raw, scope)
+            if quote is not None:
+                quote = INDEX_WATCHLIST_REGISTRY.enrich(quote)
+                items.setdefault(quote["indexCode"], quote)
+    for configured in INDEX_WATCHLIST_REGISTRY.fallback_quotes():
+        if configured["indexCode"] in items:
+            continue
+        if configured["provider"] != "SINA_US_INDEX_HISTORY":
+            errors.append(f"{configured['indexCode']}: 不支持的回退数据源")
+            continue
+        loader = getattr(ak_module, "index_us_stock_sina", None)
+        if loader is None:
+            errors.append("index_us_stock_sina: 接口不可用")
+            continue
+        try:
+            records = loader(symbol=configured["symbol"]).to_dict("records")
+            quote = _historical_index_quote(records, configured)
+        except Exception as exc:
+            errors.append(f"index_us_stock_sina({configured['symbol']}): {exc}")
+            continue
+        if quote is not None:
+            items[quote["indexCode"]] = quote
+    if not items:
+        raise ProviderUnavailable("；".join(errors) or "AKSHARE 未返回指数行情")
+    return list(items.values())
+
+
+def fetch_index_quotes(index_codes: Sequence[str], ak_module: Any = None) -> list[dict[str, Any]]:
+    requested = [str(code).strip().upper() for code in index_codes if str(code).strip()]
+    if not requested:
+        return []
+    catalog = {item["indexCode"].upper(): item for item in _index_market_catalog(ak_module)}
+    return [catalog[code] for code in requested if code in catalog]
+
+
+def search_index_quotes(keyword: str, limit: int = 20, ak_module: Any = None) -> list[dict[str, Any]]:
+    query = str(keyword or "").strip().casefold()
+    if not query:
+        return []
+    matches = [
+        item for item in _index_market_catalog(ak_module)
+        if INDEX_WATCHLIST_REGISTRY.matches(item, query)
+    ]
+    matches.sort(key=lambda item: (
+        not item["name"].casefold().startswith(query), item["market"], item["name"]
+    ))
+    return matches[:max(1, min(int(limit), 50))]
 
 
 def _realtime_quote_result(
@@ -751,122 +912,12 @@ def resolve_product_metadata(
     )
 
 
-def discover_fund_research_universe(
-    *,
-    model_family: str,
-    benchmark_code: str,
-    target_code: str,
-    start_date: date,
-    end_date: date,
-    limit: int,
-    minimum_records: int,
-    selection_rule: dict[str, Any],
-    ak_module: Any = None,
-) -> dict[str, Any]:
-    """Discover a reusable peer universe from a caller-supplied selection rule."""
-    if start_date > end_date:
-        raise ValueError("start_date cannot be after end_date")
-    if limit < 1 or minimum_records < 2:
-        raise ValueError("limit and minimum_records must be positive")
-    catalog_symbol = str(selection_rule.get("catalogSymbol", "")).strip()
-    aliases = _normalized_text_list(selection_rule.get("nameAliases"))
-    exclusions = _normalized_text_list(selection_rule.get("excludedNamePatterns"))
-    if not catalog_symbol or not aliases:
-        raise ValueError("selectionRule requires catalogSymbol and nameAliases")
-    if ak_module is None:
-        try:
-            import akshare as ak_module
-        except ImportError as exc:
-            raise ProviderUnavailable("AKShare is not installed") from exc
-
-    fetched_at = datetime.now(timezone.utc)
-    try:
-        catalog_rows = ak_module.fund_open_fund_rank_em(
-            symbol=catalog_symbol
-        ).to_dict("records")
-    except Exception as exc:
-        raise ProviderUnavailable(f"AKSHARE fund catalog unavailable: {exc}") from exc
-
-    candidates: list[tuple[str, str]] = []
-    for raw in catalog_rows:
-        code = _first_text(raw, "基金代码", "fund_code", "code").zfill(6)
-        name = _first_text(raw, "基金简称", "基金名称", "fund_name", "name")
-        if len(code) != 6 or not code.isdigit() or not name:
-            continue
-        if not any(alias.casefold() in name.casefold() for alias in aliases):
-            continue
-        if any(_matches_fund_name_exclusion(name, pattern) for pattern in exclusions):
-            continue
-        candidates.append((code, name))
-
-    target = target_code.strip().zfill(6)
-    candidates.sort(key=lambda item: (item[0] != target, item[0]))
-    members: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    for code, name in candidates:
-        if len(members) >= limit:
-            break
-        try:
-            frame = ak_module.fund_open_fund_info_em(
-                symbol=code,
-                indicator="单位净值走势",
-            )
-            quotes = [
-                quote
-                for quote in _frame_to_quotes(frame, code, "FUND_CN", "AKSHARE", fetched_at)
-                if start_date <= quote.data_date <= end_date
-            ]
-        except Exception as exc:
-            warnings.append(f"{code}: {type(exc).__name__}")
-            continue
-        if len(quotes) < minimum_records:
-            continue
-        members.append({
-            "code": code,
-            "name": name,
-            "productType": "MUTUAL_FUND",
-            "market": "FUND_CN",
-            "records": [quote.json_dict() for quote in quotes],
-        })
-
-    canonical = {
-        "modelFamily": model_family.strip().upper(),
-        "benchmarkCode": benchmark_code.strip().upper(),
-        "selectionRule": selection_rule,
-        "members": members,
-    }
-    dataset_version = hashlib.sha256(
-        json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return {
-        **canonical,
-        "datasetVersion": dataset_version,
-        "provider": "AKSHARE",
-        "adapterVersion": "1",
-        "fetchedAt": fetched_at.isoformat(),
-        "warnings": warnings,
-    }
-
-
-def _normalized_text_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
 def _first_text(row: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = row.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
-
-
-def _matches_fund_name_exclusion(name: str, pattern: str) -> bool:
-    normalized = pattern.strip()
-    if len(normalized) == 1 and normalized.isascii() and normalized.isalpha():
-        return re.search(rf"{re.escape(normalized)}(?:类|份额)?$", name, re.IGNORECASE) is not None
-    return normalized.casefold() in name.casefold()
 
 
 def _resolved_fund_snapshot(
@@ -1905,7 +1956,10 @@ def _frame_to_quotes(frame: Any, code: str, market: str, provider: str,
         "单位净值": "close", "nav": "close", "成交量": "volume", "vol": "volume",
     }
     records: list[NormalizedQuote] = []
-    for original in frame.to_dict("records"):
+    originals = frame.to_dict("records")
+    if originals and "单位净值" in originals[0]:
+        originals = attach_fund_returns(originals)
+    for original in originals:
         row = {aliases.get(str(key), str(key).lower()): value for key, value in original.items()}
         records.append(normalize_quote(product_code=code, market=market, trade_date=str(row["date"])[:10],
                                        raw=row, provider=provider, fetched_at=fetched_at))

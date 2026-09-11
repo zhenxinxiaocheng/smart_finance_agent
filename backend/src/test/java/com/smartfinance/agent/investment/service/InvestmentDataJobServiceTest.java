@@ -37,7 +37,8 @@ class InvestmentDataJobServiceTest {
         product.setProductType("STOCK");
         product.setHistoryCoverageComplete(true);
         when(productMapper.selectById(21L)).thenReturn(product);
-        service = new InvestmentDataJobService(mapper, productMapper, assetMapper);
+        service = new InvestmentDataJobService(mapper, productMapper, assetMapper,
+                mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
     }
 
     @Test
@@ -191,6 +192,7 @@ class InvestmentDataJobServiceTest {
     @Test
     void automaticRecoveryDoesNotLoopAFailedJob() {
         InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
+        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")));
         existing.setAttemptCount(3);
         existing.setErrorMessage("quality remains blocked");
         when(mapper.selectOne(any())).thenReturn(existing);
@@ -276,6 +278,7 @@ class InvestmentDataJobServiceTest {
     void statusIncludesAttemptCount() {
         InvestmentDataJob existing = job("RETRY_WAIT", "STOCK_HISTORY");
         existing.setAttemptCount(2);
+        when(assetMapper.selectOne(any())).thenReturn(asset(7L, 11L, 21L));
         when(mapper.selectOne(any())).thenReturn(existing);
 
         var status = service.statusForAsset(7L, 11L);
@@ -297,6 +300,7 @@ class InvestmentDataJobServiceTest {
         existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
         existing.setCoverageComplete(true);
         existing.setDatasetVersion("dataset-v1");
+        when(assetMapper.selectOne(any())).thenReturn(asset(7L, 11L, 21L));
         when(mapper.selectOne(any())).thenReturn(existing);
 
         var status = service.statusForAsset(7L, 11L);

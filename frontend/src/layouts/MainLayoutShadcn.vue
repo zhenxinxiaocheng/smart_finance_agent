@@ -165,7 +165,7 @@
       </header>
 
       <main class="flex-1 overflow-y-auto overflow-x-hidden">
-        <div class="mx-auto w-full" :style="{ maxWidth: 'var(--app-container-max)' }">
+        <div class="mx-auto w-full" :style="{ maxWidth: isQuantWorkspace ? 'none' : 'var(--app-container-max)' }">
           <div class="p-[var(--app-page-padding)]">
             <router-view v-slot="{ Component }">
               <transition name="fade" mode="out-in">
@@ -256,6 +256,7 @@ const notificationLoading = ref(false)
 const unreadAlerts = ref([])
 let notificationTimer = null
 const activeMenu = computed(() => route.path)
+const isQuantWorkspace = computed(() => route.path.startsWith('/quant'))
 const showChatConversationPanel = computed(() => !isCollapse.value && conversations.value.length > 0)
 const userInitial = computed(() => authStore.username?.charAt(0)?.toUpperCase() || 'U')
 const safeUnreadAlerts = computed(() => Array.isArray(unreadAlerts.value) ? unreadAlerts.value : [])
@@ -268,7 +269,7 @@ const navGroups = [
       { path: '/chat', label: '新对话', icon: MessageSquareText },
       { path: '/profile', label: '财务画像', icon: UserRound },
       { path: '/stocks', label: '投资分析', icon: ChartCandlestick },
-      { path: '/quant-lab', label: '量化模型', icon: FlaskConical },
+      { path: '/quant', label: '量化工作台', icon: FlaskConical },
       { path: '/agent-audit', label: 'Agent 审计', icon: ShieldCheck },
       { path: '/schedules', label: '周期任务', icon: CalendarClock },
       { path: '/skills', label: 'Agent 技能', icon: Blocks }

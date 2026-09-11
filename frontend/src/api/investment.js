@@ -27,6 +27,11 @@ export const refreshInvestmentAssetsAPI = force => request.post('/investment/ass
 export const getInvestmentAssetAPI = id => request.get(`/investment/assets/${id}`)
 export const updateInvestmentAssetAPI = (id, data) => request.put(`/investment/assets/${id}`, data)
 export const deleteInvestmentAssetAPI = id => request.delete(`/investment/assets/${id}`)
+export const listInvestmentIndexesAPI = () => request.get('/investment/indexes/watchlist')
+export const searchInvestmentIndexesAPI = keyword => request.get('/investment/indexes/search', { params: { keyword } })
+export const addInvestmentIndexAPI = data => request.post('/investment/indexes/watchlist', data)
+export const reorderInvestmentIndexesAPI = indexCodes => request.put('/investment/indexes/watchlist/order', { indexCodes })
+export const deleteInvestmentIndexAPI = id => request.delete(`/investment/indexes/watchlist/${id}`)
 export const syncInvestmentAssetAPI = id => request.post(`/investment/assets/${id}/sync`)
 export const getInvestmentAssetDetailAPI = id => request.get(`/investment/assets/${id}/detail`, { timeout: 60000 })
 export const getInvestmentHistoryJobAPI = id => request.get(`/investment/assets/${id}/history-job`)
@@ -37,25 +42,3 @@ export const updateInvestmentAssetHorizonOverrideAPI = (id, data) => request.put
 export const clearInvestmentAssetHorizonOverrideAPI = id => request.delete(`/investment/assets/${id}/analysis-preference`, { timeout: 60000 })
 export const refreshInvestmentAssetAnalysisAPI = id => request.post(`/investment/assets/${id}/analysis/refresh`, null, { timeout: 60000 })
 export const refreshInvestmentAssetDataQualityAPI = id => request.post(`/investment/assets/${id}/data-quality/refresh`, null, { timeout: 60000 })
-export const getInvestmentQuantAnalysisAPI = (id, horizonCode) => request.get(`/investment/assets/${id}/quant-analysis`, { params: { horizonCode } })
-export const getQuantParameterSchemaAPI = () => request.get('/quant/parameter-schema')
-export const listQuantBenchmarksAPI = () => request.get('/quant/benchmarks')
-export const listQuantResearchUniversesAPI = () => request.get('/quant/research-universes')
-export const listQuantExperimentsAPI = () => request.get('/quant/experiments')
-export const createQuantExperimentAPI = data => request.post('/quant/experiments', data)
-export const getQuantExperimentAPI = id => request.get(`/quant/experiments/${id}`)
-export const cancelQuantExperimentAPI = id => request.post(`/quant/experiments/${id}/cancel`)
-export const promoteQuantExperimentAPI = id => request.post(`/quant/experiments/${id}/promote`)
-export const getQuantDataQualityAPI = () => request.get('/quant/data-quality')
-export const startQuantTrainingSessionAPI = (assetId, horizonCode) =>
-  request.post(`/quant/assets/${assetId}/training-sessions`, { horizonCode })
-export const getQuantTrainingSessionAPI = sessionId =>
-  request.get(`/quant/training-sessions/${sessionId}`)
-export const getQuantModelManagementAPI = (assetId, horizonCode) =>
-  request.get(`/quant/assets/${assetId}/model-management`, { params: { horizonCode } })
-export const getQuantActionPlanAPI = (assetId, horizonCode) =>
-  request.get(`/quant/assets/${assetId}/action-plan`, { params: { horizonCode } })
-export const listQuantAssetModelsAPI = assetId =>
-  request.get(`/quant/assets/${assetId}/models`)
-export const activateQuantAssetModelAPI = (assetId, modelVersion) =>
-  request.post(`/quant/assets/${assetId}/models/${encodeURIComponent(modelVersion)}/activate`)

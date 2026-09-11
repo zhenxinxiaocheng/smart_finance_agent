@@ -61,6 +61,11 @@ htmlcov/
 # === 本地 Agent / 调试状态 ===
 /.superpowers/
 /.codex-logs/
+/.codex/
+/.playwright-cli/
+
+# 独立产品介绍站点仓库
+/product-site/
 
 # === 生成的交付物与部署包 ===
 /output/

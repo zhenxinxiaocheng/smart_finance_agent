@@ -23,7 +23,7 @@ test('资产页通过批量刷新接口获取最新数据，并区分强制与�
   assert.match(pageSource, /refreshInvestmentAssetsAPI/)
   assert.match(pageSource, /startInvestmentRealtimePolling\(force\s*=>\s*refreshAssets\(force,\s*true\)\)/)
   assert.match(pageSource, /refreshAssets\(true,\s*true\)/)
-  assert.match(pageSource, /@added="refreshAfterAssetChange"/)
+  assert.match(pageSource, /@asset-added="refreshAfterAssetChange"/)
   assert.match(pageSource, /refreshAfterAssetChange[\s\S]*refreshAssets\(true,\s*true,\s*true\)/)
   assert.match(pageSource, /catch\(\(\)\s*=>\s*loadAssets\(\)\.catch\(\(\)\s*=>\s*\{\}\)\)/)
   assert.match(pageSource, /onUnmounted[\s\S]*refreshAssets\.dispose\(\)/)

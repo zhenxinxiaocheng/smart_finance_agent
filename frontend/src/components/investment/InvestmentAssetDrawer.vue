@@ -78,13 +78,13 @@ async function save() {
   if (hasQuantity !== hasCost) return feedback.error('份额和持仓成本价需要同时填写或同时清空')
   saving.value = true
   try {
-    await updateInvestmentAssetAPI(props.asset.id, {
+    const response = await updateInvestmentAssetAPI(props.asset.id, {
       quantity: hasQuantity ? Number(form.quantity) : null,
       averageCost: hasCost ? Number(form.averageCost) : null,
       note: form.note.trim() || null
     })
     feedback.success('持仓已保存')
-    emit('saved')
+    emit('saved', response.data)
     emit('update:open', false)
   } finally { saving.value = false }
 }

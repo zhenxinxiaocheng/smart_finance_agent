@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
-import threading
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .analysis import analyze_fund, analyze_fundamentals, analyze_technical, backtest_horizons
@@ -23,14 +22,12 @@ from .providers import (
     akshare_fx_rates,
     fetch_a_share_trade_calendar,
     fetch_benchmark_history,
-    discover_fund_research_universe,
+    fetch_index_quotes,
     fetch_realtime_stock_quote,
     fetch_stock_fundamentals,
     resolve_product_metadata,
+    search_index_quotes,
 )
-from .quant.config import load_quant_config
-from .quant.jobs import QuantJobService, default_quant_storage_root
-from .quant.runtime_manifest import build_runtime_manifest
 
 app = FastAPI(title="Smart Finance Analysis Service", version="1.0.0")
 registry = ProviderRegistry()
@@ -39,8 +36,6 @@ quality_service = DataQualityService(
     fetch_a_share_trade_calendar,
     lambda: datetime.now(timezone.utc),
 )
-_quant_job_service: QuantJobService | None = None
-_quant_job_lock = threading.Lock()
 
 
 class QuoteRequest(BaseModel):
@@ -62,24 +57,6 @@ class BenchmarkHistoryRequest(BaseModel):
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
     components: dict[str, float] | None = None
-
-
-class FundResearchUniverseRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    model_family: Literal[
-        "INDEX_FUND",
-        "ACTIVE_FUND",
-        "QDII_INDEX_FUND",
-        "COMMODITY_FUND",
-    ] = Field(alias="modelFamily")
-    benchmark_code: str = Field(alias="benchmarkCode", min_length=1, max_length=80)
-    target_code: str = Field(alias="targetCode", min_length=6, max_length=6)
-    start_date: date = Field(alias="startDate")
-    end_date: date = Field(alias="endDate")
-    limit: int = Field(default=12, ge=1, le=50)
-    minimum_records: int = Field(default=250, alias="minimumRecords", ge=2)
-    selection_rule: dict[str, Any] = Field(alias="selectionRule")
 
 
 class DataQualityValidateRequest(BaseModel):
@@ -127,6 +104,12 @@ class ProductResolveRequest(BaseModel):
 class RealtimeQuoteRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
     market: str = Field(min_length=3, max_length=20)
+
+
+class IndexQuotesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    index_codes: list[str] = Field(alias="indexCodes", min_length=1, max_length=50)
 
 
 class AnalysisRequest(BaseModel):
@@ -218,115 +201,6 @@ class BacktestRequest(AnalysisRequest):
         return _validated_horizons(value)
 
 
-class QuantJobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    type: Literal[
-        "FACTOR_ANALYSIS",
-        "TRAIN_PREDICT",
-        "AUTO_SEARCH",
-        "PREDICT",
-        "BACKTEST",
-    ]
-    dataset_version: str | None = Field(
-        default=None, alias="datasetVersion", pattern=r"^[0-9a-f]{64}$"
-    )
-    request_fingerprint: str | None = Field(
-        default=None, alias="requestFingerprint", pattern=r"^[0-9a-f]{64}$"
-    )
-    runtime_version: str | None = Field(
-        default=None, alias="runtimeVersion", pattern=r"^[0-9a-f]{64}$"
-    )
-    product_type: Literal["STOCK", "MUTUAL_FUND"] | None = Field(default=None, alias="productType")
-    model_family: Literal[
-        "A_SHARE_STOCK",
-        "INDEX_FUND",
-        "ACTIVE_FUND",
-        "QDII_INDEX_FUND",
-        "COMMODITY_FUND",
-    ] | None = Field(default=None, alias="modelFamily")
-    horizon_profile_version: str | None = Field(default=None, alias="horizonProfileVersion")
-    horizon_code: str | None = Field(default=None, alias="horizonCode", min_length=1, max_length=32)
-    horizon_days: int | None = Field(default=None, alias="horizonDays", ge=1)
-    benchmark_code: str | None = Field(
-        default=None, alias="benchmarkCode", min_length=1, max_length=32
-    )
-    benchmark_profile_version: str | None = Field(
-        default=None, alias="benchmarkProfileVersion", min_length=1, max_length=120
-    )
-    experiment_fingerprint: str | None = Field(
-        default=None, alias="experimentFingerprint", pattern=r"^[0-9a-f]{64}$"
-    )
-    research_universe_version: str | None = Field(
-        default=None, alias="researchUniverseVersion", pattern=r"^[0-9a-f]{64}$"
-    )
-    experiment_parameters: dict[str, float | int] = Field(
-        default_factory=dict, alias="experimentParameters"
-    )
-    model_version: str | None = Field(
-        default=None, alias="modelVersion", pattern=r"^[0-9a-f]{64}$"
-    )
-    model_file_hash: str | None = Field(
-        default=None, alias="modelFileHash", pattern=r"^[0-9a-f]{64}$"
-    )
-    model_config_version: str | None = Field(
-        default=None, alias="modelConfigVersion", min_length=1, max_length=160
-    )
-    model_status: Literal["VALIDATED", "PAPER_VERIFIED"] | None = Field(
-        default=None, alias="modelStatus"
-    )
-    strategy_version: str | None = Field(
-        default=None, alias="strategyVersion", min_length=1, max_length=80
-    )
-    algorithm: Literal[
-        "ELASTIC_NET",
-        "XGBOOST",
-        "EXTRA_TREES",
-        "TREND_VOLATILITY",
-        "RISK_FILTERED_MEAN_REVERSION",
-        "REGIME_ENSEMBLE",
-        # One-cycle compatibility aliases for persisted research requests.
-        "GRADIENT_BOOSTING",
-        "VALIDATED_ENSEMBLE",
-    ] = "REGIME_ENSEMBLE"
-    current_weight: float | None = Field(default=None, alias="currentWeight", ge=0, le=1)
-    records: list[dict[str, Any]] = Field(default_factory=list)
-    benchmark_records: list[dict[str, Any]] = Field(default_factory=list, alias="benchmarkRecords")
-    universe_records: list[dict[str, Any]] = Field(
-        default_factory=list, alias="universeRecords"
-    )
-    fundamentals: list[dict[str, Any]] = Field(default_factory=list)
-    prices: list[float] = Field(default_factory=list)
-    signals: list[float] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_job_payload(self) -> "QuantJobRequest":
-        if self.type in {
-            "FACTOR_ANALYSIS",
-            "TRAIN_PREDICT",
-            "AUTO_SEARCH",
-            "PREDICT",
-        }:
-            if not self.dataset_version or not self.product_type or self.horizon_days is None:
-                raise ValueError("analysis jobs require datasetVersion, productType and horizonDays")
-            if len(self.records) < 2:
-                raise ValueError("analysis jobs require market records")
-        if self.type == "PREDICT" and (
-            not self.model_version
-            or not self.model_file_hash
-            or not self.model_config_version
-            or not self.model_status
-            or not self.strategy_version
-        ):
-            raise ValueError(
-                "prediction jobs require deployed model version, hash, config and strategy"
-            )
-        if self.type == "BACKTEST":
-            if len(self.records) < 2 or len(self.records) != len(self.signals):
-                raise ValueError("backtest jobs require equal market records and signals")
-        return self
-
-
 def _validated_horizons(value: dict[str, list[int]]) -> dict[str, list[int]]:
     if not value:
         raise ValueError("at least one horizon is required")
@@ -350,24 +224,14 @@ def internal_auth(x_internal_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="invalid internal token")
 
 
-def quant_jobs() -> QuantJobService:
-    global _quant_job_service
-    if _quant_job_service is None:
-        with _quant_job_lock:
-            if _quant_job_service is None:
-                config = load_quant_config()
-                _quant_job_service = QuantJobService(default_quant_storage_root(config), config)
-    return _quant_job_service
+from .quant_workbench.router import router as quant_workbench_router
+
+app.include_router(quant_workbench_router, dependencies=[Depends(internal_auth)])
 
 
 @app.get("/health")
 def health():
     return {"status": "UP", "service": "analysis-service"}
-
-
-@app.get("/internal/v1/quant/runtime-manifest", dependencies=[Depends(internal_auth)])
-def quant_runtime_manifest():
-    return build_runtime_manifest(load_quant_config())
 
 
 @app.post("/internal/v1/products/resolve", dependencies=[Depends(internal_auth)])
@@ -384,6 +248,23 @@ def realtime_quote(request: RealtimeQuoteRequest):
         return fetch_realtime_stock_quote(request.code, request.market)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/internal/v1/market-data/indexes/search", dependencies=[Depends(internal_auth)])
+def search_indexes(keyword: str = Query(min_length=1, max_length=40),
+                   limit: int = Query(default=20, ge=1, le=50)):
+    try:
+        return {"items": search_index_quotes(keyword, limit=limit), "warnings": []}
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/internal/v1/market-data/indexes/quotes", dependencies=[Depends(internal_auth)])
+def index_quotes(request: IndexQuotesRequest):
+    try:
+        return {"items": fetch_index_quotes(request.index_codes), "warnings": []}
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -430,25 +311,6 @@ def daily_benchmark(request: BenchmarkHistoryRequest):
         "records": records,
         "warnings": [],
     }
-
-
-@app.post("/internal/v1/market-data/research-universes/funds", dependencies=[Depends(internal_auth)])
-def fund_research_universe(request: FundResearchUniverseRequest):
-    try:
-        return discover_fund_research_universe(
-            model_family=request.model_family,
-            benchmark_code=request.benchmark_code,
-            target_code=request.target_code,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            limit=request.limit,
-            minimum_records=request.minimum_records,
-            selection_rule=request.selection_rule,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ProviderUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/internal/v1/data-quality/validate", dependencies=[Depends(internal_auth)])
@@ -578,34 +440,3 @@ def fund_analysis(request: FundAnalysisRequest):
 @app.post("/internal/v1/analysis/backtest", dependencies=[Depends(internal_auth)])
 def backtest_analysis(request: BacktestRequest):
     return backtest_horizons(request.records, request.horizons)
-
-
-@app.post("/internal/v1/quant/jobs", dependencies=[Depends(internal_auth)])
-def create_quant_job(request: QuantJobRequest):
-    try:
-        return quant_jobs().submit(request.model_dump(by_alias=True, exclude_none=True))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/internal/v1/quant/jobs/{jobId}", dependencies=[Depends(internal_auth)])
-def get_quant_job(jobId: str):
-    try:
-        return quant_jobs().get(jobId)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="quant job was not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid quant job id") from exc
-
-
-@app.post(
-    "/internal/v1/quant/jobs/{jobId}/cancel",
-    dependencies=[Depends(internal_auth)],
-)
-def cancel_quant_job(jobId: str):
-    try:
-        return quant_jobs().cancel(jobId)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="quant job was not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid quant job id") from exc

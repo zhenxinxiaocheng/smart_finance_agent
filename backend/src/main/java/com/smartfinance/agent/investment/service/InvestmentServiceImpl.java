@@ -125,7 +125,6 @@ public class InvestmentServiceImpl implements InvestmentService {
     public List<InvestmentAccount> listAccounts(Long userId) {
         return accountMapper.selectList(new LambdaQueryWrapper<InvestmentAccount>()
                 .eq(InvestmentAccount::getUserId, userId)
-                .ne(InvestmentAccount::getAccountType, "PAPER")
                 .orderByAsc(InvestmentAccount::getCreatedAt));
     }
 
@@ -395,12 +394,15 @@ public class InvestmentServiceImpl implements InvestmentService {
         if (original == null || !userId.equals(original.getUserId())) {
             throw new IllegalArgumentException("原投资流水不存在");
         }
-        Long count = transactionMapper.selectCount(new LambdaQueryWrapper<InvestmentTransaction>()
+        InvestmentTransaction existingReversal = transactionMapper.selectOne(
+                new LambdaQueryWrapper<InvestmentTransaction>()
                 .eq(InvestmentTransaction::getUserId, userId)
                 .eq(InvestmentTransaction::getEventType, "REVERSAL")
-                .eq(InvestmentTransaction::getReversalTransactionId, transactionId));
-        if (count != null && count > 0) {
-            throw new IllegalArgumentException("该流水已经冲正");
+                .eq(InvestmentTransaction::getReversalTransactionId, transactionId)
+                .orderByDesc(InvestmentTransaction::getId)
+                .last("LIMIT 1"));
+        if (existingReversal != null) {
+            return existingReversal;
         }
         InvestmentTransaction reversal = new InvestmentTransaction();
         reversal.setUserId(userId);

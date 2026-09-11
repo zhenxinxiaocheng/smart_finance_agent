@@ -58,6 +58,28 @@ class InvestmentServiceIntegrationTest {
     }
 
     @Test
+    void repeatedReversal_shouldReturnTheExistingReversalWithoutDuplicatingIt() {
+        InvestmentAccountRequest accountRequest = new InvestmentAccountRequest();
+        accountRequest.setAccountName("幂等冲正账户");
+        accountRequest.setAccountType("BROKER");
+        var account = investmentService.createAccount(2L, accountRequest);
+        InvestmentProductRequest product = new InvestmentProductRequest();
+        product.setProductType("STOCK");
+        product.setMarket("SSE");
+        product.setCode("600519");
+        product.setName("贵州茅台");
+        product.setCurrency("CNY");
+        var original = investmentService.addTransaction(2L,
+                transaction(account.getId(), product, "TRANSFER_IN", "10", "500", "0"));
+
+        var first = investmentService.reverseTransaction(2L, original.getId(), "首次冲正");
+        var repeated = investmentService.reverseTransaction(2L, original.getId(), "重复请求");
+
+        assertThat(repeated.getId()).isEqualTo(first.getId());
+        assertThat(investmentService.listTransactions(2L, account.getId(), 20)).hasSize(2);
+    }
+
+    @Test
     void createPlan_shouldPersistUserOwnedRecurringPlan() {
         InvestmentAccountRequest accountRequest = new InvestmentAccountRequest();
         accountRequest.setAccountName("基金账户");

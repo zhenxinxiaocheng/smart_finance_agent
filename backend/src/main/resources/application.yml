@@ -91,30 +91,6 @@ investment:
     batch-limit: ${INVESTMENT_PLAN_BATCH_LIMIT:20}
   history-job:
     scan-delay-ms: ${INVESTMENT_HISTORY_JOB_SCAN_DELAY_MS:1000}
-  quant:
-    initial-delay-ms: ${INVESTMENT_QUANT_INITIAL_DELAY_MS:3000}
-    poll-delay-ms: ${INVESTMENT_QUANT_POLL_DELAY_MS:3000}
-    job-batch-limit: ${INVESTMENT_QUANT_JOB_BATCH_LIMIT:20}
-    monitor:
-      initial-delay-ms: ${INVESTMENT_QUANT_MONITOR_INITIAL_DELAY_MS:15000}
-      poll-delay-ms: ${INVESTMENT_QUANT_MONITOR_POLL_DELAY_MS:3600000}
-      strategy-batch-limit: ${INVESTMENT_QUANT_MONITOR_STRATEGY_BATCH_LIMIT:20}
-    paper:
-      initial-cash-cny: ${INVESTMENT_QUANT_PAPER_INITIAL_CASH_CNY:1000000}
-      minimum-order-cny: ${INVESTMENT_QUANT_PAPER_MINIMUM_ORDER_CNY:100}
-      stock-lot-size: ${INVESTMENT_QUANT_PAPER_STOCK_LOT_SIZE:100}
-      fund-quantity-scale: ${INVESTMENT_QUANT_PAPER_FUND_QUANTITY_SCALE:4}
-      fee-bps: ${INVESTMENT_QUANT_PAPER_FEE_BPS:3}
-      slippage-bps: ${INVESTMENT_QUANT_PAPER_SLIPPAGE_BPS:5}
-      maximum-volume-participation: ${INVESTMENT_QUANT_PAPER_MAX_VOLUME_PARTICIPATION:0.01}
-      limit-lock-minimum-move-ratio: ${INVESTMENT_QUANT_PAPER_LIMIT_LOCK_MIN_MOVE_RATIO:0.04}
-      stock-execution-delay-days: ${INVESTMENT_QUANT_PAPER_STOCK_DELAY_DAYS:1}
-      fund-execution-delay-days: ${INVESTMENT_QUANT_PAPER_FUND_DELAY_DAYS:1}
-      qdii-execution-delay-days: ${INVESTMENT_QUANT_PAPER_QDII_DELAY_DAYS:2}
-      initial-delay-ms: ${INVESTMENT_QUANT_PAPER_INITIAL_DELAY_MS:5000}
-      poll-delay-ms: ${INVESTMENT_QUANT_PAPER_POLL_DELAY_MS:60000}
-      order-batch-limit: ${INVESTMENT_QUANT_PAPER_ORDER_BATCH_LIMIT:50}
-      account-order-history-limit: ${INVESTMENT_QUANT_PAPER_ACCOUNT_ORDER_HISTORY_LIMIT:50}
   realtime:
     enabled: ${INVESTMENT_REALTIME_ENABLED:true}
     interval-ms: ${INVESTMENT_REALTIME_INTERVAL_MS:3000}

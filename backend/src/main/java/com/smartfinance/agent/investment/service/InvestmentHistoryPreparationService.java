@@ -74,8 +74,11 @@ public class InvestmentHistoryPreparationService {
         }
         product = classificationService.enrichIfMissing(product);
 
-        boolean initialLoad = !Boolean.TRUE.equals(product.getHistoryCoverageComplete())
-                || product.getHistoryEndDate() == null;
+        boolean initialLoad = Boolean.TRUE.equals(job.getForceRefresh())
+                || !Boolean.TRUE.equals(product.getHistoryCoverageComplete())
+                || product.getHistoryEndDate() == null
+                || ("FUND_NAV_HISTORY".equals(job.getJobType())
+                    && quoteMapper.hasMissingFundReturns(product.getId()));
         LocalDate requestedStart = initialLoad
                 ? initialStart(product)
                 : product.getHistoryEndDate();
@@ -99,6 +102,10 @@ public class InvestmentHistoryPreparationService {
         LocalDate sampleEnd = evaluation.snapshot().getSampleEndDate();
         boolean coverageComplete = coverageComplete(
                 product, initialLoad, sampleStart, sampleEnd);
+        if ("FUND_NAV_HISTORY".equals(job.getJobType())
+                && quoteMapper.hasMissingFundReturns(product.getId())) {
+            coverageComplete = false;
+        }
         product.setHistoryStartDate(earlier(product.getHistoryStartDate(), sampleStart));
         product.setHistoryEndDate(later(product.getHistoryEndDate(), sampleEnd));
         product.setHistoryCoverageComplete(coverageComplete);

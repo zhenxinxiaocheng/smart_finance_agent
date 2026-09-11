@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .fund_classification import is_index_fund_category, is_known_fund_category
+from .fund_returns import FundReturnDataUnavailable, total_return_index
 from .strategy_config import StrategyConfig, load_strategy_config
 from .technical_outlook import TechnicalObservation, evaluate_outlook
 
@@ -512,6 +513,7 @@ def _annualized_volatility(values: Sequence[float]) -> float:
 def _benchmark_relative_statistics(
     fund_values: Sequence[float],
     benchmark_values: Sequence[float],
+    period_intervals: int | None = None,
 ) -> dict[str, Any]:
     paired = min(len(fund_values), len(benchmark_values))
     if paired < 3:
@@ -551,6 +553,8 @@ def _benchmark_relative_statistics(
         for index in range(count)
     ]
     annualization = STRATEGY.integer("fund.annualization_days")
+    if period_intervals is not None and period_intervals > 0:
+        annualization *= count / period_intervals
     tracking_error = statistics.stdev(active_returns) * math.sqrt(annualization)
     information_ratio = (
         statistics.fmean(active_returns) * annualization / tracking_error
@@ -758,7 +762,27 @@ def analyze_fund(
             "horizons": {},
             "series": [],
         }
-    quotes = _normalized_quotes(records)
+    raw_records = list(records)
+    unit_quotes = _normalized_quotes(raw_records)
+    try:
+        returns_by_date = {
+            str(record.get("data_date") or record.get("dataDate") or record.get("date") or ""):
+            total_return_index(record)
+            for record in raw_records
+        }
+        scale = (unit_quotes[-1]["close"] / returns_by_date[unit_quotes[-1]["date"]]
+                 if unit_quotes else 1.0)
+        quotes = [{**quote, "close": returns_by_date[quote["date"]] * scale}
+                  for quote in unit_quotes]
+    except (FundReturnDataUnavailable, KeyError) as error:
+        return {
+            "status": "INSUFFICIENT", "strategyVersion": STRATEGY.version,
+            "analysisMode": "DESCRIPTIVE_ONLY", "adviceStatus": "UNAVAILABLE",
+            "reasonCode": "FUND_TOTAL_RETURN_UNAVAILABLE",
+            "reason": str(error), "fundCategory": normalized_category,
+            "score": None, "verdict": "WAIT", "action": "WAIT", "horizons": {},
+            "series": [{"date": quote["date"], "nav": quote["close"]} for quote in unit_quotes],
+        }
     minimum_history = STRATEGY.integer("fund.minimum_history_days")
     if len(quotes) < minimum_history:
         return {
@@ -801,7 +825,9 @@ def analyze_fund(
     slow_average_period = STRATEGY.integer("fund.slow_moving_average")
     ma_periods = sorted(set(STRATEGY.integer_list("fund.moving_average_periods")
                             + [fast_average_period, slow_average_period]))
-    ma = {period: _moving_average(values, period) for period in ma_periods}
+    # The displayed NAV chart and its averages retain actual unit prices.
+    ma = {period: _moving_average([quote["close"] for quote in unit_quotes], period)
+          for period in ma_periods}
     annualized_volatility = _annualized_volatility(values)
     max_drawdown, peak_index, trough_index = _maximum_drawdown(values)
     recovered = values[-1] >= values[peak_index] if peak_index < len(values) else False
@@ -830,7 +856,7 @@ def analyze_fund(
     for index, quote in enumerate(quotes):
         item = {
             "date": quote["date"],
-            "nav": quote["close"],
+            "nav": unit_quotes[index]["close"],
         }
         for period in ma:
             item[f"ma{period}"] = _round(ma[period][index])
@@ -899,6 +925,7 @@ def analyze_fund(
             "strategyVersion": STRATEGY.version,
             "indicatorPeriods": {"movingAverages": ma_periods},
             "fullHistory": full_history,
+            "returnBasis": "DIVIDEND_REINVESTED",
             "returnMetrics": return_metrics,
             "annualizedVolatility": _round(annualized_volatility, 2),
             "maxDrawdown": _round(max_drawdown, 2),
@@ -938,7 +965,11 @@ def analyze_fund(
             for item in period_quotes
             if item["date"] in benchmark_by_date
         ]
-        if len(aligned_period) == target_days + 1:
+        # Different markets have different holidays. Use identical observed dates
+        # for both return series, while preserving the requested period boundaries.
+        if (len(aligned_period) >= 3
+                and aligned_period[0][0]["date"] == period_quotes[0]["date"]
+                and aligned_period[-1][0]["date"] == period_quotes[-1]["date"]):
             aligned_fund_values = [item[0]["close"] for item in aligned_period]
             aligned_benchmark_values = [item[1]["close"] for item in aligned_period]
             benchmark_return = (
@@ -951,8 +982,11 @@ def analyze_fund(
                 "benchmarkReturn": _round(benchmark_return, 2),
                 "trackingDifference": _round(aligned_fund_return - benchmark_return, 2),
                 "alignedObservationCount": len(aligned_period),
+                "benchmarkAlignment": "COMMON_DATES",
+                "benchmarkUnpairedObservationCount": len(period_quotes) - len(aligned_period),
                 **_benchmark_relative_statistics(
-                    aligned_fund_values, aligned_benchmark_values
+                    aligned_fund_values, aligned_benchmark_values,
+                    period_intervals=len(period_quotes) - 1,
                 ),
             }
 
@@ -1028,6 +1062,7 @@ def analyze_fund(
         "strategyVersion": STRATEGY.version,
         "indicatorPeriods": {"movingAverages": ma_periods},
         "fullHistory": full_history,
+        "returnBasis": "DIVIDEND_REINVESTED",
         "horizons": period_results,
         "primaryHorizon": primary_code,
         "score": primary_result["score"],

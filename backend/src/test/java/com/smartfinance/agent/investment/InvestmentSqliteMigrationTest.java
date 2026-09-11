@@ -31,15 +31,14 @@ class InvestmentSqliteMigrationTest {
                                  "'user','investment_transaction','investment_position','investment_asset'," +
                                  "'wealth_baseline','investment_analysis_preference','investment_analysis_snapshot'," +
                                  "'investment_horizon_profile','investment_horizon_setting'," +
-                                 "'quant_feature_set','quant_model_version','quant_strategy_version'," +
-                                 "'quant_prediction','quant_paper_order','investment_data_job'," +
-                                 "'benchmark_profile','quant_research_universe'," +
-                                 "'quant_universe_membership','quant_experiment'," +
-                                 "'quant_validation_report','quant_benchmark_snapshot')")) {
+                                 "'investment_data_job','benchmark_profile','quant_benchmark_snapshot'," +
+                                 "'investment_index_watchlist','investment_index_display_order'," +
+                                 "'quant_v2_object','quant_v2_version','quant_v2_task'," +
+                                 "'quant_v2_deployment','quant_v2_paper_event')")) {
                 try (var result = statement.executeQuery()) {
                     int count = 0;
                     while (result.next()) count++;
-                    assertThat(count).isEqualTo(21);
+                    assertThat(count).isEqualTo(19);
                 }
             }
             try (var connection = DriverManager.getConnection(url);
@@ -51,29 +50,15 @@ class InvestmentSqliteMigrationTest {
                 assertThat(result.getInt(1)).isEqualTo(5);
             }
             try (var connection = DriverManager.getConnection(url)) {
+                assertThat(columnExists(connection, "product_daily_quote", "total_return_index"))
+                        .isTrue();
                 assertThat(columnExists(connection, "investment_analysis_snapshot", "horizon_profile_version"))
                         .isTrue();
                 assertThat(columnExists(connection, "investment_analysis_snapshot", "horizon_config_json"))
                         .isTrue();
                 assertThat(columnExists(connection, "investment_horizon_setting", "target_holding_days"))
                         .isTrue();
-                assertThat(columnExists(connection, "quant_prediction", "benchmark_code"))
-                        .isTrue();
                 assertThat(columnExists(connection, "investment_data_job", "lease_token"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "experiment_fingerprint"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "request_fingerprint"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "error_code"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "error_summary"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "quant_config_version"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "product_type"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_job", "metrics_json"))
                         .isTrue();
                 assertThat(columnExists(connection, "investment_product", "fund_category"))
                         .isTrue();
@@ -81,37 +66,13 @@ class InvestmentSqliteMigrationTest {
                         .isTrue();
                 assertThat(columnExists(connection, "investment_product", "classification_version"))
                         .isTrue();
-                assertThat(columnExists(connection, "quant_job", "estimated_duration_seconds"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_experiment", "training_mode"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_experiment", "trigger_reason"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_experiment", "parent_model_version"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_experiment", "best_model_version"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_experiment", "search_summary_json"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_strategy_version", "user_id"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_strategy_version", "asset_id"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_strategy_version", "model_family"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_strategy_version", "horizon_code"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_strategy_version", "deployment_role"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_prediction", "target_weight"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_prediction", "profit_probability"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_prediction", "loss_probability"))
-                        .isTrue();
-                assertThat(columnExists(connection, "quant_prediction", "expected_net_return"))
-                        .isTrue();
-                assertThat(tableExists(connection, "quant_training_run")).isFalse();
+                assertThat(tableExists(connection, "quant_feature_set")).isFalse();
+                assertThat(tableExists(connection, "quant_job")).isFalse();
+                assertThat(tableExists(connection, "quant_model_version")).isFalse();
+                assertThat(tableExists(connection, "quant_strategy_version")).isFalse();
+                assertThat(tableExists(connection, "quant_prediction")).isFalse();
+                assertThat(tableExists(connection, "quant_experiment")).isFalse();
+                assertThat(tableExists(connection, "quant_paper_order")).isFalse();
             }
             try (var connection = DriverManager.getConnection(url);
                  var statement = connection.prepareStatement(
@@ -123,13 +84,9 @@ class InvestmentSqliteMigrationTest {
             }
             try (var connection = DriverManager.getConnection(url)) {
                 assertThat(indexExists(connection, "investment_account", "uk_investment_active_paper_user"))
-                        .isTrue();
-                assertThat(indexExists(connection, "quant_paper_order", "uk_quant_paper_order_prediction"))
-                        .isTrue();
-                assertThat(indexExists(connection, "quant_paper_fill", "uk_quant_paper_fill_order"))
-                        .isTrue();
+                        .isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("25");
+            assertThat(flyway.info().pending()).isEmpty();
         } finally {
             Files.deleteIfExists(database);
         }
@@ -179,7 +136,7 @@ class InvestmentSqliteMigrationTest {
                 assertLegacySetting(result, "LONG", 260, 900);
                 assertThat(result.next()).isFalse();
             }
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("25");
+            assertThat(flyway.info().pending()).isEmpty();
         } finally {
             Files.deleteIfExists(database);
         }
@@ -209,6 +166,7 @@ class InvestmentSqliteMigrationTest {
             Flyway.configure()
                     .dataSource(url, null, null)
                     .locations("classpath:db/migration/sqlite")
+                    .target("25")
                     .load()
                     .migrate();
 
@@ -226,68 +184,6 @@ class InvestmentSqliteMigrationTest {
                 assertThat(result.getString("classification_version"))
                         .isEqualTo("OFFICIAL-PRODUCT");
                 assertThat(result.getString("classified_at")).isNotBlank();
-            }
-        } finally {
-            Files.deleteIfExists(database);
-        }
-    }
-
-    @Test
-    void versionFifteenMigratesTrainingRunIntoQuantJobBeforeDroppingDuplicateTable() throws Exception {
-        Path database = Files.createTempFile("smart-finance-quant-job-", ".db");
-        try {
-            String url = "jdbc:sqlite:" + database.toAbsolutePath();
-            Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .target("14")
-                    .load()
-                    .migrate();
-
-            try (var connection = DriverManager.getConnection(url)) {
-                try (var statement = connection.prepareStatement("""
-                        INSERT INTO quant_job
-                            (user_id, asset_id, external_job_id, job_type, status,
-                             dataset_version, horizon_days, started_at)
-                        VALUES (7, 12, 'job-v15', 'TRAIN_PREDICT', 'SUCCEEDED',
-                                'dataset-v15', 20, CURRENT_TIMESTAMP)
-                        """)) {
-                    statement.executeUpdate();
-                }
-                try (var statement = connection.prepareStatement("""
-                        INSERT INTO quant_training_run
-                            (external_job_id, dataset_version, feature_set_version,
-                             quant_config_version, product_type, horizon_days, status,
-                             metrics_json, started_at, finished_at)
-                        VALUES ('job-v15', 'dataset-v15', 'feature-v15',
-                                'config-v15', 'STOCK', 20, 'SUCCEEDED',
-                                '{"sharpe":0.8}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        """)) {
-                    statement.executeUpdate();
-                }
-            }
-
-            Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .load()
-                    .migrate();
-
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement("""
-                         SELECT feature_set_version, quant_config_version, product_type,
-                                metrics_json, finished_at
-                         FROM quant_job
-                         WHERE external_job_id = 'job-v15'
-                         """);
-                 var result = statement.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getString("feature_set_version")).isEqualTo("feature-v15");
-                assertThat(result.getString("quant_config_version")).isEqualTo("config-v15");
-                assertThat(result.getString("product_type")).isEqualTo("STOCK");
-                assertThat(result.getString("metrics_json")).isEqualTo("{\"sharpe\":0.8}");
-                assertThat(result.getString("finished_at")).isNotBlank();
-                assertThat(tableExists(connection, "quant_training_run")).isFalse();
             }
         } finally {
             Files.deleteIfExists(database);

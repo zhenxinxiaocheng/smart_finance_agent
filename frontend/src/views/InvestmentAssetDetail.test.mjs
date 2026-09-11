@@ -40,7 +40,7 @@ test('基金分类或专属策略不可用时明确停止给出操作建议', ()
   assert.match(source, /暂无操作建议/)
   assert.match(source, /WAIT: '暂无操作建议'/)
   assert.doesNotMatch(template, /成立以来/)
-  assert.match(source, /分析数据区间最大回撤/)
+  assert.match(source, /历史最大回撤/)
 })
 
 test('周期标签区分实际计算目标与用户设置范围', () => {

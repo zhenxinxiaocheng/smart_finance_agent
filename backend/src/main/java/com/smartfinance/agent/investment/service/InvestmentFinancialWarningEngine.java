@@ -148,15 +148,6 @@ public class InvestmentFinancialWarningEngine {
                     Map.of("dataDecision", input.dataDecision())
             ));
         }
-        if (isDrifted(input.modelDriftStatus())) {
-            warnings.add(warning(
-                    input,
-                    "MODEL_DRIFT",
-                    "WARNING",
-                    "模型近期表现发生漂移，系统已限制其使用并等待重新验证",
-                    Map.of("modelDriftStatus", input.modelDriftStatus())
-            ));
-        }
         if (profile != null && wealth != null
                 && profile.getSavingsGoalAmount() != null
                 && wealth.isInitialized()
@@ -225,7 +216,6 @@ public class InvestmentFinancialWarningEngine {
         provenance.put("assetName", input.assetName());
         provenance.put("horizonCode", input.horizonCode());
         provenance.put("datasetVersion", input.datasetVersion());
-        provenance.put("modelVersion", input.modelVersion());
         ZoneId zone = runtimeProperties.getMarket().getZone();
         provenance.put(
                 "calculatedAt",
@@ -244,15 +234,6 @@ public class InvestmentFinancialWarningEngine {
         result.put("evidence", evidence);
         result.put("provenance", provenance);
         return result;
-    }
-
-    private static boolean isDrifted(String status) {
-        if (status == null || status.isBlank()) {
-            return false;
-        }
-        return !List.of("STABLE", "HEALTHY", "PASS", "NOT_MONITORED").contains(
-                status.trim().toUpperCase(Locale.ROOT)
-        );
     }
 
     private static String plain(BigDecimal value) {
@@ -278,10 +259,8 @@ public class InvestmentFinancialWarningEngine {
             Double annualizedVolatilityPercent,
             Double maxDrawdownPercent,
             String dataDecision,
-            String modelDriftStatus,
             String horizonCode,
-            String datasetVersion,
-            String modelVersion
+            String datasetVersion
     ) {
     }
 }

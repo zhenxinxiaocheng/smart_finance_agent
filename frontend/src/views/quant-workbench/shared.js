@@ -1,0 +1,60 @@
+import { onBeforeUnmount, ref } from 'vue'
+import { feedback } from '@/lib/feedback'
+
+export const labels = {
+  ATTENTION_REQUIRED:'运行存在风险提示', WAITING_EXECUTION:'等待模拟成交', MONITORING:'持续监测中', WAITING_SIGNAL:'等待交易信号',
+  CORPORATE_ACTION_UNSUPPORTED:'检测到疑似分红、除权或价格异常，尚未完成还原核验',
+  FILLED:'已全部成交', PARTIALLY_FILLED:'部分成交', PARTIALLY_FILLED_CANCELLED:'部分成交，余单已取消', REJECTED:'已拒绝',
+  SUSPENDED_OR_PRICE_LIMIT:'停牌或触及涨跌停限制', INSUFFICIENT_CASH_OR_POSITION:'可用资金或持仓不足', INSUFFICIENT_CASH_AFTER_ROUNDING:'金额取整后可用资金不足',
+  DRAWDOWN_LIMIT:'触发回撤限制', BEFORE_SIGNAL_START:'早于策略恢复日期', PAUSE:'组合暂停', STOP:'组合停止', LIQUIDATE:'模拟清仓',
+  DRAFT: '草稿', ACTIVE: '启用', ARCHIVED: '已归档', QUEUED: '排队中', PENDING: '待处理', RUNNING: '运行中',
+  SUCCEEDED: '已完成', FAILED: '失败', CANCELLED: '已取消', CANCELLING: '取消中', PAUSED: '已暂停', STOPPED: '已停止',
+  QUALIFIED: '验证通过', UNQUALIFIED: '验证未通过', STOCK: '股票', ETF: 'ETF', FUND: '场外基金',
+  TREND: '趋势策略', MULTI_FACTOR: '多因子策略', ML_ELASTIC_NET: 'Elastic Net', ML_XGBOOST: 'XGBoost',
+  TRAINING: '模型训练', FACTOR: '因子研究', BACKTEST: '组合回测', BUY: '买入', SELL: '卖出',
+  EXECUTING:'计算中', COMPLETED:'已完成', STOPPING:'等待清仓和结算',
+  CORPORATE_ACTIONS_NOT_VERIFIED:'缺少分红除权核验，当前不能认证部署',
+  INSUFFICIENT_EVALUATION_DATES:'有效评估日期不足', NO_EXECUTED_TRADES:'没有实际模拟成交',
+  DRAWDOWN_LIMIT_EXCEEDED:'最大回撤超过设定上限', MODEL_FINAL_HOLDOUT_UNQUALIFIED:'模型最终留出集未通过验证',
+  FINAL_HOLDOUT_IC_NOT_POSITIVE:'最终留出集预测相关性未大于零', FINAL_HOLDOUT_NOT_BETTER_THAN_TRAIN_MEAN:'最终留出集误差未优于训练均值基线',
+}
+export const label = value => labels[value] || value || '—'
+export const format = value => value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+export const formatTime = value => {
+  if(value==null||value==='')return '—'
+  const date=new Date(value)
+  return Number.isNaN(date.getTime())?'—':date.toLocaleString('zh-CN',{hour12:false})
+}
+export const clone = value => JSON.parse(JSON.stringify(value))
+export const metricNames = {netReturn:'净收益',fees:'总费用',tradeCount:'成交笔数',observations:'观察日数',annualReturn:'年化收益',annualizedReturn:'年化收益',totalReturn:'累计收益',maxDrawdown:'最大回撤',sharpe:'夏普比率',sharpeRatio:'夏普比率',volatility:'波动率',turnover:'换手率',totalFees:'总费用',totalSlippage:'总滑点',benchmarkReturn:'基准收益',excessReturn:'超额收益',initialCash:'初始资金',finalEquity:'最终权益',holdoutMse:'留出集均方误差',validationMse:'验证集均方误差',baselineMse:'基线均方误差',holdoutIC:'留出集 IC',trainSamples:'训练样本数',validationSamples:'验证样本数',holdoutSamples:'留出样本数',trainEnd:'训练截止日',holdoutStart:'留出集起始日',evaluatedThrough:'最终留出截止日'}
+export const metricValue=(key,value)=> typeof value!=='number'?format(value):['netReturn','annualReturn','annualizedReturn','totalReturn','maxDrawdown','volatility','turnover','benchmarkReturn','excessReturn'].includes(key)?`${(value*100).toFixed(2)}%`:value.toLocaleString(undefined,{maximumFractionDigits:4})
+export const activeTask = value => ['QUEUED', 'PENDING', 'RUNNING', 'CANCELLING'].includes(value)
+export function useOperation() {
+  const busy = ref(false)
+  const error = ref('')
+  let pendingLoad
+  async function run(fn) {
+    if (busy.value) return
+    busy.value = true
+    error.value = ''
+  try { return await fn() } catch (e) {
+    const detail = e.response?.data?.detail
+    const message = e.response?.data?.message || (typeof detail === 'string' ? detail : detail?.message) || e.message || '操作失败，请重试'
+    error.value = message
+    if (!e.__feedbackShown) feedback.error(message, { duration: 5000 })
+  }
+    finally { busy.value = false; if(pendingLoad){const next=pendingLoad;pendingLoad=null;void run(next)} }
+  }
+  function load(fn){if(busy.value){pendingLoad=fn;return}return run(fn)}
+  return { busy, error, run, load }
+}
+export function usePoll(fn, shouldPoll) {
+  let timer
+  let disposed = false
+  async function tick() {
+    try { if (shouldPoll()) await fn() } catch { /* The owning view displays errors. */ }
+    if (!disposed) timer = setTimeout(tick, 4000)
+  }
+  timer = setTimeout(tick, 4000)
+  onBeforeUnmount(() => { disposed = true; clearTimeout(timer) })
+}

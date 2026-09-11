@@ -38,8 +38,7 @@ class InvestmentFinancialWarningEngineTest {
                         12L, "测试基金", new BigDecimal("45000"),
                         new BigDecimal("0.02"), wealth, profile,
                         new BigDecimal("50"), 31.0, -24.0,
-                        "BLOCK", "DRIFTED", "MEDIUM",
-                        "dataset-v3", "model-v2"
+                        "BLOCK", "MEDIUM", "dataset-v3"
                 )
         );
 
@@ -51,8 +50,7 @@ class InvestmentFinancialWarningEngineTest {
                         "VOLATILITY_HIGH",
                         "DRAWDOWN_HIGH",
                         "LIQUIDITY_LOW",
-                        "DATA_INCOMPLETE",
-                        "MODEL_DRIFT"
+                        "DATA_INCOMPLETE"
                 )
                 .doesNotContain("REFERENCE_ONLY");
         assertThat(warnings).allSatisfy(warning -> {
@@ -65,7 +63,6 @@ class InvestmentFinancialWarningEngineTest {
                             "assetId",
                             "horizonCode",
                             "datasetVersion",
-                            "modelVersion",
                             "calculatedAt"
                     );
         });

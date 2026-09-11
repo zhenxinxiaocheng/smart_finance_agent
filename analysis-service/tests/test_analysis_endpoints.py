@@ -9,12 +9,10 @@ from app.main import (
     BenchmarkHistoryRequest,
     FundAnalysisRequest,
     FundamentalAnalysisRequest,
-    QuantJobRequest,
     TechnicalAnalysisRequest,
     backtest_analysis,
     fund_analysis,
     fundamental_analysis,
-    quant_runtime_manifest,
     technical_analysis,
     app,
 )
@@ -22,117 +20,6 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
-    def test_quant_training_contract_accepts_all_supported_strategy_families(self):
-        supported = {
-            "ELASTIC_NET",
-            "XGBOOST",
-            "EXTRA_TREES",
-            "TREND_VOLATILITY",
-            "RISK_FILTERED_MEAN_REVERSION",
-            "REGIME_ENSEMBLE",
-        }
-
-        for algorithm in supported:
-            request = QuantJobRequest.model_validate({
-                "type": "AUTO_SEARCH",
-                "datasetVersion": "d" * 64,
-                "productType": "MUTUAL_FUND",
-                "horizonDays": 60,
-                "algorithm": algorithm,
-                "records": price_records(2),
-            })
-            self.assertEqual(algorithm, request.algorithm)
-
-        with self.assertRaises(ValidationError):
-            QuantJobRequest.model_validate({
-                "type": "AUTO_SEARCH",
-                "datasetVersion": "d" * 64,
-                "productType": "MUTUAL_FUND",
-                "horizonDays": 60,
-                "algorithm": "LSTM",
-                "records": price_records(2),
-            })
-
-    def test_quant_training_contract_accepts_backend_portfolio_context(self):
-        request = QuantJobRequest.model_validate({
-            "type": "TRAIN_PREDICT",
-            "datasetVersion": "d" * 64,
-            "requestFingerprint": "e" * 64,
-            "runtimeVersion": "a" * 64,
-            "productType": "MUTUAL_FUND",
-            "modelFamily": "INDEX_FUND",
-            "benchmarkProfileVersion": "OFFICIAL-2024-ANNUAL",
-            "experimentFingerprint": "f" * 64,
-            "experimentParameters": {"linearWeight": 0.35},
-            "algorithm": "ELASTIC_NET",
-            "horizonProfileVersion": "profile-v1",
-            "horizonCode": "MEDIUM",
-            "horizonDays": 20,
-            "benchmarkCode": "CSI300_95_CASH_5",
-            "benchmarkRecords": price_records(2),
-            "currentWeight": 0.15683477,
-            "records": price_records(2),
-        })
-
-        payload = request.model_dump(by_alias=True, exclude_none=True)
-
-        self.assertEqual("CSI300_95_CASH_5", payload["benchmarkCode"])
-        self.assertEqual("e" * 64, payload["requestFingerprint"])
-        self.assertEqual("a" * 64, payload["runtimeVersion"])
-        self.assertEqual("INDEX_FUND", payload["modelFamily"])
-        self.assertEqual("OFFICIAL-2024-ANNUAL", payload["benchmarkProfileVersion"])
-        self.assertEqual("f" * 64, payload["experimentFingerprint"])
-        self.assertEqual({"linearWeight": 0.35}, payload["experimentParameters"])
-        self.assertEqual("ELASTIC_NET", payload["algorithm"])
-        self.assertEqual(2, len(payload["benchmarkRecords"]))
-        self.assertEqual(0.15683477, payload["currentWeight"])
-
-    def test_quant_backtest_job_requires_market_records_for_event_execution(self):
-        records = price_records(4)
-        for index, record in enumerate(records):
-            record["previous_close"] = records[max(0, index - 1)]["close"]
-
-        request = QuantJobRequest(
-            type="BACKTEST",
-            records=records,
-            signals=[0.1, 0.0, 0.0, 0.0],
-        )
-
-        payload = request.model_dump(by_alias=True)
-
-        self.assertEqual(records, payload["records"])
-        with self.assertRaises(ValidationError):
-            QuantJobRequest(
-                type="BACKTEST",
-                prices=[10.0, 10.1],
-                signals=[0.1, 0.0],
-            )
-
-    def test_quant_job_contract_uses_versioned_dataset_and_dynamic_horizon(self):
-        request = QuantJobRequest(
-            type="FACTOR_ANALYSIS",
-            datasetVersion="a" * 64,
-            productType="STOCK",
-            horizonCode="WAVE",
-            horizonDays=37,
-            records=price_records(180),
-        )
-
-        payload = request.model_dump(by_alias=True)
-        paths = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
-
-        self.assertEqual(37, payload["horizonDays"])
-        self.assertIn(("/internal/v1/quant/jobs", "POST"), paths)
-        self.assertIn(("/internal/v1/quant/jobs/{jobId}", "GET"), paths)
-
-    def test_quant_runtime_manifest_is_available_to_training_orchestrator(self):
-        manifest = quant_runtime_manifest()
-        paths = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
-
-        self.assertEqual(64, len(manifest["runtimeVersion"]))
-        self.assertEqual("quant-research-v2", manifest["quantConfigVersion"])
-        self.assertIn(("/internal/v1/quant/runtime-manifest", "GET"), paths)
-
     def test_benchmark_history_contract_is_available_to_backend(self):
         request = BenchmarkHistoryRequest(
             benchmarkCode="CSI300_95_CASH_5",

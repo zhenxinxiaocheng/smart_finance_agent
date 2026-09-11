@@ -122,6 +122,14 @@ public class AnalysisServiceClient {
                                 String provider, List<String> warnings) {
     }
 
+    public record IndexQuote(String indexCode, String name, String market,
+                             BigDecimal latestPrice, BigDecimal changePercent,
+                             BigDecimal changeAmount, BigDecimal previousClose,
+                             BigDecimal openPrice, BigDecimal highPrice,
+                             BigDecimal lowPrice, String dataTime,
+                             String fetchedAt, String provider) {
+    }
+
     private final RestClient restClient;
     private final RestClient benchmarkRestClient;
     private final String internalToken;
@@ -265,36 +273,6 @@ public class AnalysisServiceClient {
         return postAnalysis("/internal/v1/analysis/backtest", body);
     }
 
-    public Map<String, Object> createQuantJob(Map<String, ?> body) {
-        return postInternal("/internal/v1/quant/jobs", body, "量化任务");
-    }
-
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> quantRuntimeManifest() {
-        Map<String, Object> response = restClient.get()
-                .uri("/internal/v1/quant/runtime-manifest")
-                .header("X-Internal-Token", internalToken)
-                .retrieve()
-                .body(Map.class);
-        if (response == null) {
-            throw new IllegalStateException("量化运行时版本信息为空");
-        }
-        return response;
-    }
-
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> quantJob(String jobId) {
-        Map<String, Object> response = restClient.get()
-                .uri("/internal/v1/quant/jobs/{jobId}", jobId)
-                .header("X-Internal-Token", internalToken)
-                .retrieve()
-                .body(Map.class);
-        if (response == null) {
-            throw new IllegalStateException("分析服务返回空量化任务结果");
-        }
-        return response;
-    }
-
     public Map<String, Object> benchmarkHistory(String benchmarkCode,
                                                 LocalDate startDate,
                                                 LocalDate endDate) {
@@ -320,37 +298,57 @@ public class AnalysisServiceClient {
         );
     }
 
-    public Map<String, Object> researchFundUniverse(String modelFamily,
-                                                    String benchmarkCode,
-                                                    String targetCode,
-                                                    LocalDate startDate,
-                                                    LocalDate endDate,
-                                                    int limit,
-                                                    int minimumRecords,
-                                                    Map<String, Object> selectionRule) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("modelFamily", modelFamily);
-        body.put("benchmarkCode", benchmarkCode);
-        body.put("targetCode", targetCode);
-        body.put("startDate", startDate.toString());
-        body.put("endDate", endDate.toString());
-        body.put("limit", limit);
-        body.put("minimumRecords", minimumRecords);
-        body.put("selectionRule", selectionRule);
-        return postInternal(
-                benchmarkRestClient,
-                "/internal/v1/market-data/research-universes/funds",
-                body,
-                "量化研究资产池"
-        );
+    @SuppressWarnings("unchecked")
+    public List<IndexQuote> searchIndexes(String keyword, int limit) {
+        Map<String, Object> response = benchmarkRestClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/internal/v1/market-data/indexes/search")
+                        .queryParam("keyword", keyword)
+                        .queryParam("limit", limit)
+                        .build())
+                .header("X-Internal-Token", internalToken)
+                .retrieve()
+                .body(Map.class);
+        return parseIndexQuotes(response);
     }
 
-    public Map<String, Object> cancelQuantJob(String jobId) {
-        return postInternal(
-                "/internal/v1/quant/jobs/" + jobId + "/cancel",
-                Map.of(),
-                "取消量化任务"
+    public List<IndexQuote> indexQuotes(List<String> indexCodes) {
+        Map<String, Object> response = postInternal(
+                benchmarkRestClient,
+                "/internal/v1/market-data/indexes/quotes",
+                Map.of("indexCodes", indexCodes),
+                "指数行情"
         );
+        return parseIndexQuotes(response);
+    }
+
+    private static List<IndexQuote> parseIndexQuotes(Map<String, Object> response) {
+        if (response == null || !(response.get("items") instanceof List<?> items)) {
+            throw new IllegalStateException("分析服务返回空指数行情");
+        }
+        return items.stream()
+                .filter(Map.class::isInstance)
+                .map(Map.class::cast)
+                .map(raw -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    raw.forEach((key, value) -> item.put(String.valueOf(key), value));
+                    return new IndexQuote(
+                            text(item, "indexCode"),
+                            text(item, "name"),
+                            text(item, "market"),
+                            decimal(item, "latestPrice"),
+                            decimal(item, "changePercent"),
+                            decimal(item, "changeAmount"),
+                            decimal(item, "previousClose"),
+                            decimal(item, "openPrice"),
+                            decimal(item, "highPrice"),
+                            decimal(item, "lowPrice"),
+                            text(item, "dataTime"),
+                            text(item, "fetchedAt"),
+                            text(item, "provider")
+                    );
+                })
+                .toList();
     }
 
     public Map<String, Object> validateDataQuality(InvestmentProduct product,

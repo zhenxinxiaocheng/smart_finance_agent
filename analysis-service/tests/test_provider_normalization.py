@@ -16,7 +16,6 @@ from app.providers import (
     TencentHistoryProvider,
     _tencent_csi300_rows,
     akshare_us_symbol,
-    discover_fund_research_universe,
     fetch_benchmark_history,
     fetch_realtime_stock_quote,
     infer_a_share_market,
@@ -288,48 +287,6 @@ class ProviderNormalizationTest(unittest.TestCase):
              (date(2005, 4, 11), Decimal("1020"))],
             rows,
         )
-
-    def test_index_fund_research_universe_is_discovered_without_hardcoded_codes(self):
-        class FundCatalogAkshare:
-            @staticmethod
-            def fund_open_fund_rank_em(symbol):
-                self.assertEqual("指数型", symbol)
-                return FakeFrame([
-                    {"fund_code": "000001", "fund_name": "Alpha 沪深300增强A"},
-                    {"fund_code": "000002", "fund_name": "Alpha 沪深300增强C"},
-                    {"fund_code": "000003", "fund_name": "Beta 中证500增强A"},
-                    {"fund_code": "000004", "fund_name": "Gamma 沪深300联接A"},
-                ])
-
-            @staticmethod
-            def fund_open_fund_info_em(symbol, indicator):
-                self.assertEqual("单位净值走势", indicator)
-                base = 1.0 if symbol == "000001" else 2.0
-                return FakeFrame([
-                    {"date": "2026-07-08", "nav": base},
-                    {"date": "2026-07-09", "nav": base + 0.01},
-                    {"date": "2026-07-10", "nav": base + 0.02},
-                ])
-
-        result = discover_fund_research_universe(
-            model_family="INDEX_FUND",
-            benchmark_code="CSI300_95_CASH_5",
-            target_code="010736",
-            start_date=date(2026, 7, 8),
-            end_date=date(2026, 7, 10),
-            limit=5,
-            minimum_records=2,
-            selection_rule={
-                "catalogSymbol": "指数型",
-                "nameAliases": ["沪深300"],
-                "excludedNamePatterns": ["C"],
-            },
-            ak_module=FundCatalogAkshare(),
-        )
-
-        self.assertEqual(["000001", "000004"], [item["code"] for item in result["members"]])
-        self.assertEqual(3, len(result["members"][0]["records"]))
-        self.assertEqual(64, len(result["datasetVersion"]))
 
     def test_benchmark_provider_rejects_unknown_profile_code(self):
         with self.assertRaisesRegex(ValueError, "unsupported benchmark code"):

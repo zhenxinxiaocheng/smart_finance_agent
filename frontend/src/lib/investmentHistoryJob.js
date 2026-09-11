@@ -1,4 +1,5 @@
-const POLLING_STATUSES = new Set(['QUEUED', 'RUNNING', 'RETRY_WAIT'])
+const RECOVERY_STATUSES = new Set(['FAILED', 'PARTIAL'])
+const POLLING_STATUSES = new Set(['QUEUED', 'RUNNING', 'RETRY_WAIT', ...RECOVERY_STATUSES])
 
 export function shouldPollHistoryJob(status) {
   return POLLING_STATUSES.has(status)
@@ -9,6 +10,7 @@ export function createHistoryJobPollingController({
   onJob,
   onTerminal,
   intervalMs = 3000,
+  recoveryIntervalMs = 60000,
   scheduler = globalThis,
   visibilitySource = globalThis.document
 }) {
@@ -37,7 +39,7 @@ export function createHistoryJobPollingController({
     timer = scheduler.setTimeout(() => {
       timer = null
       void execute()
-    }, intervalMs)
+    }, RECOVERY_STATUSES.has(status) ? recoveryIntervalMs : intervalMs)
   }
   const execute = async () => {
     if (disposed || inFlight || !shouldPollHistoryJob(status)) return
@@ -46,9 +48,10 @@ export function createHistoryJobPollingController({
     try {
       const job = await poll(context)
       if (!isCurrent(context)) return
+      const previousStatus = status
       status = job?.status
       onJob?.(job, context)
-      if (status === 'SUCCEEDED' || status === 'PARTIAL') {
+      if (status === 'SUCCEEDED' || (status === 'PARTIAL' && previousStatus !== status)) {
         stopTimer()
         onTerminal?.(job, context)
       } else if (status === 'FAILED') {

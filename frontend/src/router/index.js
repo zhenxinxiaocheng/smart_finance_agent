@@ -37,16 +37,17 @@ const routes = [
         meta: { title: '投资详情' }
       },
       {
-        path: 'quant-lab',
-        name: 'QuantModelManagement',
-        component: () => import('../views/QuantModelManagement.vue'),
-        meta: { title: '量化模型管理' }
-      },
-      {
-        path: 'quant-lab/expert',
-        name: 'QuantResearchLab',
-        component: () => import('../views/QuantResearchLab.vue'),
-        meta: { title: '量化研究专家模式' }
+        path: 'quant',
+        component: () => import('../views/quant-workbench/Workbench.vue'),
+        meta: { title: '量化工作台' },
+        children: [
+          { path: '', name: 'QuantStrategies', component: () => import('../views/quant-workbench/Strategies.vue') },
+          { path: 'strategies/:id', name: 'QuantStrategyDetail', component: () => import('../views/quant-workbench/StrategyDetail.vue') },
+          { path: 'universes', name: 'QuantUniverses', component: () => import('../views/quant-workbench/Universes.vue') },
+          { path: 'factors', name: 'QuantFactors', component: () => import('../views/quant-workbench/Factors.vue') },
+          { path: 'tasks', name: 'QuantTasks', component: () => import('../views/quant-workbench/Tasks.vue') },
+          { path: 'deployments', name: 'QuantDeployments', component: () => import('../views/quant-workbench/Deployments.vue') },
+        ]
       },
       {
         path: 'statistics',

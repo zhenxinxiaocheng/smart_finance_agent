@@ -15,13 +15,9 @@ import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentAnalysisSnapshotMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
-import com.smartfinance.agent.investment.quant.QuantAutomationService;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkPreparationService;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import com.smartfinance.agent.investment.quant.BenchmarkProfile;
-import com.smartfinance.agent.investment.quant.QuantResearchUniversePreparationService;
-import com.smartfinance.agent.investment.quant.QuantModelMonitorMapper;
-import com.smartfinance.agent.investment.quant.QuantStrategyVersionMapper;
 import com.smartfinance.agent.mapper.FinancialProfileMapper;
 import com.smartfinance.agent.wealth.dto.WealthOverviewResponse;
 import com.smartfinance.agent.wealth.service.WealthService;
@@ -55,9 +51,7 @@ class InvestmentDataJobWorkerTest {
     private InvestmentDataJobService jobService;
     private InvestmentAnalysisService analysisService;
     private InvestmentDataJobWorker worker;
-    private QuantAutomationService quantAutomationService;
     private QuantBenchmarkPreparationService benchmarkPreparationService;
-    private QuantResearchUniversePreparationService researchUniversePreparationService;
     private InvestmentHistoryPreparationService historyPreparationService;
     private MutableClock clock;
 
@@ -65,9 +59,7 @@ class InvestmentDataJobWorkerTest {
     void setUp() {
         jobService = mock(InvestmentDataJobService.class);
         analysisService = mock(InvestmentAnalysisService.class);
-        quantAutomationService = mock(QuantAutomationService.class);
         benchmarkPreparationService = mock(QuantBenchmarkPreparationService.class);
-        researchUniversePreparationService = mock(QuantResearchUniversePreparationService.class);
         historyPreparationService = mock(InvestmentHistoryPreparationService.class);
         when(jobService.markSucceeded(any(), anyString(), anyInt(), any()))
                 .thenReturn(true);
@@ -88,9 +80,7 @@ class InvestmentDataJobWorkerTest {
                 analysisService,
                 horizonProperties,
                 clock,
-                quantAutomationService,
                 benchmarkPreparationService,
-                researchUniversePreparationService,
                 historyPreparationService
         );
         when(historyPreparationService.prepare(any())).thenAnswer(invocation -> {
@@ -151,13 +141,12 @@ class InvestmentDataJobWorkerTest {
         verify(analysisService).refresh(7L, 11L);
         verify(analysisService, never()).retryData(any(), any());
         verify(jobService).markSucceeded(eq(91L), finishToken.capture(), eq(20), eq(NOW));
-        verify(quantAutomationService).onDataReady(7L, 11L);
         assertThat(finishToken.getValue()).isEqualTo(claimToken.getValue());
         assertThat(UUID.fromString(claimToken.getValue()).toString()).isEqualTo(claimToken.getValue());
     }
 
     @Test
-    void incompleteFullCoverageNeverStartsQuantTraining() {
+    void incompleteFullCoverageRemainsPartial() {
         InvestmentDataJob job = job(false, 0, "QUEUED");
         when(jobService.pendingJobs(2)).thenReturn(List.of(job));
         when(jobService.claim(eq(91L), eq(NOW), eq(NOW.plusSeconds(120)), anyString()))
@@ -177,7 +166,6 @@ class InvestmentDataJobWorkerTest {
         verify(jobService).markPartial(
                 eq(91L), anyString(), eq(5_900), contains("完整"), eq(NOW));
         verify(jobService, never()).markSucceeded(any(), anyString(), anyInt(), any());
-        verify(quantAutomationService, never()).onDataReady(any(), any());
     }
 
     @Test
@@ -196,7 +184,6 @@ class InvestmentDataJobWorkerTest {
         verify(analysisService).retryData(7L, 11L);
         verify(analysisService).refresh(7L, 11L);
         verify(jobService).markSucceeded(eq(91L), anyString(), eq(20), eq(NOW));
-        verify(quantAutomationService).onDataReady(7L, 11L);
     }
 
     @Test
@@ -214,11 +201,10 @@ class InvestmentDataJobWorkerTest {
         verify(jobService).markRetryWait(eq(91L), anyString(), eq(1),
                 eq(NOW.plusSeconds(60)), contains("新分析"), eq(NOW));
         verify(jobService, never()).markSucceeded(any(), anyString(), anyInt(), any());
-        verify(quantAutomationService, never()).onDataReady(any(), any());
     }
 
     @Test
-    void benchmarkJobPersistsSnapshotThenResumesQuantAutomation() {
+    void benchmarkJobPersistsSnapshot() {
         InvestmentDataJob job = job(false, 0, "QUEUED");
         job.setJobType("BENCHMARK_HISTORY");
         when(jobService.pendingJobs(2)).thenReturn(List.of(job));
@@ -232,24 +218,6 @@ class InvestmentDataJobWorkerTest {
         verify(benchmarkPreparationService).prepare(job);
         verifyNoInteractions(analysisService);
         verify(jobService).markSucceeded(eq(91L), anyString(), eq(1_344), eq(NOW));
-        verify(quantAutomationService).onDataReady(7L, 11L);
-    }
-
-    @Test
-    void lostLeaseDoesNotTriggerQuantAutomation() {
-        InvestmentDataJob job = job(false, 0, "QUEUED");
-        job.setJobType("BENCHMARK_HISTORY");
-        when(jobService.pendingJobs(2)).thenReturn(List.of(job));
-        when(jobService.claim(eq(91L), eq(NOW), eq(NOW.plusSeconds(120)), anyString()))
-                .thenReturn(true);
-        when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
-        when(benchmarkPreparationService.prepare(job)).thenReturn(1_344);
-        when(jobService.markSucceeded(eq(91L), anyString(), eq(1_344), eq(NOW)))
-                .thenReturn(false);
-
-        worker.scan();
-
-        verify(quantAutomationService, never()).onDataReady(any(), any());
     }
 
     @Test
@@ -686,8 +654,6 @@ class InvestmentDataJobWorkerTest {
         FinancialProfileMapper financialProfileMapper = mock(FinancialProfileMapper.class);
         InvestmentAiExplanationService aiExplanationService = mock(InvestmentAiExplanationService.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
-        QuantStrategyVersionMapper strategyMapper = mock(QuantStrategyVersionMapper.class);
-        QuantModelMonitorMapper monitorMapper = mock(QuantModelMonitorMapper.class);
         QuantBenchmarkProfileService benchmarkProfileService = mock(QuantBenchmarkProfileService.class);
 
         InvestmentAssetView asset = new InvestmentAssetView();
@@ -755,7 +721,6 @@ class InvestmentDataJobWorkerTest {
                 wealthService, financialProfileMapper, aiExplanationService,
                 new ObjectMapper(), jobService,
                 warningEngine,
-                strategyMapper, monitorMapper,
                 benchmarkProfileService);
         return new ReadOnlyFixture(
                 service,

@@ -167,6 +167,13 @@ public class InvestmentSyncWorker {
             closeValue = record.get("nav");
         }
         quote.setClosePrice(decimal(closeValue));
+        BigDecimal returnIndex = decimal(record.get("total_return_index"));
+        BigDecimal factor = decimal(record.get("adjustment_factor"));
+        if (returnIndex == null && "MUTUAL_FUND".equals(product.getProductType())
+                && factor != null && quote.getClosePrice() != null) {
+            returnIndex = quote.getClosePrice().multiply(factor);
+        }
+        quote.setTotalReturnIndex(returnIndex);
         quote.setPreviousClose(previousClose);
         if (previousClose != null && previousClose.signum() != 0 && quote.getClosePrice() != null) {
             BigDecimal changeAmount = quote.getClosePrice().subtract(previousClose);

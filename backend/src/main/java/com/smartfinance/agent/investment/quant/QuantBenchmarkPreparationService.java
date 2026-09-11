@@ -16,17 +16,13 @@ public class QuantBenchmarkPreparationService {
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final QuantBenchmarkProfileService benchmarkProfileService;
-    private final QuantResearchUniversePreparationService researchUniversePreparationService;
 
     public QuantBenchmarkPreparationService(InvestmentProductMapper productMapper,
                                              ProductDailyQuoteMapper quoteMapper,
-                                             QuantBenchmarkProfileService benchmarkProfileService,
-                                             QuantResearchUniversePreparationService
-                                                     researchUniversePreparationService) {
+                                             QuantBenchmarkProfileService benchmarkProfileService) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.benchmarkProfileService = benchmarkProfileService;
-        this.researchUniversePreparationService = researchUniversePreparationService;
     }
 
     public int prepare(InvestmentDataJob job) {
@@ -47,14 +43,12 @@ public class QuantBenchmarkPreparationService {
         }
         LocalDate targetStartDate = quotes.get(0).getTradeDate();
         LocalDate endDate = quotes.get(quotes.size() - 1).getTradeDate();
-        LocalDate startDate = researchUniversePreparationService.requiredStartDate(
-                product, targetStartDate, endDate);
         QuantBenchmarkProfileService.ResolvedBenchmark benchmark =
                 benchmarkProfileService.resolve(
                         product.getProductType(),
                         product.getCode(),
                         endDate,
-                        startDate,
+                        targetStartDate,
                         endDate
                 );
         if (!benchmark.available()) {
