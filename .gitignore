@@ -63,14 +63,10 @@ htmlcov/
 /.codex-logs/
 /.codex/
 /.playwright-cli/
-
-# 独立产品介绍站点仓库
-/product-site/
-
+/.workbuddy-ai/
 # === 生成的交付物与部署包 ===
 /output/
 /outputs/
-/product-site-deploy.tar.gz
 
 # === 其他 ===
 .frontend/
