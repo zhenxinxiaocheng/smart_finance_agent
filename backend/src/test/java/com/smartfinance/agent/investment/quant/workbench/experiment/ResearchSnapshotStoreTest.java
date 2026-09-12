@@ -39,10 +39,8 @@ class ResearchSnapshotStoreTest {
         reorderedBar.put("close", 10);
         reorderedBar.put("date", "2026-01-02");
 
-        var first = store.put(7L, List.of(Map.of("id", "asset-1", "bars", List.of(firstBar))),
-                Map.of("assetCount", 1));
-        var second = store.put(7L, List.of(Map.of("bars", List.of(reorderedBar), "id", "asset-1")),
-                Map.of("assetCount", 1));
+        var first = store.put(7L, List.of(Map.of("id", "asset-1", "bars", List.of(firstBar))));
+        var second = store.put(7L, List.of(Map.of("bars", List.of(reorderedBar), "id", "asset-1")));
 
         assertThat(second.id()).isEqualTo(first.id());
         assertThat(db.queryForObject("SELECT COUNT(*) FROM quant_v2_research_snapshot", Integer.class))
@@ -54,7 +52,7 @@ class ResearchSnapshotStoreTest {
 
     @Test
     void snapshotsAreUserScopedAndContentIsVerifiedWhenRead() {
-        var snapshot = store.put(7L, List.of(Map.of("id", "asset-1", "bars", List.of())), Map.of());
+        var snapshot = store.put(7L, List.of(Map.of("id", "asset-1", "bars", List.of())));
 
         assertThatThrownBy(() -> store.loadAssets(8L, snapshot.id()))
                 .isInstanceOf(ResearchSnapshotStore.SnapshotException.class)
@@ -69,11 +67,33 @@ class ResearchSnapshotStoreTest {
     }
 
     @Test
+    void legacyMetadataCannotBeReusedAsCurrentDataMetadata() {
+        var assets=List.<Map<String,Object>>of(Map.of("id","one","bars",List.of()));
+        var legacy=store.put(7L,assets);
+        db.update("UPDATE quant_v2_research_snapshot SET format_version='research-snapshot-v1',metadata_json=? WHERE id=?","{\"experimentId\":\"legacy\"}",legacy.id());
+        assertThatThrownBy(()->store.metadata(7L,legacy.id())).hasMessageContaining("format");
+        var current=store.put(7L,assets);
+        assertThat(current.id()).isNotEqualTo(legacy.id());assertThat(current.metadata()).doesNotContainKey("experimentId");
+    }
+
+    @Test
+    void metadataContainsOnlyDataProjectionAndDoesNotReadBlob() {
+        var assets = List.<Map<String,Object>>of(Map.of("id", "one", "experimentId", "never",
+                "sourceBacktestId", "never", "bars", List.of(Map.of("date", "2026-01-02", "source", "provider", "close", 10))));
+        var snapshot = store.put(7L, assets);
+        assertThat(snapshot.metadata()).containsEntry("assetCount",1).containsEntry("startDate","2026-01-02")
+                .doesNotContainKeys("experimentId","sourceBacktestId","environment");
+        assertThat(snapshot.metadata().toString()).doesNotContain("never");
+        db.update("UPDATE quant_v2_research_snapshot SET payload_blob=? WHERE id=?",new byte[]{1},snapshot.id());
+        assertThat(store.metadata(7L,snapshot.id())).isEqualTo(snapshot.metadata());
+    }
+
+    @Test
     void oversizedSnapshotsAreRejectedBeforeInsert() {
         var limited = new ResearchSnapshotStore(db, new ObjectMapper(), 16, 16);
 
         assertThatThrownBy(() -> limited.put(7L,
-                List.of(Map.of("id", "asset-with-payload", "bars", List.of(Map.of("close", 10)))), Map.of()))
+                List.of(Map.of("id", "asset-with-payload", "bars", List.of(Map.of("close", 10))))))
                 .isInstanceOf(ResearchSnapshotStore.SnapshotException.class)
                 .extracting(error -> ((ResearchSnapshotStore.SnapshotException) error).code())
                 .isEqualTo("SNAPSHOT_TOO_LARGE");

@@ -38,6 +38,7 @@ public class ExperimentRepository {
     }
 
     public void insertRun(ExperimentModels.RunDraft value) {
+        experiment(value.userId(), value.experimentId());
         db.update("INSERT INTO quant_v2_experiment_run(" +
                         "id,user_id,experiment_id,ordinal,variable_values_json,value_hash,baseline,created_at) " +
                         "VALUES(?,?,?,?,?,?,?,?)",
@@ -46,6 +47,8 @@ public class ExperimentRepository {
     }
 
     public void insertAttempt(ExperimentModels.AttemptDraft value) {
+        run(value.userId(),value.runId());
+        if (db.queryForObject("SELECT COUNT(*) FROM quant_v2_task WHERE id=? AND user_id=?",Integer.class,value.taskId(),value.userId()) != 1) throw new ExperimentNotFoundException();
         db.update("INSERT INTO quant_v2_experiment_run_attempt(" +
                         "id,user_id,run_id,attempt_no,reason,task_id,created_at) VALUES(?,?,?,?,?,?,?)",
                 value.id(), value.userId(), value.runId(), value.attemptNo(), value.reason(),
@@ -91,6 +94,7 @@ public class ExperimentRepository {
     }
 
     public List<ExperimentModels.AttemptView> attempts(Long userId, String runId) {
+        run(userId,runId);
         return db.queryForList("SELECT * FROM quant_v2_experiment_run_attempt " +
                         "WHERE user_id=? AND run_id=? ORDER BY attempt_no", userId, runId).stream()
                 .map(row -> new ExperimentModels.AttemptView(string(row, "id"),
@@ -104,6 +108,25 @@ public class ExperimentRepository {
         Integer count = db.queryForObject("SELECT COUNT(*) FROM quant_v2_experiment_run_attempt " +
                 "WHERE user_id=? AND task_id=?", Integer.class, userId, taskId);
         return count != null && count > 0;
+    }
+
+    public ExperimentModels.ExperimentView byRequest(Long userId,String key) {
+        var ids=db.queryForList("SELECT id FROM quant_v2_experiment WHERE user_id=? AND request_key=?",String.class,userId,key);
+        return ids.isEmpty()?null:experiment(userId,ids.get(0));
+    }
+    public List<ExperimentModels.RunView> runs(Long userId,String experimentId) {
+        experiment(userId,experimentId);
+        return db.queryForList("SELECT id FROM quant_v2_experiment_run WHERE user_id=? AND experiment_id=? ORDER BY ordinal",String.class,userId,experimentId)
+                .stream().map(id->run(userId,id)).toList();
+    }
+    public ExperimentModels.AttemptView attempt(Long userId,String attemptId) {
+        var rows=db.queryForList("SELECT run_id FROM quant_v2_experiment_run_attempt WHERE user_id=? AND id=?",String.class,userId,attemptId);
+        if(rows.isEmpty())throw new ExperimentNotFoundException();
+        return attempts(userId,rows.get(0)).stream().filter(a->a.id().equals(attemptId)).findFirst().orElseThrow(ExperimentNotFoundException::new);
+    }
+    public ExperimentModels.AttemptView taskAttempt(Long userId,String taskId) {
+        var rows=db.queryForList("SELECT id FROM quant_v2_experiment_run_attempt WHERE user_id=? AND task_id=?",String.class,userId,taskId);
+        return rows.isEmpty()?null:attempt(userId,rows.get(0));
     }
 
     private String encode(Object value) {

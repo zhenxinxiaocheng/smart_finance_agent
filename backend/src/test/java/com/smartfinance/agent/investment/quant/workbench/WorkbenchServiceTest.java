@@ -29,7 +29,7 @@ class WorkbenchServiceTest {
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
         new ResourceDatabasePopulator(new ClassPathResource(
-                "db/migration/sqlite/V30__quant_strategy_workbench.sql")).execute(source);
+                "db/migration/sqlite/V30__quant_strategy_workbench.sql"),new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql")).execute(source);
         db.execute("CREATE TABLE investment_product(id BIGINT PRIMARY KEY,name VARCHAR(80),code VARCHAR(20),"
                 + "product_type VARCHAR(30),market VARCHAR(20),history_coverage_complete BOOLEAN)");
         db.execute("CREATE TABLE investment_asset(id BIGINT PRIMARY KEY,user_id BIGINT,product_id BIGINT,deleted INT)");

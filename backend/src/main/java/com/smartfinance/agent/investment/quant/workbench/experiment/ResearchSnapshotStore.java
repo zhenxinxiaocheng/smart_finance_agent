@@ -22,7 +22,7 @@ import java.util.zip.GZIPOutputStream;
 
 @Component
 public class ResearchSnapshotStore {
-    public static final String FORMAT_VERSION = "research-snapshot-v1";
+    public static final String FORMAT_VERSION = "research-snapshot-v2";
     private static final String COMPRESSION = "GZIP";
 
     private final JdbcTemplate db;
@@ -42,7 +42,8 @@ public class ResearchSnapshotStore {
     }
 
     public ExperimentModels.SnapshotView put(
-            Long userId, List<Map<String, Object>> assets, Map<String, Object> metadata) {
+            Long userId, List<Map<String, Object>> assets) {
+        Map<String,Object> metadata = SnapshotMetadataBuilder.build(assets);
         byte[] plain = write(assets);
         requireSize(plain.length, maxUncompressedBytes);
         String hash = sha256(plain);
@@ -69,13 +70,14 @@ public class ResearchSnapshotStore {
     }
 
     public List<Map<String, Object>> loadAssets(Long userId, String snapshotId) {
-        var rows = db.queryForList("SELECT content_hash,compression,payload_blob,uncompressed_bytes," +
+        var rows = db.queryForList("SELECT format_version,content_hash,compression,payload_blob,uncompressed_bytes," +
                 "compressed_bytes FROM quant_v2_research_snapshot WHERE id=? AND user_id=?", snapshotId, userId);
         if (rows.isEmpty()) throw new SnapshotException("SNAPSHOT_NOT_FOUND", "研究数据快照不存在或无权访问");
         var row = rows.get(0);
         try {
             byte[] compressed = (byte[]) row.get("payload_blob");
-            if (!COMPRESSION.equals(row.get("compression"))
+            requireSize(compressed.length, maxCompressedBytes);
+            if (!FORMAT_VERSION.equals(row.get("format_version")) || !COMPRESSION.equals(row.get("compression"))
                     || compressed.length != ((Number) row.get("compressed_bytes")).longValue()) {
                 throw new IllegalStateException("Snapshot metadata mismatch");
             }
@@ -93,9 +95,10 @@ public class ResearchSnapshotStore {
     }
 
     public Map<String, Object> metadata(Long userId, String snapshotId) {
-        var rows = db.queryForList("SELECT metadata_json FROM quant_v2_research_snapshot " +
+        var rows = db.queryForList("SELECT format_version,metadata_json FROM quant_v2_research_snapshot " +
                 "WHERE id=? AND user_id=?", snapshotId, userId);
         if (rows.isEmpty()) throw new SnapshotException("SNAPSHOT_NOT_FOUND", "研究数据快照不存在或无权访问");
+        if (!FORMAT_VERSION.equals(rows.get(0).get("format_version"))) throw new SnapshotException("SNAPSHOT_FORMAT_UNSUPPORTED", "Snapshot format is not supported");
         try {
             return json.readValue(String.valueOf(rows.get(0).get("metadata_json")),
                     new TypeReference<Map<String, Object>>() {});

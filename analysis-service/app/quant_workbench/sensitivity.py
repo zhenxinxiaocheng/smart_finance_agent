@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_FLOOR
+from decimal import Decimal, ROUND_FLOOR, InvalidOperation
 
 from .parameters import CANDIDATE_RULE_VERSION, PARAMETERS, SENSITIVITY
 
@@ -26,16 +26,29 @@ def _quantize_down(value: Decimal, quantum: Decimal) -> Decimal:
     return (value / quantum).to_integral_value(rounding=ROUND_FLOOR) * quantum
 
 
-def generate_candidates(config: dict, parameter_key: str) -> dict:
+def generate_candidates(config: dict, parameter_key: str, constraints: dict | None = None) -> dict:
     key, default, low, high, kind, *_ = _parameter(parameter_key)
     rule = SENSITIVITY.get(key)
     strategy_type = str(config.get("strategyType") or "TREND")
     if not rule or not rule["enabled"] or strategy_type not in rule["strategyTypes"]:
         _fail("PARAMETER_NOT_APPLICABLE", f"{key} is not available for {strategy_type}")
 
-    baseline = Decimal(str(config.get(key, default)))
+    try:
+        raw = config.get(key, default)
+        if isinstance(raw, bool):
+            raise InvalidOperation
+        baseline = Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        _fail("INVALID_BASELINE", f"{key} must be a finite number")
+    if kind == "integer" and baseline.is_finite() and baseline != baseline.to_integral_value():
+        _fail("INVALID_BASELINE", f"{key} must be an integer")
     lower, upper = Decimal(str(low)), Decimal(str(high))
-    if not lower <= baseline <= upper:
+    if key == "topN" and constraints is not None:
+        count = constraints.get("effectiveAssetCount") if isinstance(constraints, dict) else None
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            _fail("INVALID_CONSTRAINTS", "effectiveAssetCount must be a positive integer")
+        upper = min(upper, Decimal(count))
+    if not baseline.is_finite() or not lower <= baseline <= upper:
         _fail("INVALID_BASELINE", f"{key} is outside its supported range")
 
     quantum = Decimal(1) if kind == "integer" else Decimal(1).scaleb(-int(rule["precision"]))

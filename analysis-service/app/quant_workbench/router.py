@@ -20,7 +20,7 @@ def runtime() -> dict:
 @router.post("/parameter-sensitivity/candidates")
 def sensitivity_candidates(payload: dict) -> dict:
     try:
-        return generate_candidates(payload.get("config") or {}, str(payload.get("parameterKey") or ""))
+        return generate_candidates(payload.get("config") or {}, str(payload.get("parameterKey") or ""), payload.get("constraints"))
     except CandidateError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
 

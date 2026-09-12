@@ -40,10 +40,17 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
+# Freeze sources when loaded: on-disk edits are not executing code.
+_LOADED_CODE_HASH = hashlib.sha256(b"".join(
+    Path(__file__).with_name(name).read_bytes()
+    for name in ("engine.py", "parameters.py", "sensitivity.py")
+)).hexdigest()
+
+
 def runtime_info():
     return {
         "engineVersion": VERSION,
-        "codeHash": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "codeHash": _LOADED_CODE_HASH,
         "parameterCatalogVersion": CATALOG_VERSION,
         "candidateRuleVersion": CANDIDATE_RULE_VERSION,
     }
@@ -616,6 +623,7 @@ def execute(payload):
                   "seed": c["seed"], "startDate": payload.get("startDate"), "endDate": payload.get("endDate"),
                   "universeId": payload.get("universeId"), "universeVersion": payload.get("universeVersionId", payload.get("universeVersion")),
                   "strategyVersionId": payload.get("strategyVersionId"), "factorSetVersionId": payload.get("factorSetVersionId", payload.get("factorVersionId"))}
+    provenance.update(parameterCatalogVersion=runtime["parameterCatalogVersion"], modelRef=payload.get("modelRef"))
     assumptions = ["Fixed snapshot universe; historical constituent membership and survivorship bias are not certified.",
                    "Signal at observed close, execution on a later session; no intraday execution.",
                    f"Trade consideration and fees rounded to CNY cents using HALF_UP; fund share precision {c['fundShareDecimals']} decimal places."]

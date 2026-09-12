@@ -79,3 +79,27 @@ def test_parameter_catalog_exposes_versioned_sensitivity_rules():
     assert catalog["candidateRuleVersion"] == "parameter-sensitivity-v1"
     assert by_key["slowWindow"]["sensitivity"]["relativeStep"] == 0.1
     assert by_key["feeRate"]["sensitivity"]["enabled"] is False
+
+@pytest.mark.parametrize("strategy", ["TREND", "MULTI_FACTOR", "ML_ELASTIC_NET", "ML_XGBOOST"])
+def test_topn_respects_frozen_effective_asset_count(strategy):
+    config = {"strategyType": strategy, "topN": 5}
+    result = generate_candidates(config, "topN", {"effectiveAssetCount": 10})
+    assert result["values"] == [3, 4, 5, 6, 7]
+    assert max(result["values"]) <= 10
+    with pytest.raises(CandidateError) as error:
+        generate_candidates(config, "topN", {"effectiveAssetCount": 5})
+    assert error.value.code == "SYMMETRIC_RANGE_UNAVAILABLE"
+
+
+def test_runtime_reports_loaded_code_not_later_disk_contents(monkeypatch):
+    from pathlib import Path
+    before = runtime_info()
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"changed on disk")
+    assert runtime_info() == before
+
+
+@pytest.mark.parametrize("value", [True, None, "bad", float("nan"), float("inf"), 5.5])
+def test_invalid_integer_baselines_are_structured_errors(value):
+    with pytest.raises(CandidateError) as error:
+        generate_candidates({"topN": value}, "topN", {"effectiveAssetCount": 10})
+    assert error.value.code == "INVALID_BASELINE"
