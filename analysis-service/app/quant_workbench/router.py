@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from .engine import EngineError, execute, FACTOR_KEYS, runtime_info
+from .engine import EngineError, execute, FACTOR_KEYS, runtime_info, validate_config
 from .parameters import parameter_catalog
 from .sensitivity import CandidateError, generate_candidates
 
@@ -39,3 +39,15 @@ def execute_quant(payload: dict) -> dict:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_INPUT", "message": str(exc)}) from exc
+
+
+@router.post("/validate-config")
+def validate_quant_config(payload: dict) -> dict:
+    try:
+        return validate_config(payload)
+    except EngineError as exc:
+        raise HTTPException(status_code=422, detail={"code": "CURRENT_RUNTIME_CONFIG_INCOMPATIBLE",
+                            "reasonCode": exc.code, "message": str(exc)}) from exc
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "CURRENT_RUNTIME_CONFIG_INCOMPATIBLE",
+                            "reasonCode": "INVALID_INPUT", "message": str(exc)}) from exc

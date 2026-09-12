@@ -55,6 +55,12 @@ public class ExperimentService {
         for(String field:List.of("engineVersion","codeHash","parameterCatalogVersion","candidateRuleVersion"))
             require(environment.get(field)!=null && !environment.get(field).toString().isBlank(),"EXPERIMENT_ENVIRONMENT_CHANGED");
         var assets=(List<Map<String,Object>>)original.get("assets");
+        var compatibilityRequest=map(original);compatibilityRequest.put("kind","BACKTEST");compatibilityRequest.put("config",config);
+        compatibilityRequest.put("startDate",provenance.get("startDate"));compatibilityRequest.put("endDate",provenance.get("endDate"));
+        compatibilityRequest.remove("state");compatibilityRequest.remove("action");compatibilityRequest.remove("expectedRuntime");
+        var compatibility=client.validateConfig(compatibilityRequest);
+        require(Boolean.TRUE.equals(compatibility.get("compatible")) && same(config,compatibility.get("effectiveConfig")),"CURRENT_RUNTIME_CONFIG_INCOMPATIBLE");
+        require(same(environment,compatibility.get("runtime")),"EXPERIMENT_ENVIRONMENT_CHANGED");
         int effectiveCount=(int)assets.stream().filter(a->a.get("id")!=null && a.get("bars") instanceof List<?> bars && !bars.isEmpty()).map(a->a.get("id")).distinct().count();
         var generated=candidates.generate(config,key,effectiveCount,environment);
         require(same(environment,client.runtimeInfo()),"EXPERIMENT_ENVIRONMENT_CHANGED");

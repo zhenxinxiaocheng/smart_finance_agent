@@ -403,7 +403,7 @@ def performance(curve, initial, fills):
             "fees": sum(f["fee"] for f in fills), "tradeCount": len(fills), "observations": len(curve)}
 
 
-def simulate(payload, c, assets, model=None, benchmark_targets=None):
+def simulation_context(payload, assets, model=None):
     paper = payload.get("kind") == "PAPER"
     new_paper = paper and not ((payload.get("state") or {}).get("deploymentStart") or (payload.get("state") or {}).get("lastDate"))
     action = payload.get("action", "RUN")
@@ -419,6 +419,20 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
         start = end
     if model and not paper and start <= model["evaluatedThrough"]:
         fail("MODEL_LOOKAHEAD", f"Backtest must begin after final model evaluation date {model['evaluatedThrough']}")
+    return paper, new_paper, action, start, end
+
+
+def validate_config(payload):
+    c, assets = prepare(payload)
+    if payload.get("kind", "BACKTEST") != "BACKTEST":
+        fail("INVALID_TASK_KIND", "Config compatibility requires a backtest context")
+    model = load_model(payload.get("modelRef"), c) if c["strategyType"].startswith("ML_") else None
+    simulation_context(payload, assets, model)
+    return {"compatible": True, "runtime": runtime_info(), "effectiveConfig": c}
+
+
+def simulate(payload, c, assets, model=None, benchmark_targets=None):
+    paper, new_paper, action, start, end = simulation_context(payload, assets, model)
     state = copy.deepcopy(payload.get("state")) if paper and payload.get("state") else {
         "cash": c["initialCash"], "positions": {}, "pendingOrders": [], "receivables": [],
         "lastDate": "", "sessionCount": 0, "equityCurve": [], "peakEquity": c["initialCash"],

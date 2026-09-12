@@ -23,6 +23,19 @@ public class WorkbenchAnalysisClient {
         client=builder.clone().baseUrl(url).requestFactory(factory).build();
     }
     public long leaseMillis(){return leaseMillis;}
+    @SuppressWarnings("unchecked") public Map<String,Object> validateConfig(Map<String,Object> request) {
+        try {
+            var response=client.post().uri("/quant/v2/validate-config").header("X-Internal-Token",token)
+                    .contentType(MediaType.APPLICATION_JSON).body(request).retrieve().body(Map.class);
+            if(response==null)throw new IllegalStateException("分析服务未返回配置兼容性");return response;
+        } catch(org.springframework.web.client.HttpClientErrorException.UnprocessableEntity error) {
+            var response=error.getResponseBodyAs(Map.class);
+            if(response!=null && response.get("detail") instanceof Map<?,?> detail
+                    && "CURRENT_RUNTIME_CONFIG_INCOMPATIBLE".equals(detail.get("code")))
+                return Map.of("compatible",false,"detail",detail);
+            throw error;
+        }
+    }
     @SuppressWarnings("unchecked") public Map<String,Object> runtimeInfo() {
         var response=client.get().uri("/quant/v2/runtime-info").header("X-Internal-Token",token).retrieve().body(Map.class);
         if(response==null)throw new IllegalStateException("分析服务未返回运行环境");return response;

@@ -33,9 +33,14 @@ public class ExperimentSummaryService {
             if(previous.containsKey("classification") && same(previous.get("inputAttemptIds"),ids))return previous;
             db.update("UPDATE quant_v2_experiment SET status=?,updated_at=? WHERE user_id=? AND id=?",state,Instant.now().toString(),user,experimentId);
             if(Set.of("QUEUED","RUNNING").contains(state))return Map.of("status",state);
-            require(StabilityAnalyzer.VERSION.equals(experiment.stabilityAlgorithmVersion()),"STABILITY_ALGORITHM_UNAVAILABLE");
+            require(Set.of(StabilityAnalyzer.V1,StabilityAnalyzer.VERSION).contains(experiment.stabilityAlgorithmVersion()),"STABILITY_ALGORITHM_UNAVAILABLE");
             List<StabilityAnalyzer.Point> points=new ArrayList<>();TreeSet<String> reasons=new TreeSet<>(taskErrors.values());Map<String,Integer> qualificationReasons=new TreeMap<>();
-            int qualified=0,unqualified=0,missing=0;boolean controls=!taskErrors.containsValue("CONTROL_VARIABLE_VIOLATION") && !taskErrors.containsValue("EXPERIMENT_ENVIRONMENT_CHANGED") && !taskErrors.containsValue("EXPERIMENT_TASK_LINK_INVALID"),data=!taskErrors.containsValue("SNAPSHOT_CORRUPTED");var baseline=responses.getOrDefault(2,Map.of());
+            int qualified=0,unqualified=0,missing=0;String controls="PASS",data="PASS";
+            // Prefer the baseline, but a missing baseline must not invent a data mismatch.
+            Map<String,Object> comparable=null;
+            for(int i=0;i<runs.size();i++)if("SUCCEEDED".equals(statuses.get(i))) {
+                if(comparable==null||runs.get(i).ordinal()==2)comparable=responses.get(runs.get(i).ordinal());
+            }
             List<Map<String,Object>> exclusions=new ArrayList<>();
             for(int i=0;i<runs.size();i++) {
                 var run=runs.get(i);var response=responses.get(run.ordinal());var q=map(response.get("qualification"));
@@ -43,32 +48,37 @@ public class ExperimentSummaryService {
                 if(q.get("reasons") instanceof List<?> list)for(Object code:list){reasons.add(code.toString());qualificationReasons.merge(code.toString(),1,Integer::sum);}
                 var validation=map(response.get("experimentValidation"));
                 boolean executed="SUCCEEDED".equals(statuses.get(i));boolean valid=executed && Boolean.TRUE.equals(validation.get("valid")) && ids.get(i).equals(validation.get("attemptId"));
-                boolean baselinePresent=Boolean.TRUE.equals(map(baseline.get("experimentValidation")).get("valid"));
-                boolean consistent=!executed || !baselinePresent || validator.sameData(baseline,response);
-                if(executed && !valid)controls=false;
-                if(executed && !consistent)data=false;
+                boolean explicitControlFailure=executed && (Boolean.FALSE.equals(validation.get("valid"))
+                        || validation.get("attemptId")!=null&&!ids.get(i).equals(validation.get("attemptId"))
+                        || "CONTROL_VARIABLE_VIOLATION".equals(validation.get("code"))
+                        || validation.get("mismatches") instanceof List<?> mismatches&&!mismatches.isEmpty());
+                boolean consistent=!executed || comparable!=null && validator.sameData(comparable,response);
+                if(explicitControlFailure){controls="FAIL";reasons.add("CONTROL_VARIABLE_VIOLATION");}
+                else if(executed&&!valid&&"PASS".equals(controls))controls="PARTIAL";
+                if(executed&&!consistent){data="FAIL";reasons.add("EXPERIMENT_DATA_INCONSISTENCY");}
                 var metrics=map(map(response.get("result")).get("metrics"));
                 boolean metricValid=finite(metrics.get("netReturn")) && finite(metrics.get("maxDrawdown")) && ((Number)metrics.get("maxDrawdown")).doubleValue()>=0;
-                if(valid && consistent && metricValid)points.add(new StabilityAnalyzer.Point(run.ordinal(),run.variableValues().values().iterator().next(),((Number)metrics.get("netReturn")).doubleValue(),((Number)metrics.get("maxDrawdown")).doubleValue(),ids.get(i)));
-                else exclusions.add(Map.of("runId",run.id(),"attemptId",ids.get(i),"reason",!executed?statuses.get(i):!valid||!consistent?"CONTROL_VARIABLE_VIOLATION":"RESULT_METRICS_MISSING"));
+                if(valid && !explicitControlFailure && consistent && metricValid)points.add(new StabilityAnalyzer.Point(run.ordinal(),run.variableValues().values().iterator().next(),((Number)metrics.get("netReturn")).doubleValue(),((Number)metrics.get("maxDrawdown")).doubleValue(),ids.get(i)));
+                else exclusions.add(Map.of("runId",run.id(),"attemptId",ids.get(i),"reason",!executed?taskErrors.getOrDefault(run.ordinal(),statuses.get(i)):
+                        explicitControlFailure?"CONTROL_VARIABLE_VIOLATION":!consistent?"EXPERIMENT_DATA_INCONSISTENCY":!valid?"CONTROL_VALIDATION_MISSING":"RESULT_METRICS_MISSING"));
             }
-            var summary=new LinkedHashMap<>(new StabilityAnalyzer().analyze(points,runs.size()));
-            var quality=new EvidenceQualityEvaluator().evaluate(controls,data,sourceComplete(experiment.sourceContext()),points.size(),runs.size(),reasons);
-            summary.put("evidenceQuality",quality.get("level"));summary.put("evidence",quality);summary.put("qualificationSummary",Map.of("qualified",qualified,"unqualified",unqualified,"missing",missing,"reasons",qualificationReasons));
+            var summary=new LinkedHashMap<>(new StabilityAnalyzer().analyze(experiment.stabilityAlgorithmVersion(),points,runs.size()));
+            var quality=new EvidenceQualityEvaluator().evaluate(controls,data,sourceCompleteness(experiment.sourceContext()),points.stream().map(StabilityAnalyzer.Point::ordinal).toList(),points.size(),runs.size(),exclusions,reasons);
+            summary.put("evidenceSchemaVersion",EvidenceQualityEvaluator.VERSION);summary.put("evidenceQuality",quality.remove("level"));summary.put("evidence",quality);summary.put("qualificationSummary",Map.of("qualified",qualified,"unqualified",unqualified,"missing",missing,"reasons",qualificationReasons));
             summary.put("stabilityAlgorithmVersion",experiment.stabilityAlgorithmVersion());summary.put("candidateRuleVersion",experiment.candidateRuleVersion());
             summary.put("includedAttemptIds",summary.get("inputAttemptIds"));summary.put("inputAttemptIds",ids);summary.put("excludedRuns",exclusions);
-            reasons.addAll((List<String>)summary.get("reasonCodes"));if(!controls||!data)reasons.add("CONTROL_VARIABLE_VIOLATION");summary.put("reasonCodes",List.copyOf(reasons));
+            reasons.addAll((List<String>)summary.get("reasonCodes"));summary.put("reasonCodes",List.copyOf(reasons));
             if(previous.get("history") instanceof List<?> history)summary.put("history",history);
             db.update("UPDATE quant_v2_experiment SET summary_json=?,status=?,completed_at=?,updated_at=?,revision=revision+1 WHERE user_id=? AND id=?",encode(summary),state,Instant.now().toString(),Instant.now().toString(),user,experimentId);
             return summary;
         });
     }
     private static boolean finite(Object value){return value instanceof Number n&&Double.isFinite(n.doubleValue());}
-    private static boolean sourceComplete(Map<String,Object> context) {
+    private static String sourceCompleteness(Map<String,Object> context) {
         var provenance=map(context.get("provenance"));var runtime=map(context.get("runtime"));
+        if(!List.of("dataHash","startDate","endDate").stream().allMatch(k->provenance.get(k) instanceof String s&&!s.isBlank())
+                || map(provenance.get("config")).isEmpty() || !(context.get("snapshotContentHash") instanceof String hash)||hash.isBlank())return "INSUFFICIENT";
         return List.of("engineVersion","codeHash").stream().allMatch(k->runtime.get(k) instanceof String s&&!s.isBlank())
-                && List.of("dataHash","startDate","endDate").stream().allMatch(k->provenance.get(k) instanceof String s&&!s.isBlank())
-                && !map(provenance.get("config")).isEmpty() && !map(context.get("benchmarkContract")).isEmpty()
-                && context.get("assumptions") instanceof List<?> && context.get("snapshotContentHash") instanceof String s&&!s.isBlank();
+                && !map(context.get("benchmarkContract")).isEmpty() && context.get("assumptions") instanceof List<?> ? "COMPLETE":"PARTIAL";
     }
 }

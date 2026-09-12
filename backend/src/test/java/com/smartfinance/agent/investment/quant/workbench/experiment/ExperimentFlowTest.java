@@ -27,6 +27,7 @@ class ExperimentFlowTest {
         repository=new ExperimentRepository(db,json);snapshots=new ResearchSnapshotStore(db,json,1000000,1000000);var tasks=new ExperimentTaskStore(db,json);
         attempts=new ExperimentAttemptService(db,repository,tasks,manager);client=mock(WorkbenchAnalysisClient.class);
         when(client.runtimeInfo()).thenAnswer(a->environment);when(client.leaseMillis()).thenReturn(60000L);
+        when(client.validateConfig(anyMap())).thenAnswer(a->Map.of("compatible",true,"runtime",environment,"effectiveConfig",map(a.getArgument(0)).get("config")));
         when(client.candidates(anyMap())).thenReturn(Map.of("parameterKey","slowWindow","baseline",60,"delta",6,"values",List.of(48,54,60,66,72),"ruleVersion","rule"));
         experiments=new ExperimentService(db,repository,snapshots,new ExperimentCandidateService(client),client,attempts,manager);
         resolver=new ExperimentExecutionResolver(repository,snapshots,db);validator=new ExperimentResultValidator();summaries=new ExperimentSummaryService(db,repository,validator,manager);
@@ -160,5 +161,77 @@ class ExperimentFlowTest {
         var p=map(mapResult(response).get("provenance"));p.remove("codeHash");mapResult(response).put("provenance",p);
         db.update("UPDATE quant_v2_task SET result_json=? WHERE id=?",encode(response),source);
         assertThatThrownBy(this::create).hasMessage("SOURCE_CONTEXT_INCOMPLETE");
+    }
+
+    @Test void evidenceUsesExplicitV2AxesAndCounts() {
+        var e=create();finish();var s=map(repository.experiment(7L,e.id()).summary());
+        assertThat(s).containsEntry("evidenceSchemaVersion","experiment-evidence-v2");
+        assertThat(map(s.get("evidence"))).containsEntry("controlIntegrity","PASS").containsEntry("dataConsistency","PASS")
+            .containsEntry("sourceCompleteness","COMPLETE").containsEntry("runCoverage","COMPLETE")
+            .containsEntry("validRuns",5).containsEntry("totalRuns",5).containsEntry("excludedRunCount",0).containsEntry("excludedRuns",List.of());
+    }
+    @ParameterizedTest @ValueSource(strings={"different","missing"}) void dataFailureDoesNotInventControlFailure(String mode) {
+        var e=create();when(client.execute(anyMap())).thenAnswer(a->{var response=response(a.getArgument(0),-.1);
+            var p=map(mapResult(response).get("provenance"));if(mode.equals("missing"))p.remove("dataHash");
+            else if(((Number)map(p.get("config")).get("slowWindow")).intValue()==48)p.put("dataHash","different");
+            mapResult(response).put("provenance",p);return response;});finish();
+        var s=map(repository.experiment(7L,e.id()).summary());
+        assertThat(s).containsEntry("evidenceQuality","INVALID");
+        assertThat(map(s.get("evidence"))).containsEntry("controlIntegrity","PASS").containsEntry("dataConsistency","FAIL");
+        assertThat((List<String>)s.get("reasonCodes")).contains("EXPERIMENT_DATA_INCONSISTENCY").doesNotContain("CONTROL_VARIABLE_VIOLATION");
+        assertThat(map(saved(task(repository.runs(7L,e.id()).get(0))).get("experimentValidation"))).containsEntry("valid",true);
+    }
+    @ParameterizedTest @ValueSource(ints={0,1,2,3,4}) void coverageUsesActualCriticalOrdinals(int ordinal) {
+        var e=create();db.update("UPDATE quant_v2_task SET status='FAILED',error_code='NO_EXECUTED_TRADES' WHERE id=?",task(repository.runs(7L,e.id()).get(ordinal)));finish();
+        var s=map(repository.experiment(7L,e.id()).summary());boolean critical=ordinal>0&&ordinal<4;
+        assertThat(s).containsEntry("evidenceQuality",critical?"INSUFFICIENT":"MEDIUM");
+        assertThat(map(s.get("evidence"))).containsEntry("runCoverage",critical?"INSUFFICIENT":"PARTIAL");
+    }
+    @Test void legacyMissingValidationIsPartialControlRatherThanExplicitFailure() {
+        var e=create();var runs=repository.runs(7L,e.id());
+        for(var run:runs)db.update("UPDATE quant_v2_task SET status='SUCCEEDED',result_json=? WHERE id=?",encode(response(original,-.1)),task(run));
+        var s=summaries.refresh(7L,e.id());
+        assertThat(map(s.get("evidence"))).containsEntry("controlIntegrity","PARTIAL");
+        assertThat((List<String>)s.get("reasonCodes")).doesNotContain("CONTROL_VARIABLE_VIOLATION");
+    }
+    @Test void newExperimentsFreezeV2AndV1RecomputationUsesV1() {
+        var e=create();assertThat(e.stabilityAlgorithmVersion()).isEqualTo("parameter-stability-v2");
+        when(client.execute(anyMap())).thenAnswer(a->{Map<String,Object> p=a.getArgument(0);int value=((Number)map(p.get("config")).get("slowWindow")).intValue();return response(p,value==48||value==72?.5:.1);});
+        finish();assertThat(map(repository.experiment(7L,e.id()).summary())).containsEntry("classification","STABLE");
+        db.update("UPDATE quant_v2_experiment SET stability_algorithm_version='parameter-stability-v1',summary_json=NULL WHERE id=?",e.id());
+        assertThat(summaries.refresh(7L,e.id())).containsEntry("classification","MIXED").containsEntry("algorithmVersion","parameter-stability-v1");
+        var cached=summaries.refresh(7L,e.id());
+        db.update("UPDATE quant_v2_experiment SET stability_algorithm_version='future' WHERE id=?",e.id());
+        assertThat(summaries.refresh(7L,e.id())).isEqualTo(cached);
+        db.update("UPDATE quant_v2_experiment SET summary_json=NULL WHERE id=?",e.id());
+        assertThatThrownBy(()->summaries.refresh(7L,e.id())).hasMessage("STABILITY_ALGORITHM_UNAVAILABLE");
+    }
+    @Test void oneLegacyOuterResultWithoutValidationProducesLowEvidence() {
+        var e=create();finish();var run=repository.runs(7L,e.id()).get(0);var response=saved(task(run));response.remove("experimentValidation");
+        db.update("UPDATE quant_v2_task SET result_json=? WHERE id=?",encode(response),task(run));
+        db.update("UPDATE quant_v2_experiment SET summary_json=NULL WHERE id=?",e.id());
+        var s=summaries.refresh(7L,e.id());assertThat(s).containsEntry("evidenceQuality","LOW").containsEntry("classification","STABLE");
+        assertThat(map(s.get("evidence"))).containsEntry("controlIntegrity","PARTIAL").containsEntry("runCoverage","PARTIAL");
+    }
+    @ParameterizedTest @ValueSource(strings={"runtime","config"}) void sourceAxisComesFromRealFrozenContext(String field) {
+        var e=create();finish();var context=map(e.sourceContext());
+        if(field.equals("runtime"))context.remove("runtime");else {var p=map(context.get("provenance"));p.remove("config");context.put("provenance",p);}
+        db.update("UPDATE quant_v2_experiment SET summary_json=NULL,source_context_json=? WHERE id=?",encode(context),e.id());
+        var s=summaries.refresh(7L,e.id());
+        assertThat(s).containsEntry("evidenceQuality",field.equals("runtime")?"LOW":"INSUFFICIENT");
+        assertThat(map(s.get("evidence"))).containsEntry("sourceCompleteness",field.equals("runtime")?"PARTIAL":"INSUFFICIENT");
+    }
+    @Test void unsupportedSnapshotIsADataFailureOnly() {
+        var e=create();db.update("UPDATE quant_v2_research_snapshot SET format_version='future' WHERE id=?",e.snapshotId());finish();
+        var s=map(repository.experiment(7L,e.id()).summary());assertThat(s).containsEntry("evidenceQuality","INVALID");
+        assertThat(map(s.get("evidence"))).containsEntry("controlIntegrity","PASS").containsEntry("dataConsistency","FAIL");
+        assertThat((List<String>)s.get("reasonCodes")).contains("SNAPSHOT_CORRUPTED").doesNotContain("CONTROL_VARIABLE_VIOLATION");
+    }
+    @Test void unknownQualificationReasonSurvivesSummary() {
+        var e=create();when(client.execute(anyMap())).thenAnswer(a->{var response=response(a.getArgument(0),-.1);
+            response.put("qualification",Map.of("status","UNQUALIFIED","reasons",List.of("NEW_ENGINE_REASON")));return response;});finish();
+        var s=map(repository.experiment(7L,e.id()).summary());assertThat(s).containsEntry("evidenceQuality","MEDIUM");
+        assertThat(map(map(s.get("evidence")).get("reasonClassifications"))).containsEntry("NEW_ENGINE_REASON","OTHER");
+        assertThat((List<String>)s.get("reasonCodes")).contains("NEW_ENGINE_REASON");
     }
 }
