@@ -36,11 +36,12 @@ public final class ExperimentProductDtos {
             Integer totalRuns, Integer excludedRunCount,
             Map<String, Object> reasonClassifications) {}
 
-    public record QualificationResponse(String status, List<String> reasons) {}
+    public record QualificationResponse(String status, List<String> reasons, String scope) {}
     public record MetricsResponse(
             Number netReturn, Number maxDrawdown, Number volatility,
             Number turnover, Number tradeCount) {}
-    public record ValidationResponse(Boolean valid, String code, List<?> mismatches) {}
+    public record ValidationResponse(
+            Boolean valid, String code, List<?> mismatches, String validatorVersion) {}
     public record RunErrorResponse(String code, String message) {}
 
     public record RunResponse(

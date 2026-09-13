@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -64,7 +66,8 @@ class ExperimentProductServiceTest {
 
         db.update("INSERT INTO quant_v2_object VALUES('strategy',7,'strategies','趋势策略','ACTIVE',1,'{}','now','now')");
         db.update("INSERT INTO quant_v2_object VALUES('universe',7,'universes','研究池','ACTIVE',1,'{}','now','now')");
-        db.update("INSERT INTO quant_v2_version VALUES('strategy-v1',7,'strategy',1,'{}','now')");
+        db.update("INSERT INTO quant_v2_version VALUES('strategy-v1',7,'strategy',1,?,'now')",
+                encode(Map.of("name", "趋势策略 A")));
         db.update("INSERT INTO quant_v2_version VALUES('universe-v1',7,'universe',1,'{}','now')");
 
         var original = new LinkedHashMap<String, Object>();
@@ -112,10 +115,13 @@ class ExperimentProductServiceTest {
         var runs = repository.runs(7L, created.id());
         var succeededTask = repository.attempt(7L, runs.get(0).activeAttemptId()).taskId();
         var failedTask = repository.attempt(7L, runs.get(1).activeAttemptId()).taskId();
+        var qualifiedTask = repository.attempt(7L, runs.get(2).activeAttemptId()).taskId();
         db.update("UPDATE quant_v2_task SET status='SUCCEEDED',stage='COMPLETED',result_json=?,updated_at='later' WHERE id=?",
-                encode(runResponse()), succeededTask);
+                encode(runResponse("UNQUALIFIED", List.of("DRAWDOWN_LIMIT_EXCEEDED"))), succeededTask);
         db.update("UPDATE quant_v2_task SET status='FAILED',stage='FAILED',error_code='NO_EXECUTED_TRADES',error_message='private stack trace',updated_at='later' WHERE id=?",
                 failedTask);
+        db.update("UPDATE quant_v2_task SET status='SUCCEEDED',stage='COMPLETED',result_json=?,updated_at='later' WHERE id=?",
+                encode(runResponse("QUALIFIED", List.of())), qualifiedTask);
         var summary = new LinkedHashMap<String, Object>();
         summary.put("classification", "STABLE");
         summary.put("performanceProfile", "NEGATIVE");
@@ -156,6 +162,16 @@ class ExperimentProductServiceTest {
         assertThat(detail.provenance().sourceRuntime()).containsEntry("engineVersion", "source-engine");
         assertThat(detail.provenance().experimentRuntime()).containsEntry("engineVersion", "current");
         assertThat(detail.provenance().snapshot().metadata()).containsKey("assets");
+        var unqualifiedRun = json.valueToTree(detail.runs().get(0));
+        var qualifiedRun = json.valueToTree(detail.runs().get(2));
+        assertThat(unqualifiedRun.at("/qualification/scope").asText())
+                .isEqualTo("PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION");
+        assertThat(qualifiedRun.at("/qualification/status").asText()).isEqualTo("QUALIFIED");
+        assertThat(qualifiedRun.at("/qualification/scope").asText())
+                .isEqualTo("PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION");
+        assertThat(unqualifiedRun.at("/validation/validatorVersion").asText())
+                .isEqualTo("experiment-controls-v1");
+        assertThat(unqualifiedRun.at("/validation/attemptId").isMissingNode()).isTrue();
         assertThat(db.queryForObject("SELECT revision FROM quant_v2_experiment WHERE id=?", Integer.class, created.id()))
                 .isEqualTo(revisionBefore);
         verifyNoInteractions(client);
@@ -165,6 +181,28 @@ class ExperimentProductServiceTest {
                 "requestKey", "requestHash", "invariantHash", "baseRequest", "sourceContext", "valueHash");
         assertThatThrownBy(() -> products.detail(8L, created.id()))
                 .isInstanceOf(ExperimentRepository.ExperimentNotFoundException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ARCHIVED", "DELETED"})
+    void detailUsesOnlyFrozenStrategyNameAfterCurrentStrategyChanges(String currentStatus) {
+        var created = products.create(7L,
+                new ExperimentProductDtos.CreateRequest(sourceId, "slowWindow", "冻结名称实验"), "frozen-name-key");
+        db.update("UPDATE quant_v2_object SET name='趋势策略 B',status=? WHERE id='strategy'", currentStatus);
+
+        assertThat(products.detail(7L, created.id()).strategy().name()).isEqualTo("趋势策略 A");
+    }
+
+    @Test
+    void detailDoesNotFallbackToCurrentNameWhenFrozenNameIsMissingOrPayloadIsDamaged() {
+        db.update("UPDATE quant_v2_version SET payload='{}' WHERE id='strategy-v1'");
+        var missing = products.create(7L,
+                new ExperimentProductDtos.CreateRequest(sourceId, "slowWindow", "缺失名称实验"), "missing-name-key");
+        db.update("UPDATE quant_v2_object SET name='当前策略名称' WHERE id='strategy'");
+        assertThat(products.detail(7L, missing.id()).strategy().name()).isNull();
+
+        db.update("UPDATE quant_v2_version SET payload='{broken' WHERE id='strategy-v1'");
+        assertThat(products.detail(7L, missing.id()).strategy().name()).isNull();
     }
 
     @Test
@@ -212,10 +250,12 @@ class ExperimentProductServiceTest {
         return Map.of("status", "SUCCEEDED", "result", result);
     }
 
-    private Map<String, Object> runResponse() {
+    private Map<String, Object> runResponse(String status, List<String> reasons) {
         return Map.of(
-                "qualification", Map.of("status", "UNQUALIFIED", "reasons", List.of("DRAWDOWN_LIMIT_EXCEEDED")),
-                "experimentValidation", Map.of("valid", true),
+                "qualification", Map.of("status", status, "reasons", reasons,
+                        "scope", "PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION"),
+                "experimentValidation", Map.of("valid", true, "validatorVersion", "experiment-controls-v1",
+                        "attemptId", "internal-validation-attempt"),
                 "result", Map.of("metrics", Map.of(
                         "netReturn", -.1, "maxDrawdown", .12, "volatility", .2,
                         "turnover", .3, "tradeCount", 7)));

@@ -150,11 +150,10 @@ public class ExperimentRepository {
                         "e.strategy_version_id,e.snapshot_id,e.variable_definition_json,e.baseline_values_json," +
                         "e.candidate_values_json,e.source_context_json,e.environment_json,e.candidate_rule_version," +
                         "e.stability_algorithm_version,e.summary_json,e.revision,e.created_at,e.updated_at,e.completed_at," +
-                        "v.version strategy_version_number,o.name strategy_name,t.name source_name,t.status source_status," +
+                        "v.version strategy_version_number,v.payload strategy_version_payload,t.name source_name,t.status source_status," +
                         "s.content_hash snapshot_content_hash,s.format_version snapshot_format_version,s.metadata_json snapshot_metadata_json " +
                         "FROM quant_v2_experiment e " +
-                        "LEFT JOIN quant_v2_version v ON v.id=e.strategy_version_id AND v.user_id=e.user_id " +
-                        "LEFT JOIN quant_v2_object o ON o.id=e.strategy_id AND o.user_id=e.user_id " +
+                        "LEFT JOIN quant_v2_version v ON v.id=e.strategy_version_id AND v.object_id=e.strategy_id AND v.user_id=e.user_id " +
                         "LEFT JOIN quant_v2_task t ON t.id=e.source_backtest_id AND t.user_id=e.user_id " +
                         "JOIN quant_v2_research_snapshot s ON s.id=e.snapshot_id AND s.user_id=e.user_id " +
                         "WHERE e.id=? AND e.user_id=?", experimentId, userId);
@@ -165,7 +164,7 @@ public class ExperimentRepository {
         result.put("candidateRuleVersion", nullable(rows.get(0), "candidate_rule_version"));
         result.put("stabilityAlgorithmVersion", nullable(rows.get(0), "stability_algorithm_version"));
         result.put("strategyVersion", rows.get(0).get("strategy_version_number"));
-        result.put("strategyName", nullable(rows.get(0), "strategy_name"));
+        result.put("strategyName", frozenStrategyName(rows.get(0).get("strategy_version_payload")));
         result.put("sourceName", nullable(rows.get(0), "source_name"));
         result.put("sourceStatus", nullable(rows.get(0), "source_status"));
         result.put("snapshotId", nullable(rows.get(0), "snapshot_id"));
@@ -173,6 +172,16 @@ public class ExperimentRepository {
         result.put("snapshotFormatVersion", nullable(rows.get(0), "snapshot_format_version"));
         result.put("snapshotMetadata", decodeMap(rows.get(0).get("snapshot_metadata_json")));
         return result;
+    }
+
+    private String frozenStrategyName(Object value) {
+        if (value == null) return null;
+        try {
+            Object name = decodeMap(value).get("name");
+            return name instanceof String text && !text.isBlank() ? text : null;
+        } catch (RuntimeException damagedPayload) {
+            return null;
+        }
     }
 
     public List<Map<String, Object>> productRuns(Long userId, String experimentId) {

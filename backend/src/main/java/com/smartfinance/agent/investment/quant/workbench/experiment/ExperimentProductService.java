@@ -1,7 +1,6 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClientException;
 
 import java.util.List;
@@ -34,8 +33,6 @@ public class ExperimentProductService {
             var created = commands.create(userId, request.sourceBacktestId(), request.parameterKey(),
                     request.name(), idempotencyKey);
             return listItem(repository.productExperiment(userId, created.id()));
-        } catch (HttpClientErrorException exception) {
-            throw invalid("INVALID_EXPERIMENT_REQUEST", "当前参数不能用于参数敏感性检查");
         } catch (RestClientException exception) {
             throw new ExperimentTransportException(exception);
         }
@@ -165,12 +162,14 @@ public class ExperimentProductService {
                 values.isEmpty() ? null : values.values().iterator().next(), Boolean.TRUE.equals(row.get("baseline")),
                 text(row.get("status")), text(row.get("stage")), progress(row.get("status")),
                 text(row.get("attemptId")), qualification.isEmpty() ? null
-                : new QualificationResponse(text(qualification.get("status")), strings(qualification.get("reasons"))),
+                : new QualificationResponse(text(qualification.get("status")), strings(qualification.get("reasons")),
+                text(qualification.get("scope"))),
                 metrics.isEmpty() ? null : new MetricsResponse(number(metrics.get("netReturn")),
                 number(metrics.get("maxDrawdown")), number(metrics.get("volatility")),
                 number(metrics.get("turnover")), number(metrics.get("tradeCount"))),
                 validation.isEmpty() ? null : new ValidationResponse(booleanOrNull(validation.get("valid")),
-                text(validation.get("code")), list(validation.get("mismatches"))),
+                text(validation.get("code")), list(validation.get("mismatches")),
+                text(validation.get("validatorVersion"))),
                 errorCode == null ? null : new RunErrorResponse(errorCode, "该次运行未成功完成"),
                 text(row.get("updatedAt")));
     }

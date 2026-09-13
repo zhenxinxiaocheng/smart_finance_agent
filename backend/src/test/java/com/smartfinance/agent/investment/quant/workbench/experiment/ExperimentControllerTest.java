@@ -71,6 +71,22 @@ class ExperimentControllerTest {
     }
 
     @Test
+    void candidateFailurePreservesReasonCodeAndNeverReturnsPythonMessage() throws Exception {
+        when(service.create(anyLong(), any(), anyString())).thenThrow(
+                new ExperimentInvariant.ExperimentException(
+                        "INVALID_EXPERIMENT_REQUEST", "PARAMETER_NOT_APPLICABLE",
+                        "当前策略不支持对该参数进行敏感性检查"));
+        mvc.perform(post("/api/quant/v2/experiments")
+                        .requestAttr("userId", 7L).header("Idempotency-Key", "key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sourceBacktestId\":\"source\",\"parameterKey\":\"slowWindow\",\"name\":\"test\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.errorCode").value("INVALID_EXPERIMENT_REQUEST"))
+                .andExpect(jsonPath("$.data.reasonCode").value("PARAMETER_NOT_APPLICABLE"))
+                .andExpect(jsonPath("$.message").value("当前策略不支持对该参数进行敏感性检查"));
+    }
+
+    @Test
     void missingIdempotencyHeaderUsesExperimentErrorContract() throws Exception {
         when(service.create(anyLong(), any(), org.mockito.ArgumentMatchers.isNull())).thenThrow(
                 new ExperimentInvariant.ExperimentException(
