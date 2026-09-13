@@ -422,13 +422,32 @@ def simulation_context(payload, assets, model=None):
     return paper, new_paper, action, start, end
 
 
+def research_assumptions(c):
+    assumptions = ["Fixed snapshot universe; historical constituent membership and survivorship bias are not certified.",
+                   "Signal at observed close, execution on a later session; no intraday execution.",
+                   f"Trade consideration and fees rounded to CNY cents using HALF_UP; fund share precision {c['fundShareDecimals']} decimal places."]
+    if c["assetClass"] == "FUND":
+        assumptions.extend([f"Fund fees are configurable assumptions: subscription {c['feeRate']}, redemption {c['sellFeeRate']}.",
+                            f"NAV publication delay {c['publicationLagDays']} calendar days; subscription share availability and redemption cash settlement {c['settlementDays']} calendar days after confirmation.",
+                            "Fund dividends/reinvestment are unsupported; discontinuities block certification."])
+    else:
+        assumptions.append("100-share buy lots; configured proportional fees/slippage; price limits enforced only when provider supplies limits.")
+    return assumptions
+
+
+def backtest_benchmark_contract():
+    return {"status": "READY", "type": "UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE",
+            "name": "资产池等权基准（匹配策略目标仓位）"}
+
+
 def validate_config(payload):
     c, assets = prepare(payload)
     if payload.get("kind", "BACKTEST") != "BACKTEST":
         fail("INVALID_TASK_KIND", "Config compatibility requires a backtest context")
     model = load_model(payload.get("modelRef"), c) if c["strategyType"].startswith("ML_") else None
     simulation_context(payload, assets, model)
-    return {"compatible": True, "runtime": runtime_info(), "effectiveConfig": c}
+    return {"compatible": True, "runtime": runtime_info(), "effectiveConfig": c,
+            "assumptions": research_assumptions(c), "benchmarkContract": backtest_benchmark_contract()}
 
 
 def simulate(payload, c, assets, model=None, benchmark_targets=None):
@@ -638,15 +657,7 @@ def execute(payload):
                   "universeId": payload.get("universeId"), "universeVersion": payload.get("universeVersionId", payload.get("universeVersion")),
                   "strategyVersionId": payload.get("strategyVersionId"), "factorSetVersionId": payload.get("factorSetVersionId", payload.get("factorVersionId"))}
     provenance.update(parameterCatalogVersion=runtime["parameterCatalogVersion"], modelRef=payload.get("modelRef"))
-    assumptions = ["Fixed snapshot universe; historical constituent membership and survivorship bias are not certified.",
-                   "Signal at observed close, execution on a later session; no intraday execution.",
-                   f"Trade consideration and fees rounded to CNY cents using HALF_UP; fund share precision {c['fundShareDecimals']} decimal places."]
-    if c["assetClass"] == "FUND":
-        assumptions.extend([f"Fund fees are configurable assumptions: subscription {c['feeRate']}, redemption {c['sellFeeRate']}.",
-                            f"NAV publication delay {c['publicationLagDays']} calendar days; subscription share availability and redemption cash settlement {c['settlementDays']} calendar days after confirmation.",
-                            "Fund dividends/reinvestment are unsupported; discontinuities block certification."])
-    else:
-        assumptions.append("100-share buy lots; configured proportional fees/slippage; price limits enforced only when provider supplies limits.")
+    assumptions = research_assumptions(c)
     response = {"status": "SUCCEEDED", "stage": "COMPLETED", "progress": 100}
     if kind in ("TRAINING", "FACTOR_RESEARCH"):
         rows = rows_for_research(assets, c)
@@ -686,8 +697,7 @@ def execute(payload):
         if kind == "BACKTEST":
             reference = {r["date"]: {aid: sum(r["weights"].values()) / len(assets) for aid in assets} for r in result["targetHistory"]}
             baseline, _ = simulate(payload, c, assets, model, reference)
-            result["benchmark"] = {"status": "READY", "type": "UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE",
-                                   "name": "资产池等权基准（匹配策略目标仓位）", "metrics": baseline["metrics"],
+            result["benchmark"] = {**backtest_benchmark_contract(), "metrics": baseline["metrics"],
                                    "equityCurve": baseline["equityCurve"],
                                    "excessReturn": result["metrics"]["netReturn"] - baseline["metrics"]["netReturn"]}
         else:

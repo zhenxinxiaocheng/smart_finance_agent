@@ -27,7 +27,7 @@ class ExperimentFlowTest {
         repository=new ExperimentRepository(db,json);snapshots=new ResearchSnapshotStore(db,json,1000000,1000000);var tasks=new ExperimentTaskStore(db,json);
         attempts=new ExperimentAttemptService(db,repository,tasks,manager);client=mock(WorkbenchAnalysisClient.class);
         when(client.runtimeInfo()).thenAnswer(a->environment);when(client.leaseMillis()).thenReturn(60000L);
-        when(client.validateConfig(anyMap())).thenAnswer(a->Map.of("compatible",true,"runtime",environment,"effectiveConfig",map(a.getArgument(0)).get("config")));
+        when(client.validateConfig(anyMap())).thenAnswer(a->Map.of("compatible",true,"runtime",environment,"effectiveConfig",map(a.getArgument(0)).get("config"),"assumptions",List.of("fixed assumptions"),"benchmarkContract",Map.of("status","READY","type","UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE")));
         when(client.candidates(anyMap())).thenReturn(Map.of("parameterKey","slowWindow","baseline",60,"delta",6,"values",List.of(48,54,60,66,72),"ruleVersion","rule"));
         experiments=new ExperimentService(db,repository,snapshots,new ExperimentCandidateService(client),client,attempts,manager);
         resolver=new ExperimentExecutionResolver(repository,snapshots,db);validator=new ExperimentResultValidator();summaries=new ExperimentSummaryService(db,repository,validator,manager);

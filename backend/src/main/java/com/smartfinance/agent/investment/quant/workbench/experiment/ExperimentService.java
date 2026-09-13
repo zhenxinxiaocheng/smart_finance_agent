@@ -59,7 +59,13 @@ public class ExperimentService {
         compatibilityRequest.put("startDate",provenance.get("startDate"));compatibilityRequest.put("endDate",provenance.get("endDate"));
         compatibilityRequest.remove("state");compatibilityRequest.remove("action");compatibilityRequest.remove("expectedRuntime");
         var compatibility=client.validateConfig(compatibilityRequest);
-        require(Boolean.TRUE.equals(compatibility.get("compatible")) && same(config,compatibility.get("effectiveConfig")),"CURRENT_RUNTIME_CONFIG_INCOMPATIBLE");
+        if(!Boolean.TRUE.equals(compatibility.get("compatible"))) {
+            Object rawReason=map(compatibility.get("detail")).get("reasonCode");
+            throw incompatible(rawReason instanceof String reason ? reason : null);
+        }
+        if(!same(config,compatibility.get("effectiveConfig")))throw incompatible("CURRENT_RUNTIME_CONFIG_CHANGED");
+        if(!same(result.get("assumptions"),compatibility.get("assumptions")))throw incompatible("CURRENT_RUNTIME_ASSUMPTIONS_CHANGED");
+        if(!same(benchmark(result.get("benchmark")),compatibility.get("benchmarkContract")))throw incompatible("CURRENT_RUNTIME_BENCHMARK_CONTRACT_CHANGED");
         require(same(environment,compatibility.get("runtime")),"EXPERIMENT_ENVIRONMENT_CHANGED");
         int effectiveCount=(int)assets.stream().filter(a->a.get("id")!=null && a.get("bars") instanceof List<?> bars && !bars.isEmpty()).map(a->a.get("id")).distinct().count();
         var generated=candidates.generate(config,key,effectiveCount,environment);
@@ -88,6 +94,10 @@ public class ExperimentService {
         } catch(DuplicateKeyException collision) {
             var winner=repository.byRequest(user,requestKey); if(winner!=null)return idempotent(winner,requestHash);throw collision;
         }
+    }
+    private static ExperimentException incompatible(String reasonCode) {
+        return new ExperimentException("CURRENT_RUNTIME_CONFIG_INCOMPATIBLE",reasonCode,
+                "来源回测与当前运行环境的研究合同不兼容，请重新执行正式回测。");
     }
     private ExperimentModels.ExperimentView idempotent(ExperimentModels.ExperimentView value,String hash) { require(hash.equals(value.requestHash()),"EXPERIMENT_REQUEST_CONFLICT");return value; }
     private Map<String,Object> task(Long user,String id) {

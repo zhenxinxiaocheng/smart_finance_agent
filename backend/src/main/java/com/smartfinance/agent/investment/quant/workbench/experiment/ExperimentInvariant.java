@@ -38,7 +38,14 @@ public final class ExperimentInvariant {
     public static void require(boolean condition, String code) { if (!condition) throw new ExperimentException(code); }
     public static final class ExperimentException extends RuntimeException {
         private final String code;
-        public ExperimentException(String code) { super(code); this.code=code; }
+        private final String reasonCode;
+        private final String safeMessage;
+        public ExperimentException(String code) { this(code,null,null); }
+        public ExperimentException(String code,String reasonCode,String safeMessage) {
+            super(code); this.code=code; this.reasonCode=reasonCode; this.safeMessage=safeMessage;
+        }
+        public String reasonCode() { return reasonCode; }
+        public String safeMessage() { return safeMessage; }
         public String code() { return code; }
     }
 }

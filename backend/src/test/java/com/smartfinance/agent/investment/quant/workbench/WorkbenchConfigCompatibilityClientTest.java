@@ -24,6 +24,25 @@ class WorkbenchConfigCompatibilityClientTest {
         });server.start();
         client=new WorkbenchAnalysisClient(RestClient.builder(),"http://127.0.0.1:"+server.getAddress().getPort(),"test-token",Duration.ofSeconds(5));
     }
+    @Test void connectionRefusedRemainsTransportError() {
+        server.stop(0);
+        assertThatThrownBy(()->client.validateConfig(Map.of())).isInstanceOf(org.springframework.web.client.ResourceAccessException.class);
+    }
+    @Test void readTimeoutRemainsTransportError() {
+        server.removeContext("/");
+        server.createContext("/",exchange->{
+            exchange.getResponseHeaders().set("Content-Type","application/json");
+            exchange.sendResponseHeaders(200,2);
+            exchange.getResponseBody().flush();
+            try {Thread.sleep(300);} catch(InterruptedException e){Thread.currentThread().interrupt();}
+            finally {exchange.close();}
+        });
+        client=new WorkbenchAnalysisClient(RestClient.builder(),"http://127.0.0.1:"+server.getAddress().getPort(),"token",Duration.ofMillis(30));
+        assertThatThrownBy(()->client.validateConfig(Map.of()))
+                .isInstanceOf(org.springframework.web.client.RestClientException.class)
+                .hasRootCauseInstanceOf(java.net.SocketTimeoutException.class)
+                .hasMessageNotContaining("CURRENT_RUNTIME_CONFIG_INCOMPATIBLE");
+    }
     @AfterEach void close(){server.stop(0);}
     @Test void postsFrozenConfigUnderInternalAuth() {
         body="{\"compatible\":true,\"effectiveConfig\":{\"seed\":42.0},\"runtime\":{\"codeHash\":\"current\"}}";
