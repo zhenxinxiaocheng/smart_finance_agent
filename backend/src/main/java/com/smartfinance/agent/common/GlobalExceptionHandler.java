@@ -10,10 +10,52 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.http.ResponseEntity;
+import com.smartfinance.agent.investment.quant.workbench.experiment.ExperimentInvariant.ExperimentException;
+import com.smartfinance.agent.investment.quant.workbench.experiment.ExperimentRepository.ExperimentNotFoundException;
+import com.smartfinance.agent.investment.quant.workbench.experiment.ExperimentTransportException;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ExperimentException.class)
+    public ResponseEntity<Result<Map<String, String>>> handleExperiment(ExperimentException e) {
+        int status = switch (e.code()) {
+            case "EXPERIMENT_REQUEST_CONFLICT" -> 409;
+            case "SOURCE_BACKTEST_NOT_FOUND" -> 404;
+            default -> 400;
+        };
+        String safeMessage = e.safeMessage();
+        if (safeMessage == null || safeMessage.isBlank()) safeMessage = switch (e.code()) {
+            case "EXPERIMENT_REQUEST_CONFLICT" -> "Idempotency-Key 已用于其他参数敏感性请求";
+            case "SOURCE_BACKTEST_NOT_FOUND" -> "来源回测不存在或无权访问";
+            case "CURRENT_RUNTIME_CONFIG_INCOMPATIBLE" -> "来源回测与当前运行环境的研究合同不兼容，请重新执行正式回测。";
+            default -> "参数敏感性请求无法完成";
+        };
+        var data = new LinkedHashMap<String, String>();
+        data.put("errorCode", e.code());
+        if (e.reasonCode() != null && !e.reasonCode().isBlank()) data.put("reasonCode", e.reasonCode());
+        var body = Result.<Map<String, String>>error(status, safeMessage);
+        body.setData(data);
+        return ResponseEntity.status(status).body(body);
+    }
+
+    @ExceptionHandler(ExperimentNotFoundException.class)
+    public ResponseEntity<Result<Map<String, String>>> handleExperimentNotFound(ExperimentNotFoundException e) {
+        var body = Result.<Map<String, String>>error(404, "参数敏感性实验不存在或无权访问");
+        body.setData(Map.of("errorCode", "EXPERIMENT_NOT_FOUND"));
+        return ResponseEntity.status(404).body(body);
+    }
+
+    @ExceptionHandler(ExperimentTransportException.class)
+    public ResponseEntity<Result<Map<String, String>>> handleExperimentTransport(ExperimentTransportException e) {
+        var body = Result.<Map<String, String>>error(503, "分析服务暂时不可用，请稍后重试");
+        body.setData(Map.of("errorCode", "ANALYSIS_SERVICE_UNAVAILABLE"));
+        return ResponseEntity.status(503).body(body);
+    }
 
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<Result<Void>> handleResponseStatus(ResponseStatusException e) {
