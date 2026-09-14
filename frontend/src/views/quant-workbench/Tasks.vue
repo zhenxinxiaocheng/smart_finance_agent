@@ -13,18 +13,19 @@ import ResultReport from './ResultReport.vue'
 import BacktestResearch from './BacktestResearch.vue'
 import ParameterExperimentDialog from './ParameterExperimentDialog.vue'
 import { explainBacktest } from './researchExplanation.js'
+import { createEligibilityLoader } from './experimentExplanation.js'
 import { feedback } from '@/lib/feedback'
 const route=useRoute(),router=useRouter(), rows=ref([]),detail=ref(null),compare=ref([]),reports=ref([])
 const experimentOpen=ref(false),experimentEligibility=ref(null),parameterCatalog=ref(null),experimentEligibilityLoading=ref(false)
 const {busy,error,run,load:loadLatest}=useOperation()
 let lastDetailError=''
-let eligibilityBacktestId=''
+const getExperimentEligibility=createEligibilityLoader(id=>quant.experiments.eligibility(id))
 const types=[['backtests','回测'],['training-runs','训练'],['factor-runs','因子分析']]
 const type=computed({get:()=>types.some(([t])=>t===route.query.type)?route.query.type:'backtests',set:type=>router.push({query:{type}})})
 const status=computed({get:()=>route.query.status||'',set:status=>router.replace({query:{...route.query,status:status||undefined}})})
 const filtered=computed(()=>rows.value.filter(r=>!status.value||r.status===status.value))
 async function load(){rows.value=await quant.list(type.value);detail.value=route.query.id?await quant.get(type.value,route.query.id):null;if(detail.value?.errorMessage){const message=`${detail.value.errorCode||'任务失败'} · ${detail.value.errorMessage}`;if(message!==lastDetailError){lastDetailError=message;feedback.error(message,{duration:6000})}}else lastDetailError='';await loadExperimentEligibility()}
-async function loadExperimentEligibility(){const id=type.value==='backtests'&&detail.value?.status==='SUCCEEDED'?String(detail.value.id):'';if(!id){eligibilityBacktestId='';experimentEligibility.value=null;return}if(id===eligibilityBacktestId&&experimentEligibility.value)return;eligibilityBacktestId=id;experimentEligibilityLoading.value=true;try{experimentEligibility.value=await quant.experiments.eligibility(id)}catch{experimentEligibility.value={eligible:false,message:'暂时无法检查参数敏感性'}}finally{experimentEligibilityLoading.value=false}}
+async function loadExperimentEligibility(){const id=type.value==='backtests'&&detail.value?.status==='SUCCEEDED'?String(detail.value.id):'';if(!id){experimentEligibility.value=null;return}experimentEligibilityLoading.value=true;try{experimentEligibility.value=await getExperimentEligibility(id)}catch{experimentEligibility.value={eligible:false,message:'暂时无法检查参数敏感性'}}finally{experimentEligibilityLoading.value=false}}
 async function openExperiment(){if(!parameterCatalog.value)parameterCatalog.value=await quant.list('parameter-catalog');experimentOpen.value=true}
 function experimentCreated(created){router.push(`/quant/experiments/${created.id}`)}
 function open(id){router.push({query:{...route.query,id}})}

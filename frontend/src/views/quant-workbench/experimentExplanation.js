@@ -1,4 +1,5 @@
 import { parameterDisplayValue, parameterTitle } from './parameterPresentation.js'
+import { qualificationNotice } from './researchExplanation.js'
 
 const classificationLabels = { STABLE: '参数稳定性较高', FRAGILE: '参数较敏感', MIXED: '表现混合', INSUFFICIENT: '证据不足' }
 const performanceLabels = { POSITIVE: '整体正收益', NEGATIVE: '整体负收益', MIXED: '正负表现混合', FLAT: '表现接近平坦' }
@@ -31,6 +32,18 @@ export function applicableSensitivityParameters(catalog, strategyType) {
 
 export function frozenStrategyType(backtest) {
   return backtest?.result?.provenance?.config?.strategyType || null
+}
+
+export function createEligibilityLoader(fetchEligibility) {
+  let cachedId = ''
+  let cachedValue = null
+  return async function load(sourceBacktestId) {
+    if (sourceBacktestId === cachedId && cachedValue) return cachedValue
+    const value = await fetchEligibility(sourceBacktestId)
+    cachedId = sourceBacktestId
+    cachedValue = value
+    return value
+  }
 }
 
 export function createExperimentRefresh(fetchDetail, currentId, accept) {
@@ -88,7 +101,7 @@ export function explainExperiment(detail = {}) {
     algorithmNotice,
     conclusionNotice: summary.classification === 'STABLE' && summary.performanceProfile === 'NEGATIVE'
       ? '参数行为较稳定，但本次纳入计算的候选结果整体为负收益。' : '',
-    qualificationNotice: '该验证仅表示满足当前模拟运行准入检查，不代表未来盈利能力，也不要求回测必须盈利或跑赢基准。',
+    qualificationNotice,
     evidenceAxisText: value => evidenceAxisLabels[value] || value || '未记录',
   }
 }

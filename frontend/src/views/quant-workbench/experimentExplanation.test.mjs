@@ -6,7 +6,9 @@ import {
   explainExperimentError,
   frozenStrategyType,
   createExperimentRefresh,
+  createEligibilityLoader,
 } from './experimentExplanation.js'
+import { qualificationNotice } from './researchExplanation.js'
 
 const baseDetail = overrides => ({
   id: 'exp-1', name: '最大权重参数敏感性', status: 'SUCCEEDED',
@@ -92,8 +94,21 @@ test('structured experiment errors map reasonCode before safe message', () => {
 test('qualification scope keeps paper eligibility separate from profit claims', () => {
   const report = explainExperiment(baseDetail({ runs: [{ id: 'run-1', ordinal: 2, baseline: true, status: 'SUCCEEDED',
     qualification: { status: 'QUALIFIED', scope: 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION' } }] }))
-  assert.match(report.qualificationNotice, /不代表未来盈利能力/)
-  assert.match(report.qualificationNotice, /不要求回测必须盈利或跑赢基准/)
+  assert.equal(report.qualificationNotice, qualificationNotice)
+  assert.match(report.qualificationNotice, /^通过验证代表满足/)
+})
+
+test('eligibility loader caches only successful responses and retries transient failures', async () => {
+  let calls = 0
+  const load = createEligibilityLoader(async id => {
+    calls += 1
+    if (calls === 1) throw new Error('temporary')
+    return { eligible: true, sourceBacktestId: id }
+  })
+  await assert.rejects(load('backtest-1'), /temporary/)
+  assert.deepEqual(await load('backtest-1'), { eligible: true, sourceBacktestId: 'backtest-1' })
+  assert.deepEqual(await load('backtest-1'), { eligible: true, sourceBacktestId: 'backtest-1' })
+  assert.equal(calls, 2)
 })
 
 test('silent refresh prevents overlap and discards a response for a stale route id', async () => {
