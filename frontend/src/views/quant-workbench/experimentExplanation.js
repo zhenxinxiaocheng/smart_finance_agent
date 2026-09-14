@@ -46,24 +46,6 @@ export function createEligibilityLoader(fetchEligibility) {
   }
 }
 
-export function createExperimentRefresh(fetchDetail, currentId, accept) {
-  let inFlight = false
-  return async function refresh() {
-    if (inFlight) return false
-    const requestedId = currentId()
-    if (!requestedId) return false
-    inFlight = true
-    try {
-      const value = await fetchDetail(requestedId)
-      if (requestedId !== currentId()) return false
-      accept(value)
-      return true
-    } finally {
-      inFlight = false
-    }
-  }
-}
-
 export function explainExperimentError(error) {
   const body = error?.response?.data || {}
   const data = body?.data && typeof body.data === 'object' ? body.data : {}
@@ -72,6 +54,15 @@ export function explainExperimentError(error) {
     errorCode: data.errorCode || null,
     reasonCode,
     message: errorMessages[reasonCode] || errorMessages[data.errorCode] || body.message || error?.message || '操作失败，请重试',
+  }
+}
+
+export function explainRunValidation(run = {}) {
+  const scope = run.qualification?.scope
+  return {
+    scopeText: scope === 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION'
+      ? '模拟运行准入检查' : known(scope) ? '暂无法解释' : '未记录',
+    validationText: run.validation?.valid === true ? '通过' : run.validation?.valid === false ? '未通过' : '未记录',
   }
 }
 
@@ -96,7 +87,8 @@ export function explainExperiment(detail = {}) {
     classificationText: classificationLabels[summary.classification] || '暂无法判断',
     performanceProfileText: performanceLabels[summary.performanceProfile] || '未记录',
     evidenceQualityText: evidenceLabels[evidence.quality] || '未记录',
-    directionText: directionLabels[summary.direction] || (known(summary.direction) ? String(summary.direction) : '未记录'),
+    directionText: isV1 || isV2
+      ? directionLabels[summary.direction] || (known(summary.direction) ? String(summary.direction) : '未记录') : '无法解释',
     directionConsistencyText,
     algorithmNotice,
     conclusionNotice: summary.classification === 'STABLE' && summary.performanceProfile === 'NEGATIVE'

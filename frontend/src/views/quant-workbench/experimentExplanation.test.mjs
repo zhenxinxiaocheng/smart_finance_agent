@@ -5,8 +5,8 @@ import {
   explainExperiment,
   explainExperimentError,
   frozenStrategyType,
-  createExperimentRefresh,
   createEligibilityLoader,
+  explainRunValidation,
 } from './experimentExplanation.js'
 import { qualificationNotice } from './researchExplanation.js'
 
@@ -52,6 +52,7 @@ test('unknown stability versions are not reinterpreted as v2', () => {
     provenance: { stabilityAlgorithmVersion: 'parameter-stability-v9' },
   }))
   assert.equal(report.directionConsistencyText, '无法解释')
+  assert.equal(report.directionText, '无法解释')
   assert.match(report.algorithmNotice, /旧版或未知判断算法/)
 })
 
@@ -111,33 +112,20 @@ test('eligibility loader caches only successful responses and retries transient 
   assert.equal(calls, 2)
 })
 
-test('silent refresh prevents overlap and discards a response for a stale route id', async () => {
-  let routeId = 'exp-1'
-  let resolveFetch
-  const accepted = []
-  const refresh = createExperimentRefresh(
-    id => new Promise(resolve => { resolveFetch = () => resolve({ id }) }),
-    () => routeId,
-    value => accepted.push(value),
-  )
-  const first = refresh()
-  assert.equal(await refresh(), false)
-  routeId = 'exp-2'
-  resolveFetch()
-  assert.equal(await first, false)
-  assert.deepEqual(accepted, [])
-})
-
-test('silent refresh accepts success and preserves it when a later request fails', async () => {
-  let fail = false
-  const accepted = []
-  const refresh = createExperimentRefresh(
-    async id => { if (fail) throw new Error('network'); return { id, status: 'RUNNING' } },
-    () => 'exp-1',
-    value => accepted.push(value),
-  )
-  assert.equal(await refresh(), true)
-  fail = true
-  await assert.rejects(refresh, /network/)
-  assert.deepEqual(accepted, [{ id: 'exp-1', status: 'RUNNING' }])
+test('run validity and scope are displayed only from recorded fields', () => {
+  const scope = 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION'
+  assert.deepEqual(explainRunValidation({ qualification: { scope }, validation: { valid: false, code: 'PASS' } }), {
+    scopeText: '模拟运行准入检查', validationText: '未通过',
+  })
+  assert.equal(explainRunValidation({ qualification: { scope: 'NEW_SCOPE' } }).scopeText, '暂无法解释')
+  assert.equal(explainRunValidation({ validation: { code: 'PASS' } }).validationText, '未记录')
+  assert.equal(explainRunValidation({ validation: { valid: true } }).validationText, '通过')
+  const detail = baseDetail({ runs: [{ qualification: { status: 'UNQUALIFIED' } }],
+    provenance: { sourceRuntime: { codeHash: 'old' }, experimentRuntime: { codeHash: 'new' }, stabilityAlgorithmVersion: 'parameter-stability-v1' }, summary: { directionConsistency: 'INCREASING' } })
+  const report = explainExperiment(detail)
+  assert.equal(report.evidenceQualityText, '高')
+  assert.equal(report.provenance.sourceRuntime.codeHash, 'old')
+  assert.equal(report.provenance.experimentRuntime.codeHash, 'new')
+  assert.equal(report.directionText, '未记录')
+  assert.equal(report.directionConsistencyText, 'INCREASING')
 })

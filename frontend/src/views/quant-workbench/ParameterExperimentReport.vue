@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import QuantStatusBadge from './QuantStatusBadge.vue'
 import DataTable from './DataTable.vue'
-import { explainExperiment } from './experimentExplanation.js'
+import { explainExperiment, explainRunValidation } from './experimentExplanation.js'
 import { parameterDisplayValue } from './parameterPresentation.js'
 import { label, metricValue } from './shared.js'
 
@@ -21,6 +21,16 @@ const evidenceAxes = computed(() => [
   ['来源完整性', evidence.value?.sourceCompleteness], ['运行覆盖', evidence.value?.runCoverage],
 ])
 const metric = (key, value) => value == null ? '—' : metricValue(key, value)
+const runtimeFields = { engineVersion: '引擎版本', codeHash: '代码哈希', parameterCatalogVersion: '参数目录版本', candidateRuleVersion: '候选规则版本' }
+const runtimes = computed(() => [
+  { title: '来源回测运行环境', value: provenance.value.sourceRuntime },
+  { title: '实验统一运行环境', value: provenance.value.experimentRuntime },
+])
+const snapshotAssets = computed(() => (provenance.value.snapshot?.metadata?.assets || []).map(asset => ({
+  name: asset.name, code: asset.code, assetClass: asset.assetClass,
+  数据起止: `${asset.startDate || '未记录'} ～ ${asset.endDate || '未记录'}`,
+  observations: asset.observations, 数据来源: asset.sources, 价格复权: asset.adjustTypes,
+})))
 </script>
 
 <template>
@@ -54,17 +64,54 @@ const metric = (key, value) => value == null ? '—' : metricValue(key, value)
     <p class="muted mt-3">{{ report.algorithmNotice }}</p>
     <ul v-if="summary.reasons?.length" class="quant-research-list"><li v-for="reason in summary.reasons" :key="reason">{{ label(reason) }}<code v-if="label(reason)!==reason" class="block muted">{{ reason }}</code></li></ul>
     <details v-if="summary.localSensitivity" class="quant-secondary"><summary>局部敏感性参数</summary><DataTable :rows="summary.localSensitivity" /></details>
+    <details class="quant-secondary"><summary>原始方向信息</summary><DataTable :rows="{direction:summary.direction,directionConsistency:summary.directionConsistency}" /></details>
   </details>
 
   <details class="panel quant-research-section"><summary>运行验证详情</summary>
     <p class="muted">{{ report.qualificationNotice }}</p>
     <dl v-if="summary?.qualificationSummary" class="quant-detail-meta mt-3"><div><dt class="muted">验证通过</dt><dd>{{ summary.qualificationSummary.qualified ?? '未记录' }}</dd></div><div><dt class="muted">验证未通过</dt><dd>{{ summary.qualificationSummary.unqualified ?? '未记录' }}</dd></div><div><dt class="muted">验证缺失</dt><dd>{{ summary.qualificationSummary.missing ?? '未记录' }}</dd></div></dl>
-    <details v-for="run in runs.filter(item=>item.qualification||item.validation||item.error)" :key="run.id" class="quant-secondary"><summary>{{ parameterDisplayValue(detail.parameter?.key,run.value) }} · {{ run.baseline?'当前值':'候选值' }}</summary><dl class="quant-detail-meta"><div><dt class="muted">成交数</dt><dd>{{ run.metrics?.tradeCount ?? '未记录' }}</dd></div><div><dt class="muted">验证范围</dt><dd>{{ run.qualification?.scope || '未记录' }}</dd></div><div><dt class="muted">控制变量校验</dt><dd>{{ run.validation?.code || (run.validation?.valid===true?'通过':'未记录') }}</dd></div><div><dt class="muted">运行错误</dt><dd>{{ run.error?.code || '无记录' }}</dd></div></dl><ul v-if="run.qualification?.reasons?.length" class="quant-research-list"><li v-for="reason in run.qualification.reasons" :key="reason">{{ label(reason) }}<code v-if="label(reason)!==reason" class="block muted">{{ reason }}</code></li></ul></details>
+    <details v-for="run in runs.filter(item=>item.qualification||item.validation||item.error)" :key="run.id" class="quant-secondary">
+      <summary>{{ parameterDisplayValue(detail.parameter?.key,run.value) }} · {{ run.baseline?'当前值':'候选值' }}</summary>
+      <dl class="quant-detail-meta">
+        <div><dt class="muted">成交数</dt><dd>{{ run.metrics?.tradeCount ?? '未记录' }}</dd></div>
+        <div><dt class="muted">验证范围</dt><dd>{{ explainRunValidation(run).scopeText }}</dd></div>
+        <div><dt class="muted">控制变量校验</dt><dd>{{ explainRunValidation(run).validationText }}</dd></div>
+        <div><dt class="muted">校验器版本</dt><dd>{{ run.validation?.validatorVersion || '未记录' }}</dd></div>
+        <div><dt class="muted">运行错误</dt><dd>{{ run.error?.code || '无记录' }}</dd></div>
+      </dl>
+      <ul v-if="run.qualification?.reasons?.length" class="quant-research-list"><li v-for="reason in run.qualification.reasons" :key="reason">{{ label(reason) }}<code v-if="label(reason)!==reason" class="block muted">{{ reason }}</code></li></ul>
+      <details v-if="run.validation?.mismatches?.length" class="quant-secondary"><summary>控制变量差异字段</summary><DataTable :rows="run.validation.mismatches" /></details>
+      <details class="quant-secondary"><summary>原始验证信息</summary><DataTable :rows="{scope:run.qualification?.scope,code:run.validation?.code}" /></details>
+    </details>
   </details>
 
   <details class="panel quant-research-section"><summary>数据与运行环境</summary>
     <dl v-if="evidence" class="quant-detail-meta"><div><dt class="muted">证据质量</dt><dd>{{ report.evidenceQualityText }}</dd></div><div><dt class="muted">有效运行</dt><dd>{{ evidence.validRuns ?? '未记录' }} / {{ evidence.totalRuns ?? '未记录' }}</dd></div><div v-for="[title,value] in evidenceAxes" :key="title"><dt class="muted">{{ title }}</dt><dd>{{ report.evidenceAxisText(value) }}</dd></div></dl><details v-if="evidence?.reasonClassifications&&Object.keys(evidence.reasonClassifications).length" class="quant-secondary"><summary>证据原因分类</summary><DataTable :rows="evidence.reasonClassifications" /></details>
-    <div v-if="provenance.snapshot?.metadata" class="quant-secondary"><h3>研究数据快照</h3><p class="muted">{{ provenance.snapshot.metadata.assetCount ?? '未记录' }} 个资产 · {{ provenance.snapshot.metadata.startDate || '未记录' }} ～ {{ provenance.snapshot.metadata.endDate || '未记录' }}</p><details><summary>查看完整快照元数据</summary><DataTable :rows="provenance.snapshot.metadata" /></details></div>
-    <details class="quant-secondary"><summary>技术信息</summary><dl class="quant-detail-meta"><div><dt class="muted">候选规则版本</dt><dd>{{ provenance.candidateRuleVersion || '未记录' }}</dd></div><div><dt class="muted">稳定性算法版本</dt><dd>{{ provenance.stabilityAlgorithmVersion || '未记录' }}</dd></div><div><dt class="muted">证据版本</dt><dd>{{ provenance.evidenceSchemaVersion || '未记录' }}</dd></div><div><dt class="muted">快照校验哈希</dt><dd>{{ provenance.snapshot?.contentHash || '未记录' }}</dd></div></dl><details v-if="provenance.sourceRuntime||provenance.experimentRuntime"><summary>运行环境</summary><DataTable :rows="{sourceRuntime:provenance.sourceRuntime,experimentRuntime:provenance.experimentRuntime}" /></details><details v-if="provenance.assumptions?.length"><summary>研究假设</summary><DataTable :rows="provenance.assumptions" /></details><details v-if="provenance.benchmarkContract"><summary>基准合同</summary><DataTable :rows="provenance.benchmarkContract" /></details></details>
+    <dl class="quant-detail-meta mt-3">
+      <div><dt class="muted">来源回测</dt><dd>{{ detail.sourceBacktest?.name || '未记录' }} · {{ detail.sourceBacktest?.id || '未记录' }}</dd></div>
+      <div><dt class="muted">冻结策略</dt><dd>{{ detail.strategy?.name || '未记录' }} · {{ detail.strategy?.id || '未记录' }}</dd></div>
+      <div><dt class="muted">冻结策略版本</dt><dd>{{ detail.strategy?.version ?? '未记录' }} · {{ detail.strategy?.versionId || '未记录' }}</dd></div>
+    </dl>
+    <div class="quant-secondary"><h3>研究数据快照</h3>
+      <p class="muted">{{ provenance.snapshot?.metadata?.assetCount ?? '未记录' }} 个资产 · {{ provenance.snapshot?.metadata?.startDate || '未记录' }} ～ {{ provenance.snapshot?.metadata?.endDate || '未记录' }}</p>
+      <DataTable v-if="snapshotAssets.length" :rows="snapshotAssets" />
+      <details v-if="provenance.snapshot?.metadata"><summary>查看完整快照元数据</summary><DataTable :rows="provenance.snapshot.metadata" /></details>
+    </div>
+    <p class="muted mt-3">来源运行环境仅记录正式回测当时的历史环境；五个候选参数均在本次实验冻结的统一运行环境下重新执行。</p>
+    <div v-for="runtime in runtimes" :key="runtime.title" class="quant-secondary">
+      <h3>{{ runtime.title }}</h3>
+      <dl class="quant-detail-meta"><div v-for="(title,key) in runtimeFields" :key="key"><dt class="muted">{{ title }}</dt><dd>{{ runtime.value?.[key] ?? '未记录' }}</dd></div></dl>
+      <details v-if="runtime.value"><summary>原始运行环境</summary><DataTable :rows="runtime.value" /></details>
+    </div>
+    <details class="quant-secondary"><summary>技术信息</summary><dl class="quant-detail-meta">
+      <div><dt class="muted">候选规则版本</dt><dd>{{ provenance.candidateRuleVersion || '未记录' }}</dd></div>
+      <div><dt class="muted">稳定性算法版本</dt><dd>{{ provenance.stabilityAlgorithmVersion || '未记录' }}</dd></div>
+      <div><dt class="muted">证据版本</dt><dd>{{ provenance.evidenceSchemaVersion || '未记录' }}</dd></div>
+      <div><dt class="muted">快照 ID</dt><dd>{{ provenance.snapshot?.id || '未记录' }}</dd></div>
+      <div><dt class="muted">快照格式版本</dt><dd>{{ provenance.snapshot?.formatVersion || '未记录' }}</dd></div>
+      <div><dt class="muted">快照校验哈希</dt><dd>{{ provenance.snapshot?.contentHash || '未记录' }}</dd></div>
+    </dl></details>
+    <details class="quant-secondary"><summary>研究执行假设</summary><DataTable v-if="provenance.assumptions?.length" :rows="provenance.assumptions" /><p v-else class="muted">未记录</p></details>
+    <details class="quant-secondary"><summary>基准研究规则</summary><DataTable v-if="provenance.benchmarkContract" :rows="provenance.benchmarkContract" /><p v-else class="muted">未记录</p></details>
   </details>
 </template>

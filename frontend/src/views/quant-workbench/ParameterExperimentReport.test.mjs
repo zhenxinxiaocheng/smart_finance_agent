@@ -47,3 +47,25 @@ test('running report accepts a null summary without inventing progress or conclu
   assert.match(html, /运行中/)
   assert.doesNotMatch(html, /0%/)
 })
+
+test('professional provenance and validation preserve raw fields inside closed details', async () => {
+  const html = await render({ sourceBacktest: { id: 'source-123', name: '正式来源' }, strategy: { id: 'strategy-123', versionId: 'frozen-123', version: 4, name: '冻结名称' },
+    parameter: { key: 'slowWindow', baseline: 60 }, summary: { direction: 'INCREASING', directionConsistency: 0.5 }, evidence: { quality: 'HIGH' },
+    provenance: { stabilityAlgorithmVersion: 'future-algorithm', candidateRuleVersion: 'candidate-v1', evidenceSchemaVersion: 'evidence-v2',
+      sourceRuntime: { engineVersion: 'old-engine', codeHash: 'old-code', futureField: 'retained-source' },
+      experimentRuntime: { engineVersion: 'new-engine', codeHash: 'new-code' },
+      snapshot: { id: 'snapshot-123', contentHash: 'data-hash', formatVersion: 'snapshot-v1', metadata: { assetCount: 1, startDate: '2024-01-01', endDate: '2024-12-31', assets: [{ name: '资产甲', code: '000001', assetClass: 'STOCK', observations: 240, sources: ['provider-A'], adjustTypes: ['qfq'] }] } },
+      assumptions: ['original assumption'], benchmarkContract: { status: 'READY', type: 'UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE' } },
+    runs: [{ id: 'run', value: 60, qualification: { status: 'UNQUALIFIED', scope: 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION' }, validation: { valid: false, code: 'CONTROL_VARIABLE_VIOLATION', mismatches: ['config.feeRate'], validatorVersion: 'experiment-controls-v1' } }] })
+  for (const text of ['来源回测运行环境', '实验统一运行环境', '模拟运行准入检查', '未通过', '研究执行假设', '基准研究规则', '无法解释']) assert.ok(html.includes(text), text)
+  // SSR includes closed content: check that every technical value has a closed details ancestor.
+  for (const text of ['source-123', 'frozen-123', 'old-engine', 'new-engine', 'retained-source', 'snapshot-v1', 'data-hash', 'provider-A', 'qfq', 'experiment-controls-v1', 'config.feeRate', 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION', 'INCREASING']) {
+    const prefix = html.slice(0, html.indexOf(text))
+    assert.ok(html.includes(text), text)
+    const stack = []
+    for (const match of prefix.matchAll(/<details\b([^>]*)>|<\/details>/g)) { if (match[0].startsWith('</')) stack.pop(); else stack.push(match[1]) }
+    assert.ok(stack.some(attrs => !/\bopen\b/.test(attrs)), `${text} must be collapsed`)
+  }
+  assert.doesNotMatch(html, /局部上升/)
+  assert.match(html, /证据质量<\/dt><dd>高/)
+})
