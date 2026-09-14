@@ -43,6 +43,7 @@ const routes = [
         children: [
           { path: '', name: 'QuantStrategies', component: () => import('../views/quant-workbench/Strategies.vue') },
           { path: 'strategies/:id', name: 'QuantStrategyDetail', component: () => import('../views/quant-workbench/StrategyDetail.vue') },
+          { path: 'experiments/:id', name: 'QuantParameterExperiment', component: () => import('../views/quant-workbench/ParameterExperimentDetail.vue') },
           { path: 'universes', name: 'QuantUniverses', component: () => import('../views/quant-workbench/Universes.vue') },
           { path: 'factors', name: 'QuantFactors', component: () => import('../views/quant-workbench/Factors.vue') },
           { path: 'tasks', name: 'QuantTasks', component: () => import('../views/quant-workbench/Tasks.vue') },

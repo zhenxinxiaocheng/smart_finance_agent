@@ -10,7 +10,7 @@ const links = [['/quant', '策略'], ['/quant/universes', '资产池'], ['/quant
       <span class="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">模拟环境</span>
     </header>
     <nav class="mb-6 flex flex-wrap gap-1 border-b pb-2" aria-label="量化工作台导航">
-      <RouterLink v-for="[path, title] in links" :key="path" :to="path" class="rounded-md px-4 py-2 text-sm" :class="($route.path === path || (path === '/quant' && $route.path.startsWith('/quant/strategies/')) || (path !== '/quant' && $route.path.startsWith(path + '/'))) ? 'bg-muted text-foreground font-medium' : 'text-muted-foreground hover:bg-muted/60'">{{ title }}</RouterLink>
+      <RouterLink v-for="[path, title] in links" :key="path" :to="path" class="rounded-md px-4 py-2 text-sm" :class="($route.path === path || (path === '/quant' && ($route.path.startsWith('/quant/strategies/')||$route.path.startsWith('/quant/experiments/'))) || (path !== '/quant' && $route.path.startsWith(path + '/'))) ? 'bg-muted text-foreground font-medium' : 'text-muted-foreground hover:bg-muted/60'">{{ title }}</RouterLink>
     </nav>
     <RouterView />
   </div>

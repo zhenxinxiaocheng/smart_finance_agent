@@ -14,11 +14,12 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { feedback } from '@/lib/feedback'
 import { filterVersionBacktests } from './researchExplanation.js'
+import { parameterTitles, percentageParameterKeys } from './parameterPresentation.js'
 const historyOpen=ref(false)
 const parameterCatalog=ref(null)
 const defaults=computed(()=>Object.fromEntries((parameterCatalog.value?.parameters||[]).map(p=>[p.key,p.default])))
 const effectiveConfig=config=>({...defaults.value,...Object.fromEntries(Object.entries(config||{}).filter(([,v])=>v!==''&&v!=null))})
-const percentageKeys=['maxWeight','maxDrawdown','targetVol','feeRate','sellFeeRate']
+const percentageKeys=percentageParameterKeys
 const parameterValue=key=>{const value=form.value.config[key] ?? defaults.value[key];return value==null||value===''?'':percentageKeys.includes(key)?Number((value*100).toFixed(8)):value}
 function setParameter(key,value){form.value.config[key]=value===''?'':percentageKeys.includes(key)?Number(value)/100:Number(value)}
 const parameterTitle=(key,title)=>percentageKeys.includes(key)?title.replace('（0～1）','')+'（%）':title
@@ -44,7 +45,7 @@ const {busy,error,run,load:loadLatest}=useOperation()
 const isNew=computed(()=>route.params.id==='new'),tab=computed({get:()=>['config','training','backtests'].includes(route.query.tab)?route.query.tab:'config',set:tab=>router.replace({query:{...route.query,tab}})})
 const range=ref({startDate:'',endDate:'',modelTaskId:''}), evaluation=ref(null), evaluationError=ref(''), evaluationLoading=ref(false)
 const ml=computed(()=>form.value?.config?.strategyType?.startsWith('ML_'))
-const numeric=[['lookback','观察窗口（日）',2,1],['slowWindow','趋势慢均线（日）',2,1],['topN','最多选择标的数',1,1],['rebalanceDays','调仓间隔（日）',1,1],['predictionHorizon','预测周期（日）',1,1],['initialCash','回测初始资金',1,1000],['maxWeight','单标的权重上限（0～1）',0.001,0.01],['maxDrawdown','最大允许回撤（0～1）',0.001,0.01],['targetVol','单标的降仓波动阈值',0.001,0.01],['feeRate','买入费率',0,0.0001],['sellFeeRate','卖出费率',0,0.0001],['slippageBps','滑点（基点）',0,1],['publicationLagDays','净值公布延迟（日）',0,1],['settlementDays','结算延迟（日）',0,1],['seed','随机种子',0,1]]
+const numeric=[['lookback',parameterTitles.lookback,2,1],['slowWindow',parameterTitles.slowWindow,2,1],['topN',parameterTitles.topN,1,1],['rebalanceDays',parameterTitles.rebalanceDays,1,1],['predictionHorizon',parameterTitles.predictionHorizon,1,1],['initialCash',parameterTitles.initialCash,1,1000],['maxWeight',parameterTitles.maxWeight,0.001,0.01],['maxDrawdown',parameterTitles.maxDrawdown,0.001,0.01],['targetVol',parameterTitles.targetVol,0.001,0.01],['feeRate',parameterTitles.feeRate,0,0.0001],['sellFeeRate',parameterTitles.sellFeeRate,0,0.0001],['slippageBps',parameterTitles.slippageBps,0,1],['publicationLagDays',parameterTitles.publicationLagDays,0,1],['settlementDays',parameterTitles.settlementDays,0,1],['seed',parameterTitles.seed,0,1]]
 const selectedUniverse=computed(()=>universes.value.find(u=>String(u.id)===String(form.value?.universeId)))
 const compatibleSets=computed(()=>factorSets.value.filter(f=>f.status!=='ARCHIVED'&&f.assetClass===selectedUniverse.value?.assetClass))
 const relevantTasks=computed(()=>tasks.value.filter(t=>String(t.strategyId)===String(route.params.id)))
