@@ -20,7 +20,7 @@ const orders = computed(() => {
   return [...grouped.values()]
 })
 const selected = computed(() => orders.value.find(order => order.key === selectedKey.value))
-const columns = { id:'委托编号', assetId:'资产 ID', signalDate:'信号日期', side:'方向', quantity:'委托数量', status:'最新状态', filledQuantity:'已成交数量', date:'状态日期' }
+const columns = { name:'资产', signalDate:'信号日期', side:'方向', quantity:'委托数量', status:'最新状态', filledQuantity:'已成交数量', date:'状态日期' }
 const display = (key, value) => ['status','side'].includes(key) ? label(value) : typeof value === 'number' ? value.toLocaleString(undefined,{maximumFractionDigits:6}) : format(value)
 </script>
 
@@ -38,7 +38,7 @@ const display = (key, value) => ['status','side'].includes(key) ? label(value) :
   <Dialog :open="!!selected" @update:open="open=>{if(!open)selectedKey=null}">
     <DialogContent class="qw max-h-[88vh] overflow-y-auto sm:max-w-[960px]" :aria-describedby="undefined">
       <DialogHeader><DialogTitle>委托详情</DialogTitle></DialogHeader>
-      <template v-if="selected"><p>委托编号：{{ selected.latest.id ?? selected.latest.orderId ?? '—' }}</p><h3>状态变化</h3><DataTable :rows="selected.history" /></template>
+      <template v-if="selected"><p>{{ selected.latest.name || '资产名称未记录' }}</p><h3>状态变化</h3><DataTable :rows="selected.history" /></template>
     </DialogContent>
   </Dialog>
 </template>

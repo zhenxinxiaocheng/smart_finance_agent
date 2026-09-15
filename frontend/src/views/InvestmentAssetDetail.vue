@@ -15,14 +15,14 @@
         <div class="mx-auto mb-4 grid size-12 place-items-center rounded-full bg-destructive/10 text-destructive"><TriangleAlert /></div>
         <h1 class="text-lg font-semibold">详情暂时无法加载</h1>
         <p class="mt-2 text-sm text-muted-foreground">{{ error }}</p>
-        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="returnToAssetList">返回列表</Button><Button @click="loadAll">重新加载</Button></div>
+        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="returnToAssetList">返回</Button><Button @click="loadAll">重新加载</Button></div>
       </div>
     </div>
 
     <template v-else-if="detail?.asset">
       <header class="detail-fade-in flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex min-w-0 items-start gap-3">
-          <Button variant="ghost" size="icon" class="mt-0.5" title="返回资产列表" @click="returnToAssetList"><ArrowLeft /></Button>
+          <Button variant="ghost" size="icon" class="mt-0.5" title="返回" aria-label="返回" @click="returnToAssetList"><ArrowLeft /></Button>
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <h1 class="truncate text-2xl font-semibold tracking-tight">{{ asset.name }}</h1>
@@ -431,6 +431,7 @@
 <script setup>
 import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { returnToSource } from './quant-workbench/navigation'
 import {
   ArrowLeft, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
   FlaskConical, SlidersHorizontal, Sparkles, TriangleAlert
@@ -705,7 +706,7 @@ function openQuantLab() {
 
 function returnToAssetList() {
   clearInvestmentDetailPath()
-  router.push('/stocks')
+  returnToSource(router, route, '/stocks')
 }
 
 async function savePreference(payload) {

@@ -33,10 +33,8 @@ test('report presents stable negative conclusion and keeps technical evidence co
   assert.match(html, /参数行为较稳定，但本次纳入计算的候选结果整体为负收益/)
   assert.match(html, /五点参数结果/)
   assert.match(html, /当前值/)
-  assert.match(html, /验证通过/)
-  assert.match(html, /数据与运行环境/)
-  assert.match(html, /assetCount/)
-  assert.match(html, /secret-hash/)
+  assert.match(html, /可继续模拟/)
+  assert.doesNotMatch(html, /数据与运行环境|assetCount|secret-hash|<pre/)
   assert.doesNotMatch(html, /该区间整体收益为负/)
 })
 
@@ -57,15 +55,11 @@ test('professional provenance and validation preserve raw fields inside closed d
       snapshot: { id: 'snapshot-123', contentHash: 'data-hash', formatVersion: 'snapshot-v1', metadata: { assetCount: 1, startDate: '2024-01-01', endDate: '2024-12-31', assets: [{ name: '资产甲', code: '000001', assetClass: 'STOCK', observations: 240, sources: ['provider-A'], adjustTypes: ['qfq'] }] } },
       assumptions: ['original assumption'], benchmarkContract: { status: 'READY', type: 'UNIVERSE_EQUAL_WEIGHT_MATCHED_EXPOSURE' } },
     runs: [{ id: 'run', value: 60, qualification: { status: 'UNQUALIFIED', scope: 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION' }, validation: { valid: false, code: 'CONTROL_VARIABLE_VIOLATION', mismatches: ['config.feeRate'], validatorVersion: 'experiment-controls-v1' } }] })
-  for (const text of ['来源回测运行环境', '实验统一运行环境', '模拟运行准入检查', '未通过', '研究执行假设', '基准研究规则', '无法解释']) assert.ok(html.includes(text), text)
-  // SSR includes closed content: check that every technical value has a closed details ancestor.
+  assert.match(html, /暂不能继续模拟/)
+  // Ordinary UI must not include technical values, even in collapsed content.
   for (const text of ['source-123', 'frozen-123', 'old-engine', 'new-engine', 'retained-source', 'snapshot-v1', 'data-hash', 'provider-A', 'qfq', 'experiment-controls-v1', 'config.feeRate', 'PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION', 'INCREASING']) {
-    const prefix = html.slice(0, html.indexOf(text))
-    assert.ok(html.includes(text), text)
-    const stack = []
-    for (const match of prefix.matchAll(/<details\b([^>]*)>|<\/details>/g)) { if (match[0].startsWith('</')) stack.pop(); else stack.push(match[1]) }
-    assert.ok(stack.some(attrs => !/\bopen\b/.test(attrs)), `${text} must be collapsed`)
+    assert.ok(!html.includes(text), `${text} must not appear`)
   }
   assert.doesNotMatch(html, /局部上升/)
-  assert.match(html, /证据质量<\/dt><dd>高/)
+  assert.doesNotMatch(html, /证据质量<\/dt><dd>高/)
 })

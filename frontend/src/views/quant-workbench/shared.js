@@ -1,22 +1,24 @@
 import { onBeforeUnmount, ref } from 'vue'
 import { feedback } from '@/lib/feedback'
 import { researchLabels } from './researchExplanation.js'
+import { operationMessage, userMessage } from './presentation.js'
 
 export const labels = {
+  momentum:'动量', trend:'趋势', volatility:'波动', drawdown:'回撤', reversal:'反转', volume:'成交量', liquidity:'流动性', RECEIVABLE:'待到账', SETTLEMENT:'到账',
   ATTENTION_REQUIRED:'运行存在风险提示', WAITING_EXECUTION:'等待模拟成交', MONITORING:'持续监测中', WAITING_SIGNAL:'等待交易信号',
   FILLED:'已全部成交', PARTIALLY_FILLED:'部分成交', PARTIALLY_FILLED_CANCELLED:'部分成交，余单已取消', REJECTED:'已拒绝',
   SUSPENDED_OR_PRICE_LIMIT:'停牌或触及涨跌停限制', INSUFFICIENT_CASH_OR_POSITION:'可用资金或持仓不足', INSUFFICIENT_CASH_AFTER_ROUNDING:'金额取整后可用资金不足',
   DRAWDOWN_LIMIT:'触发回撤限制', BEFORE_SIGNAL_START:'早于策略恢复日期', PAUSE:'组合暂停', STOP:'组合停止', LIQUIDATE:'模拟清仓',
   DRAFT: '草稿', ACTIVE: '启用', ARCHIVED: '已归档', QUEUED: '排队中', PENDING: '待处理', RUNNING: '运行中',
   SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败', CANCELLED: '已取消', CANCELLING: '取消中', PAUSED: '已暂停', STOPPED: '已停止',
-  QUALIFIED: '验证通过', UNQUALIFIED: '验证未通过', STOCK: '股票', ETF: 'ETF', FUND: '场外基金',
+  QUALIFIED: '可继续模拟', UNQUALIFIED: '暂不能继续模拟', STOCK: '股票', ETF: 'ETF', FUND: '场外基金',
   TREND: '趋势策略', MULTI_FACTOR: '多因子策略', ML_ELASTIC_NET: 'Elastic Net', ML_XGBOOST: 'XGBoost',
   TRAINING: '模型训练', FACTOR: '因子研究', BACKTEST: '组合回测', BUY: '买入', SELL: '卖出',
   EXECUTING:'计算中', COMPLETED:'已完成', STOPPING:'等待清仓和结算',
   ...researchLabels,
 }
-export const label = value => labels[value] || value || '—'
-export const format = value => value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+export const label = value => labels[value] || userMessage(value, null, '—')
+export const format = value => value == null || typeof value === 'object' ? '—' : String(value)
 export const formatTime = value => {
   if(value==null||value==='')return '—'
   const date=new Date(value)
@@ -35,8 +37,7 @@ export function useOperation() {
     busy.value = true
     error.value = ''
   try { return await fn() } catch (e) {
-    const detail = e.response?.data?.detail
-    const message = e.response?.data?.message || (typeof detail === 'string' ? detail : detail?.message) || e.message || '操作失败，请重试'
+    const message = operationMessage(e)
     error.value = message
     if (!e.__feedbackShown) feedback.error(message, { duration: 5000 })
   }

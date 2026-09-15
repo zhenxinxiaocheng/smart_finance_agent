@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { rememberInvestmentDetailPath } from '../lib/investmentNavigation'
+import { installQuantNavigation } from '../views/quant-workbench/navigation.js'
 
 const routes = [
   {
@@ -131,6 +132,8 @@ router.beforeEach((to, from, next) => {
     next()
   }
 })
+
+installQuantNavigation(router)
 
 router.afterEach(to => {
   rememberInvestmentDetailPath(to.path)

@@ -15,7 +15,7 @@ before(async () => {
       resolveId(id) {
         if (id.endsWith('/api/quantWorkbench.js')) return '\0quant'
         if (/\/(button|badge)$/.test(id)) return '\0ui'
-        if (['./QuantPageHeader.vue', './QuantStatusBadge.vue', './ParameterExperimentReport.vue'].includes(id)) return '\0child'
+        if (['./QuantBackButton.vue', './QuantPageHeader.vue', './QuantStatusBadge.vue', './ParameterExperimentReport.vue'].includes(id)) return '\0child'
       },
       async load(id) {
         if (id.endsWith('/ParameterExperimentDetail.vue')) {

@@ -1,4 +1,12 @@
-import request from './request'
+import transport from './request'
+
+// Quant views own persistent, user-readable errors; suppress raw transport toasts.
+const request = {
+  get: (url, options) => transport.get(url, { ...options, silentFeedback: true }),
+  delete: url => transport.delete(url, { silentFeedback: true }),
+  post: (url, body, options) => transport.post(url, body, { ...options, silentFeedback: true }),
+  put: (url, body) => transport.put(url, body, { silentFeedback: true }),
+}
 
 const base = '/quant/v2'
 const data = promise => promise.then(response => response.data)

@@ -73,9 +73,9 @@ async function submit() {
           <label class="field">检查参数<select v-model="parameterKey" required><option value="" disabled>选择参数</option><option v-for="item in parameters" :key="item.key" :value="item.key">{{ parameterTitle(item.key) }}</option></select></label>
           <label class="field">实验名称<Input :model-value="name" required maxlength="120" @update:model-value="value=>{name=value;nameWasEdited=true}" /></label>
         </div>
-        <p v-if="!frozenStrategyType(backtest)" class="mt-3 text-sm text-destructive" role="alert">来源回测未记录冻结策略类型，无法选择适用参数。</p>
-        <p v-else-if="!parameters.length" class="mt-3 text-sm text-destructive" role="alert">当前冻结策略没有可检查的参数。</p>
-        <p v-if="error" class="mt-3 text-sm text-destructive" role="alert">{{ error.message }}<code v-if="error.reasonCode" class="block muted mt-1">{{ error.reasonCode }}</code></p>
+        <p v-if="!frozenStrategyType(backtest)" class="mt-3 text-sm text-destructive" role="alert">来源回测信息不足，无法选择检查参数。</p>
+        <p v-else-if="!parameters.length" class="mt-3 text-sm text-destructive" role="alert">当前策略没有可检查的参数。</p>
+        <p v-if="error" class="mt-3 text-sm text-destructive" role="alert">{{ error.message }}</p>
         <div class="quant-actions mt-5 justify-end"><Button type="button" variant="outline" :disabled="busy" @click="emit('update:open',false)">取消</Button><Button type="submit" :disabled="busy||!eligibility?.eligible||!parameterKey||!name.trim()">{{ busy?'正在创建…':'开始检查' }}</Button></div>
       </form>
     </DialogContent>

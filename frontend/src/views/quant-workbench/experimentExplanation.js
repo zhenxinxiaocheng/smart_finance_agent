@@ -1,4 +1,5 @@
 import { parameterDisplayValue, parameterTitle } from './parameterPresentation.js'
+import { userMessage } from './presentation.js'
 import { qualificationNotice } from './researchExplanation.js'
 
 const classificationLabels = { STABLE: '参数稳定性较高', FRAGILE: '参数较敏感', MIXED: '表现混合', INSUFFICIENT: '证据不足' }
@@ -53,7 +54,7 @@ export function explainExperimentError(error) {
   return {
     errorCode: data.errorCode || null,
     reasonCode,
-    message: errorMessages[reasonCode] || errorMessages[data.errorCode] || body.message || error?.message || '操作失败，请重试',
+    message: errorMessages[reasonCode] || errorMessages[data.errorCode] || userMessage(body.message || error?.message, reasonCode, '操作失败，请重试'),
   }
 }
 
@@ -88,7 +89,7 @@ export function explainExperiment(detail = {}) {
     performanceProfileText: performanceLabels[summary.performanceProfile] || '未记录',
     evidenceQualityText: evidenceLabels[evidence.quality] || '未记录',
     directionText: isV1 || isV2
-      ? directionLabels[summary.direction] || (known(summary.direction) ? String(summary.direction) : '未记录') : '无法解释',
+      ? directionLabels[summary.direction] || '未记录' : '无法解释',
     directionConsistencyText,
     algorithmNotice,
     conclusionNotice: summary.classification === 'STABLE' && summary.performanceProfile === 'NEGATIVE'

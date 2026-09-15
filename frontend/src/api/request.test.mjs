@@ -30,7 +30,8 @@ test('normal and silent GET share auth, timeout, URL and data parsing', async ()
     assert.equal(config.timeout, 30000)
     assert.equal(config.headers.Authorization, 'Bearer test-token')
   }
-  assert.notEqual(calls[0].silentFeedback, true)
+  // Quant owns persistent, sanitized UI errors for both initial and polling requests.
+  assert.equal(calls[0].silentFeedback, true)
   assert.equal(calls[1].silentFeedback, true)
   assert.equal(events.length, 0)
 })

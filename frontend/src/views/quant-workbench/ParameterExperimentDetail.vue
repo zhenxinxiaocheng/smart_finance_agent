@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import QuantBackButton from './QuantBackButton.vue'
 import QuantPageHeader from './QuantPageHeader.vue'
 import QuantStatusBadge from './QuantStatusBadge.vue'
 import ParameterExperimentReport from './ParameterExperimentReport.vue'
@@ -39,7 +40,7 @@ usePoll(polling.poll, polling.shouldPoll)
   <p v-else-if="loadError&&!detail" class="panel text-sm text-destructive" role="alert">{{ loadError.message }}</p>
   <template v-if="detail">
     <QuantPageHeader :title="detail.name||'参数敏感性检查'">
-      <template #back><Button variant="ghost" size="sm" as-child><RouterLink :to="{path:'/quant/tasks',query:{type:'backtests',id:detail.sourceBacktest?.id||detail.sourceBacktestId}}">返回来源回测</RouterLink></Button></template>
+      <template #back><QuantBackButton :fallback="`/quant/tasks?type=backtests&id=${encodeURIComponent(detail.sourceBacktest?.id||detail.sourceBacktestId||'')}`" /></template>
       <template #badges><QuantStatusBadge :status="detail.status" /><Badge variant="outline" class="quant-status">{{ parameterTitle(detail.parameter?.key) }}</Badge></template>
       <template #meta><span>{{ detail.strategy?.name||'冻结策略名称未记录' }}<template v-if="detail.strategy?.version!=null"> · v{{ detail.strategy.version }}</template></span><span>{{ detail.researchWindow?.startDate||'未记录' }} ～ {{ detail.researchWindow?.endDate||'未记录' }}</span><span>更新于 {{ formatTime(detail.updatedAt) }}</span></template>
       <template #actions><Button variant="outline" as-child><RouterLink :to="{path:'/quant/tasks',query:{type:'backtests',id:detail.sourceBacktest?.id||detail.sourceBacktestId}}">查看来源回测</RouterLink></Button></template>
