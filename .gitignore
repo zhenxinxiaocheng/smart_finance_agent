@@ -57,6 +57,8 @@ htmlcov/
 /analysis-service/.test-tmp/*
 !/analysis-service/.test-tmp/.gitkeep
 /backend/uploads/
+/docs/
+/scripts/
 
 # === 本地 Agent / 调试状态 ===
 /.superpowers/
@@ -64,9 +66,12 @@ htmlcov/
 /.codex/
 /.playwright-cli/
 /.workbuddy-ai/
+/.trae/
+/start-dev.ps1
 # === 生成的交付物与部署包 ===
 /output/
 /outputs/
+/package.json
 
 # === 其他 ===
 .frontend/

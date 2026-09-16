@@ -83,7 +83,6 @@ smart_finance_agent/
 │   ├── app/                 # FastAPI、数据提供器和量化引擎
 │   └── tests/               # Python 测试
 ├── env.example              # 本地配置示例
-├── start-dev.ps1            # 一键启动前后端脚本
 └── README.md
 ```
 
@@ -269,20 +268,6 @@ search:
 ```
 
 `search.api-key` 可选；如果不使用联网搜索，可以留空。`application-local.yml` 不应提交到 Git。
-
-### 一键启动
-
-项目根目录提供开发脚本：
-
-```powershell
-.\start-dev.ps1
-```
-
-默认端口：
-
-- 后端：`http://localhost:8088`
-- 前端：`http://127.0.0.1:3000`
-- 分析服务：`http://127.0.0.1:8090`
 
 ### 手动启动
 
