@@ -22,7 +22,7 @@ class ExperimentFlowTest {
     String source;Map<String,Object> original;List<Map<String,Object>> calls;
     @BeforeEach void setup() {
         var ds=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE","sa","");db=new JdbcTemplate(ds);
-        new ResourceDatabasePopulator(new ClassPathResource("db/migration/sqlite/V30__quant_strategy_workbench.sql"),new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql")).execute(ds);
+        new ResourceDatabasePopulator(new ClassPathResource("schema-h2.sql")).execute(ds);
         var json=new ObjectMapper();var manager=new DataSourceTransactionManager(ds);
         repository=new ExperimentRepository(db,json);snapshots=new ResearchSnapshotStore(db,json,1000000,1000000);var tasks=new ExperimentTaskStore(db,json);
         attempts=new ExperimentAttemptService(db,repository,tasks,manager);client=mock(WorkbenchAnalysisClient.class);

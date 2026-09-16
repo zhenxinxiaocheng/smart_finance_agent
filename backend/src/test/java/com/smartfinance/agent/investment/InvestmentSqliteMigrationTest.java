@@ -1,200 +1,143 @@
 package com.smartfinance.agent.investment;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.smartfinance.agent.mapper.TransactionMapper;
+import org.apache.ibatis.annotations.Select;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
-import org.apache.ibatis.annotations.Select;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.core.type.filter.AnnotationTypeFilter;
 
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.lang.reflect.Modifier;
+import static org.assertj.core.api.Assertions.*;
 
 class InvestmentSqliteMigrationTest {
-
     @Test
-    void migrationsCreateCoreAndInvestmentTables() throws Exception {
+    void emptyDatabaseCreatesCurrentSchemaAndSecondMigrationDoesNothing() throws Exception {
         Path database = Files.createTempFile("smart-finance-", ".db");
         try {
-            String url = "jdbc:sqlite:" + database.toAbsolutePath();
-            Flyway flyway = Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .load();
-            flyway.migrate();
+            verifyEmptyDatabase("jdbc:sqlite:" + database.toAbsolutePath(), null, null, "sqlite");
+        } finally {
+            Files.deleteIfExists(database);
+        }
+    }
 
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement(
-                         "SELECT name FROM sqlite_master WHERE type='table' AND name IN (" +
-                                 "'user','investment_transaction','investment_position','investment_asset'," +
-                                 "'wealth_baseline','investment_analysis_preference','investment_analysis_snapshot'," +
-                                 "'investment_horizon_profile','investment_horizon_setting'," +
-                                 "'investment_data_job','benchmark_profile','quant_benchmark_snapshot'," +
-                                 "'investment_index_watchlist','investment_index_display_order'," +
-                                 "'quant_v2_object','quant_v2_version','quant_v2_task'," +
-                                 "'quant_v2_deployment','quant_v2_paper_event'," +
-                                 "'quant_v2_research_snapshot','quant_v2_experiment'," +
-                                 "'quant_v2_experiment_run','quant_v2_experiment_run_attempt')")) {
-                try (var result = statement.executeQuery()) {
-                    int count = 0;
-                    while (result.next()) count++;
-                    assertThat(count).isEqualTo(23);
+    @Test
+    @EnabledIfEnvironmentVariable(named = "MYSQL_TEST_URL", matches = ".+")
+    void emptyMysqlDatabaseCreatesCurrentSchemaAndSecondMigrationDoesNothing() throws Exception {
+        verifyEmptyDatabase(System.getenv("MYSQL_TEST_URL"), System.getenv("MYSQL_TEST_USER"),
+                System.getenv("MYSQL_TEST_PASSWORD"), "mysql");
+    }
+
+    private void verifyEmptyDatabase(String url, String user, String password, String dialect) throws Exception {
+        // Only accept an empty database. Never clean or alter an existing database for this test.
+        try (var connection = DriverManager.getConnection(url, user, password);
+             var tables = connection.getMetaData().getTables(connection.getCatalog(), null, "%", new String[]{"TABLE"})) {
+            assertThat(tables.next()).as("Use a dedicated empty test database").isFalse();
+        }
+        Flyway flyway = Flyway.configure().dataSource(url, user, password)
+                .locations("classpath:db/migration/" + dialect).baselineOnMigrate(false).load();
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        try (var connection = DriverManager.getConnection(url, user, password)) {
+            String tableQuery = dialect.equals("mysql")
+                    ? "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' AND table_name<>'flyway_schema_history'"
+                    : "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'flyway_schema_history'";
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery(tableQuery)) {
+                var names = new java.util.HashSet<String>();
+                while (rows.next()) names.add(rows.getString(1));
+                assertThat(names).hasSize(53).doesNotContain("investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
+            }
+            assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "value_hash"));
+            assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "ordinal"));
+            assertUniqueColumns(connection, "quant_v2_experiment_run_attempt", List.of("run_id", "attempt_no"));
+            assertUniqueColumns(connection, "quant_v2_experiment_run_attempt", List.of("task_id"));
+            var scanner = new ClassPathScanningCandidateComponentProvider(false);
+            scanner.addIncludeFilter(new AnnotationTypeFilter(TableName.class));
+            int count = 0;
+            for (var bean : scanner.findCandidateComponents("com.smartfinance.agent")) {
+                Class<?> entity = Class.forName(bean.getBeanClassName());
+                String table = entity.getAnnotation(TableName.class).value();
+                var columns = Arrays.stream(entity.getDeclaredFields())
+                        .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                        .filter(field -> field.getAnnotation(TableField.class) == null || field.getAnnotation(TableField.class).exist())
+                        .map(field -> {
+                            TableField mapping = field.getAnnotation(TableField.class);
+                            return mapping != null && !mapping.value().isBlank() ? mapping.value()
+                                    : field.getName().replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase(java.util.Locale.ROOT);
+                        }).map(column -> "`" + column + "`").toList();
+                try (var statement = connection.createStatement()) {
+                    statement.executeQuery("SELECT " + String.join(",", columns) + " FROM `" + table + "` WHERE 1=0").close();
+                }
+                count++;
+            }
+            assertThat(count).isEqualTo(44);
+            for (String table : List.of("quant_v2_object", "quant_v2_version", "quant_v2_task",
+                    "quant_v2_deployment", "quant_v2_paper_event", "quant_v2_research_snapshot",
+                    "quant_v2_experiment", "quant_v2_experiment_run", "quant_v2_experiment_run_attempt")) {
+                try (var statement = connection.createStatement()) {
+                    statement.executeQuery("SELECT * FROM " + table + " WHERE 1=0").close();
                 }
             }
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement(
-                         "SELECT COUNT(*) FROM pragma_table_info('product_daily_quote') " +
-                                 "WHERE name IN ('change_amount','change_percent','turnover_rate','volume_ratio','amplitude')");
-                 var result = statement.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getInt(1)).isEqualTo(5);
+            for (String table : List.of("user", "expense_category", "agent_skill", "investment_account")) {
+                try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT COUNT(*) FROM `" + table + "`")) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getInt(1)).as(table + " has no seed data").isZero();
+                }
             }
-            try (var connection = DriverManager.getConnection(url)) {
-                assertThat(columnExists(connection, "product_daily_quote", "total_return_index"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_analysis_snapshot", "horizon_profile_version"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_analysis_snapshot", "horizon_config_json"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_horizon_setting", "target_holding_days"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_data_job", "lease_token"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_product", "fund_category"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_product", "classification_source"))
-                        .isTrue();
-                assertThat(columnExists(connection, "investment_product", "classification_version"))
-                        .isTrue();
-                assertThat(tableExists(connection, "quant_feature_set")).isFalse();
-                assertThat(tableExists(connection, "quant_job")).isFalse();
-                assertThat(tableExists(connection, "quant_model_version")).isFalse();
-                assertThat(tableExists(connection, "quant_strategy_version")).isFalse();
-                assertThat(tableExists(connection, "quant_prediction")).isFalse();
-                assertThat(tableExists(connection, "quant_experiment")).isFalse();
-                assertThat(tableExists(connection, "quant_paper_order")).isFalse();
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT type, success FROM flyway_schema_history WHERE version='1'")) {
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.getString(1)).isEqualTo("SQL");
+                assertThat(rows.getBoolean(2)).isTrue();
             }
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement(
-                         "SELECT COUNT(*) FROM pragma_index_list('investment_data_job') " +
-                                 "WHERE name = 'idx_investment_data_job_pending'" );
-                 var result = statement.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getInt(1)).isEqualTo(1);
-            }
-            try (var connection = DriverManager.getConnection(url)) {
-                assertThat(indexExists(connection, "investment_account", "uk_investment_active_paper_user"))
-                        .isFalse();
-                assertThat(indexColumns(connection, "quant_v2_experiment_run", "uk_qv2_experiment_run_value"))
-                        .containsExactly("experiment_id", "value_hash");
-                assertThat(indexColumns(connection, "quant_v2_experiment_run", "uk_qv2_experiment_run_ordinal"))
-                        .containsExactly("experiment_id", "ordinal");
-                assertThat(indexColumns(connection, "quant_v2_experiment_run_attempt", "uk_qv2_experiment_attempt_number"))
-                        .containsExactly("run_id", "attempt_no");
-                assertThat(indexColumns(connection, "quant_v2_experiment_run_attempt", "uk_qv2_experiment_attempt_task"))
-                        .containsExactly("task_id");
-            }
-            assertThat(flyway.info().pending()).isEmpty();
-        } finally {
-            Files.deleteIfExists(database);
         }
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO `user` (username,password) VALUES ('migration_restart_check','test-only')");
+        }
+        assertThat(flyway.migrate().migrationsExecuted).isZero();
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement();
+             var rows = statement.executeQuery("SELECT COUNT(*) FROM `user` WHERE username='migration_restart_check'")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getInt(1)).isEqualTo(1);
+        }
+        assertThat(flyway.info().pending()).isEmpty();
+        flyway.validate();
+    }
+
+    private static void assertUniqueColumns(Connection connection, String table, List<String> expected) throws Exception {
+        var indexes = new java.util.HashMap<String, java.util.SortedMap<Integer, String>>();
+        try (var rows = connection.getMetaData().getIndexInfo(connection.getCatalog(), null, table, true, false)) {
+            while (rows.next()) {
+                String name = rows.getString("INDEX_NAME");
+                String column = rows.getString("COLUMN_NAME");
+                if (name != null && column != null) {
+                    indexes.computeIfAbsent(name, ignored -> new java.util.TreeMap<>())
+                            .put(rows.getInt("ORDINAL_POSITION"), column);
+                }
+            }
+        }
+        assertThat(indexes.values().stream().map(index -> List.copyOf(index.values())).toList()).contains(expected);
     }
 
     @Test
-    void versionEightMigratesLegacyPerAssetHorizonValues() throws Exception {
-        Path database = Files.createTempFile("smart-finance-horizon-", ".db");
+    void refusesNonEmptyDatabaseWithoutHistory() throws Exception {
+        Path database = Files.createTempFile("smart-finance-unknown-", ".db");
+        String url = "jdbc:sqlite:" + database.toAbsolutePath();
         try {
-            String url = "jdbc:sqlite:" + database.toAbsolutePath();
-            Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .target("7")
-                    .load()
-                    .migrate();
-
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement("""
-                         INSERT INTO investment_analysis_preference (
-                           user_id, asset_id, short_min_days, short_max_days,
-                           medium_min_days, medium_max_days, long_min_days, long_max_days
-                         ) VALUES (7, 11, 3, 17, 40, 160, 260, 900)
-                         """)) {
-                statement.executeUpdate();
+            try (var connection = DriverManager.getConnection(url); var statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE existing_data (id INTEGER PRIMARY KEY)");
             }
-
-            Flyway flyway = Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .load();
-            flyway.migrate();
-
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement("""
-                         SELECT p.scope_type, p.version, p.source, p.active,
-                                s.horizon_code, s.min_holding_days, s.max_holding_days,
-                                s.target_holding_days
-                         FROM investment_horizon_profile p
-                         JOIN investment_horizon_setting s ON s.profile_id = p.id
-                         WHERE p.user_id = 7 AND p.asset_id = 11
-                         ORDER BY s.sort_order
-                         """);
-                 var result = statement.executeQuery()) {
-                assertLegacySetting(result, "SHORT", 3, 17);
-                assertLegacySetting(result, "MEDIUM", 40, 160);
-                assertLegacySetting(result, "LONG", 260, 900);
-                assertThat(result.next()).isFalse();
-            }
-            assertThat(flyway.info().pending()).isEmpty();
-        } finally {
-            Files.deleteIfExists(database);
-        }
-    }
-
-    @Test
-    void versionTwentyFiveBackfillsKnownFundClassificationFromBenchmarkProfile() throws Exception {
-        Path database = Files.createTempFile("smart-finance-fund-classification-", ".db");
-        try {
-            String url = "jdbc:sqlite:" + database.toAbsolutePath();
-            Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .target("24")
-                    .load()
-                    .migrate();
-
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement("""
-                         INSERT INTO investment_product
-                             (product_type, market, code, name, currency, status)
-                         VALUES ('MUTUAL_FUND', 'CN', '000218', 'existing fund', 'CNY', 'ACTIVE')
-                         """)) {
-                statement.executeUpdate();
-            }
-
-            Flyway.configure()
-                    .dataSource(url, null, null)
-                    .locations("classpath:db/migration/sqlite")
-                    .target("25")
-                    .load()
-                    .migrate();
-
-            try (var connection = DriverManager.getConnection(url);
-                 var statement = connection.prepareStatement("""
-                         SELECT fund_category, classification_source, classification_version, classified_at
-                         FROM investment_product
-                         WHERE product_type = 'MUTUAL_FUND' AND code = '000218'
-                         """);
-                 var result = statement.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getString("fund_category")).isEqualTo("COMMODITY_FUND");
-                assertThat(result.getString("classification_source"))
-                        .isEqualTo("CURATED_BENCHMARK_PROFILE");
-                assertThat(result.getString("classification_version"))
-                        .isEqualTo("OFFICIAL-PRODUCT");
-                assertThat(result.getString("classified_at")).isNotBlank();
-            }
+            Flyway flyway = Flyway.configure().dataSource(url, null, null)
+                    .locations("classpath:db/migration/sqlite").baselineOnMigrate(false).load();
+            assertThatThrownBy(flyway::migrate).isInstanceOf(org.flywaydb.core.api.FlywayException.class);
         } finally {
             Files.deleteIfExists(database);
         }
@@ -231,62 +174,4 @@ class InvestmentSqliteMigrationTest {
         }
     }
 
-    private static boolean columnExists(Connection connection, String table, String column) throws Exception {
-        try (var statement = connection.prepareStatement(
-                "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")) {
-            statement.setString(1, table);
-            statement.setString(2, column);
-            try (var result = statement.executeQuery()) {
-                return result.next() && result.getInt(1) == 1;
-            }
-        }
-    }
-
-    private static boolean indexExists(Connection connection, String table, String index) throws Exception {
-        try (var statement = connection.prepareStatement(
-                "SELECT COUNT(*) FROM pragma_index_list(?) WHERE name = ?")) {
-            statement.setString(1, table);
-            statement.setString(2, index);
-            try (var result = statement.executeQuery()) {
-                return result.next() && result.getInt(1) == 1;
-            }
-        }
-    }
-
-    private static java.util.List<String> indexColumns(Connection connection, String table, String index) throws Exception {
-        assertThat(indexExists(connection, table, index)).isTrue();
-        try (var statement = connection.prepareStatement(
-                "SELECT name FROM pragma_index_info(?) ORDER BY seqno")) {
-            statement.setString(1, index);
-            try (var result = statement.executeQuery()) {
-                var columns = new java.util.ArrayList<String>();
-                while (result.next()) columns.add(result.getString(1));
-                return columns;
-            }
-        }
-    }
-
-    private static boolean tableExists(Connection connection, String table) throws Exception {
-        try (var statement = connection.prepareStatement(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?")) {
-            statement.setString(1, table);
-            try (var result = statement.executeQuery()) {
-                return result.next() && result.getInt(1) == 1;
-            }
-        }
-    }
-
-    private static void assertLegacySetting(java.sql.ResultSet result, String code,
-                                            int minimum, int maximum) throws Exception {
-        assertThat(result.next()).isTrue();
-        assertThat(result.getString("scope_type")).isEqualTo("ASSET");
-        assertThat(result.getInt("version")).isEqualTo(1);
-        assertThat(result.getString("source")).isEqualTo("LEGACY");
-        assertThat(result.getBoolean("active")).isTrue();
-        assertThat(result.getString("horizon_code")).isEqualTo(code);
-        assertThat(result.getInt("min_holding_days")).isEqualTo(minimum);
-        assertThat(result.getInt("max_holding_days")).isEqualTo(maximum);
-        assertThat(result.getInt("target_holding_days"))
-                .isEqualTo(minimum + (maximum - minimum) / 2);
-    }
 }

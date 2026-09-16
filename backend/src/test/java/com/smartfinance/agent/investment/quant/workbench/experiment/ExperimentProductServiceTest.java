@@ -41,8 +41,7 @@ class ExperimentProductServiceTest {
                 "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
         new ResourceDatabasePopulator(
-                new ClassPathResource("db/migration/sqlite/V30__quant_strategy_workbench.sql"),
-                new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql"))
+                new ClassPathResource("schema-h2.sql"))
                 .execute(source);
         json = new ObjectMapper();
         repository = new ExperimentRepository(db, json);

@@ -20,7 +20,7 @@ class ExperimentRepositorySqliteTest {
         try {
             var source = new DriverManagerDataSource("jdbc:sqlite:" + database.toAbsolutePath(), "", "");
             new ResourceDatabasePopulator(
-                    new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql"))
+                    new ClassPathResource("db/migration/sqlite/V1__baseline.sql"))
                     .execute(source);
             var repository = new ExperimentRepository(new JdbcTemplate(source), new ObjectMapper());
             repository.insertExperiment(experiment());

@@ -70,7 +70,7 @@
 smart_finance_agent/
 ├── backend/                 # Spring Boot 后端
 │   ├── src/main/java/       # Controller、Service、Entity、DTO、Mapper、Agent 逻辑
-│   ├── src/main/resources/  # application.yml、schema.sql、data.sql
+│   ├── src/main/resources/  # application.yml、db/migration
 │   └── src/test/            # 后端测试
 ├── frontend/                # Vue 3 前端
 │   ├── public/              # README 演示图和静态资源
@@ -228,12 +228,18 @@ Skills 是 Agent 可读取的能力说明和工具绑定，不直接执行第三
 ### 数据库
 
 ```sql
-CREATE DATABASE IF NOT EXISTS smart_finance
+CREATE DATABASE smart_finance
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 ```
 
-后端启动时会读取 `backend/src/main/resources/schema.sql` 和 `backend/src/main/resources/data.sql` 初始化表结构和基础数据。
+配置数据库账号密码后启动：
+
+```bash
+java -jar backend/target/smart-finance-agent-1.0.0-MVP.jar --spring.profiles.active=mysql
+```
+
+Flyway 自动执行 V1 创建当前完整结构，不创建测试用户。再次启动不会重复迁移。后续结构变更新增 `V2__描述.sql`、`V3__描述.sql`，不要修改已执行的迁移。
 
 ### 本地配置
 
@@ -248,6 +254,7 @@ backend/src/main/resources/application-local.yml
 ```yaml
 spring:
   datasource:
+    username: 你的数据库账号
     password: 你的数据库密码
 
 jwt:
@@ -283,7 +290,7 @@ search:
 
 ```powershell
 cd backend
-mvn spring-boot:run
+mvn spring-boot:run "-Dspring-boot.run.profiles=mysql"
 ```
 
 分析服务：

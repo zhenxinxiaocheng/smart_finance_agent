@@ -2,7 +2,7 @@ package com.smartfinance.agent.config;
 
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;
-import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.dashscope.QwenEmbeddingModel;
@@ -17,10 +17,15 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
 
 import java.io.IOException;
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 @Slf4j
@@ -75,14 +80,26 @@ public class RagConfig {
 
     @Bean
     public List<Document> knowledgeDocuments() {
+        return knowledgeDocuments(new PathMatchingResourcePatternResolver());
+    }
+
+    List<Document> knowledgeDocuments(ResourcePatternResolver resolver) {
         try {
-            ClassPathResource resource = new ClassPathResource("knowledge");
-            if (!resource.exists()) {
+            Resource[] resources = resolver.getResources("classpath*:knowledge/*.txt");
+            if (resources.length == 0) {
                 log.warn("知识库目录不存在，跳过RAG文档加载");
                 return List.of();
             }
-            Path knowledgePath = resource.getFile().toPath();
-            List<Document> documents = FileSystemDocumentLoader.loadDocuments(knowledgePath);
+            Arrays.sort(resources, Comparator.comparing(Resource::getFilename));
+            TextDocumentParser parser = new TextDocumentParser(StandardCharsets.UTF_8);
+            List<Document> documents = new ArrayList<>(resources.length);
+            for (Resource resource : resources) {
+                try (var input = resource.getInputStream()) {
+                    Document document = parser.parse(input);
+                    document.metadata().put(Document.FILE_NAME, resource.getFilename());
+                    documents.add(document);
+                }
+            }
             log.info("加载了 {} 个知识文档", documents.size());
             return documents;
         } catch (IOException e) {

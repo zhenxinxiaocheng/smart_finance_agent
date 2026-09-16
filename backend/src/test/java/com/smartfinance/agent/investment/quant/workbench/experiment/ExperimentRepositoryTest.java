@@ -25,8 +25,7 @@ class ExperimentRepositoryTest {
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         var db = new JdbcTemplate(source);
         var schema = new ResourceDatabasePopulator(
-                new ClassPathResource("db/migration/sqlite/V30__quant_strategy_workbench.sql"),
-                new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql"));
+                new ClassPathResource("schema-h2.sql"));
         schema.execute(source);
         var json = new ObjectMapper();
         repository = new ExperimentRepository(db, json);

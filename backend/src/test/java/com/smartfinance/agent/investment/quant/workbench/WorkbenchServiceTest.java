@@ -28,16 +28,10 @@ class WorkbenchServiceTest {
         source = new DriverManagerDataSource("jdbc:h2:mem:" + UUID.randomUUID()
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
-        new ResourceDatabasePopulator(new ClassPathResource(
-                "db/migration/sqlite/V30__quant_strategy_workbench.sql"),new ClassPathResource("db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql")).execute(source);
-        db.execute("CREATE TABLE investment_product(id BIGINT PRIMARY KEY,name VARCHAR(80),code VARCHAR(20),"
-                + "product_type VARCHAR(30),market VARCHAR(20),history_coverage_complete BOOLEAN)");
-        db.execute("CREATE TABLE investment_asset(id BIGINT PRIMARY KEY,user_id BIGINT,product_id BIGINT,deleted INT)");
-        db.execute("CREATE TABLE product_daily_quote(product_id BIGINT,trade_date VARCHAR(10),open_price DECIMAL(20,6),"
-                + "high_price DECIMAL(20,6),low_price DECIMAL(20,6),close_price DECIMAL(20,6),previous_close DECIMAL(20,6),"
-                + "total_return_index DECIMAL(20,6),volume DECIMAL(20,6),amount DECIMAL(20,6),adjust_type VARCHAR(10),source VARCHAR(20))");
-        db.update("INSERT INTO investment_product VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN',FALSE)");
-        db.update("INSERT INTO investment_asset VALUES(1,1,1,0),(2,2,1,0)");
+        new ResourceDatabasePopulator(new ClassPathResource("schema-h2.sql")).execute(source);
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
+                + "VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN',FALSE)");
+        db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(1,1,1,1,0),(2,2,2,1,0)");
         for (int index = 0; index < 60; index++) {
             db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) "
                     + "VALUES(?,?,?,?,?,?)", 1L, LocalDate.of(2023, 1, 2).plusDays(index).toString(),

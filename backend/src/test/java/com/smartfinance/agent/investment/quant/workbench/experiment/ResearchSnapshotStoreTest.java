@@ -26,7 +26,7 @@ class ResearchSnapshotStoreTest {
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
         new ResourceDatabasePopulator(new ClassPathResource(
-                "db/migration/sqlite/V33__quant_parameter_sensitivity_experiments.sql")).execute(source);
+                "schema-h2.sql")).execute(source);
         store = new ResearchSnapshotStore(db, new ObjectMapper(), 128 * 1024, 64 * 1024);
     }
 

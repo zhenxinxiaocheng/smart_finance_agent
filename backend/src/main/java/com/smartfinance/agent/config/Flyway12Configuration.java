@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
 
+// Boot 3.2 calls Flyway APIs removed in Flyway 12; keep this compatibility bridge.
 @Configuration
 @ConditionalOnProperty(name = "spring.flyway.enabled", havingValue = "true")
 public class Flyway12Configuration {
@@ -15,13 +16,11 @@ public class Flyway12Configuration {
     @Bean(initMethod = "migrate")
     public Flyway flyway(DataSource dataSource,
                          @Value("${spring.flyway.locations:classpath:db/migration}") String locations,
-                         @Value("${spring.flyway.baseline-on-migrate:false}") boolean baselineOnMigrate,
-                         @Value("${spring.flyway.baseline-version:1}") String baselineVersion) {
+                         @Value("${spring.flyway.baseline-on-migrate:false}") boolean baselineOnMigrate) {
         return Flyway.configure()
                 .dataSource(dataSource)
                 .locations(splitLocations(locations))
                 .baselineOnMigrate(baselineOnMigrate)
-                .baselineVersion(baselineVersion)
                 .load();
     }
 
