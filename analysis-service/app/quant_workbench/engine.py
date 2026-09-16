@@ -450,7 +450,7 @@ def validate_config(payload):
             "assumptions": research_assumptions(c), "benchmarkContract": backtest_benchmark_contract()}
 
 
-def simulate(payload, c, assets, model=None, benchmark_targets=None):
+def simulate(payload, c, assets, model=None, benchmark_targets=None, *, buy_and_hold=False):
     paper, new_paper, action, start, end = simulation_context(payload, assets, model)
     state = copy.deepcopy(payload.get("state")) if paper and payload.get("state") else {
         "cash": c["initialCash"], "positions": {}, "pendingOrders": [], "receivables": [],
@@ -514,13 +514,25 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
             state["pendingOrders"].append(order)
             events.append(dict(order))
 
+    if buy_and_hold:
+        # Cash orders are committed before the window, without observing prices or
+        # strategy signals. Each asset keeps its own initial, fee-inclusive budget.
+        order_day = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+        budget = math.floor(c["initialCash"] * 100 / len(assets)) / 100
+        for aid in sorted(assets):
+            order = {"id": digest({"binding": binding, "assetId": aid, "buyAndHold": start})[:24],
+                     "assetId": aid, "signalDate": order_day, "side": "BUY",
+                     "cashBudget": budget, "status": "PENDING"}
+            state["pendingOrders"].append(order)
+            events.append(dict(order))
+
     # Stopping with liquidation creates orders even without a new observation. They
     # remain pending until a subsequent executable session, never filled at stale NAV.
     if action == "LIQUIDATE" and not state.get("liquidating"):
         state["liquidating"] = True
         add_orders(max(state["lastDate"], end), {}, portfolio_equity(state, assets, end, c))
     for day in days:
-        if action == "RUN" and day < signal_start:
+        if not buy_and_hold and action == "RUN" and day < signal_start:
             events.extend({**o, "status": "CANCELLED", "reason": "BEFORE_SIGNAL_START", "date": day} for o in state["pendingOrders"])
             state["pendingOrders"] = []
         state["unsettledBuys"] = [r for r in state["unsettledBuys"] if r["availableDate"] > day]
@@ -545,6 +557,9 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
                 pending.append(order)
                 continue
             if asset["assetClass"] != "FUND" and (bar["volume"] <= 0 or bar.get("suspended") or (order["side"] == "BUY" and bar.get("limitUp") and bar["open"] >= float(bar["limitUp"])) or (order["side"] == "SELL" and bar.get("limitDown") and bar["open"] <= float(bar["limitDown"]))):
+                if buy_and_hold:
+                    pending.append(order)
+                    continue
                 events.append({**order, "status": "REJECTED", "reason": "SUSPENDED_OR_PRICE_LIMIT", "date": day})
                 continue
             fund = asset["assetClass"] == "FUND"
@@ -554,9 +569,12 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
             fee_rate = c["feeRate"] if buy else c["sellFeeRate"]
             position = state["positions"].setdefault(order["assetId"], {"quantity": 0., "cost": 0., "lastPrice": price})
             lot = 10 ** -c["fundShareDecimals"] if fund else 100
-            quantity = order["quantity"]
+            cash_available = min(state["cash"], order.get("cashBudget", state["cash"]))
+            quantity = (math.floor(max(cash_available, 0.) / (price * (1 + fee_rate)) / lot) * lot
+                        if "cashBudget" in order else order["quantity"])
+            requested_quantity = quantity
             if buy:
-                quantity = min(quantity, math.floor(max(state["cash"], 0.) / (price * (1 + fee_rate)) / lot) * lot)
+                quantity = min(quantity, math.floor(max(cash_available, 0.) / (price * (1 + fee_rate)) / lot) * lot)
             else:
                 locked = sum(r["quantity"] for r in state["unsettledBuys"] if r["assetId"] == order["assetId"])
                 quantity = min(quantity, max(0., position["quantity"] - locked))
@@ -566,8 +584,8 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
             quantity = round(quantity, c["fundShareDecimals"] if fund else 0)
             notional = money(quantity * price)
             fee = money(notional * fee_rate)
-            if buy and money(notional + fee) > state["cash"]:
-                quantity = round(math.floor(max(0., state["cash"] - .02) / (price * (1 + fee_rate)) / lot) * lot, c["fundShareDecimals"] if fund else 0)
+            if buy and money(notional + fee) > cash_available:
+                quantity = round(math.floor(max(0., cash_available - .02) / (price * (1 + fee_rate)) / lot) * lot, c["fundShareDecimals"] if fund else 0)
                 notional = money(quantity * price)
                 fee = money(notional * fee_rate)
             if quantity <= 0:
@@ -589,7 +607,7 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
                     state["receivables"].append({"amount": amount, "dueDate": (date.fromisoformat(day) + timedelta(days=c["settlementDays"])).isoformat(), "orderId": order["id"]})
                 else:
                     state["cash"] = money(state["cash"] + amount)
-            status = "FILLED" if abs(quantity - order["quantity"]) < 1e-8 else "PARTIALLY_FILLED_CANCELLED"
+            status = "FILLED" if abs(quantity - requested_quantity) < 1e-8 else "PARTIALLY_FILLED_CANCELLED"
             fill = {"id": order["id"], "orderId": order["id"], "assetId": order["assetId"], "date": bar["date"], "confirmedDate": day, "side": order["side"], "quantity": quantity, "price": price, "notional": notional, "fee": fee}
             fills.append(fill)
             events.append({**order, "status": status, "filledQuantity": quantity, "date": day})
@@ -601,7 +619,7 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
         equity = portfolio_equity(state, assets, day, c)
         state["peakEquity"] = max(state["peakEquity"], equity)
         drawdown = 1 - equity / state["peakEquity"]
-        if drawdown >= c["maxDrawdown"]:
+        if not buy_and_hold and drawdown >= c["maxDrawdown"]:
             state["riskStopped"] = True
             for order in state["pendingOrders"]:
                 if order["side"] == "BUY":
@@ -610,7 +628,9 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
         point = {"date": day, "equity": equity, "cash": state["cash"], "receivables": sum(r["amount"] for r in state["receivables"]), "drawdown": drawdown}
         state["equityCurve"].append(point)
         snapshots.append({"date": day, "positions": copy.deepcopy(state["positions"])})
-        if benchmark_targets is not None:
+        if buy_and_hold:
+            pass
+        elif benchmark_targets is not None:
             if day in benchmark_targets:
                 add_orders(day, benchmark_targets[day], equity)
         elif action == "RUN" and day >= signal_start and not state.get("liquidating"):
@@ -641,6 +661,18 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None):
                                "dataState": "INCOMPLETE" if complete_through < latest else "READY",
                                "awaitingAssets": [aid for aid, watermark in watermarks.items() if watermark < latest]}
     return result, state
+
+
+def buy_and_hold_baseline(payload, c, assets):
+    contract = {"type": "BUY_AND_HOLD", "name": "买入并持有"}
+    try:
+        baseline, _ = simulate(payload, c, assets, buy_and_hold=True)
+    except EngineError as error:
+        return {**contract, "status": "UNAVAILABLE", "reason": error.code}
+    filled = {f["assetId"] for f in baseline["fills"]}
+    unfilled = sorted(set(assets) - filled)
+    return {**baseline, **contract, "status": "UNAVAILABLE" if unfilled else "READY",
+            **({"reason": "BUY_AND_HOLD_ASSETS_NOT_FILLED", "unfilledAssetIds": unfilled} if unfilled else {})}
 
 
 def execute(payload):
@@ -700,6 +732,7 @@ def execute(payload):
             result["benchmark"] = {**backtest_benchmark_contract(), "metrics": baseline["metrics"],
                                    "equityCurve": baseline["equityCurve"],
                                    "excessReturn": result["metrics"]["netReturn"] - baseline["metrics"]["netReturn"]}
+            result["buyAndHold"] = buy_and_hold_baseline(payload, c, assets)
         else:
             result["benchmark"] = {"status": "NOT_APPLICABLE", "reason": "Compare the immutable deployment source backtest for matched-exposure benchmark"}
         response.update(qualification={"status": "QUALIFIED" if not reasons else "UNQUALIFIED", "reasons": reasons, "scope": "PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION"}, result=result)
