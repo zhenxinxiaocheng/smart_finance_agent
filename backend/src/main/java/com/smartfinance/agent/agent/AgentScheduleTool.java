@@ -25,7 +25,7 @@ public class AgentScheduleTool {
         try {
             Long userId = UserIdContext.get();
             if (userId == null) {
-                return "Error: no user context";
+                throw new IllegalStateException("用户会话不可用");
             }
             PendingActionService pendingActionService = pendingActionServiceProvider.getObject();
             PendingAction action = pendingActionService.prepareSchedule(
@@ -35,11 +35,12 @@ public class AgentScheduleTool {
                     cronExpression,
                     taskQuery,
                     timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone);
+            com.smartfinance.agent.common.ToolExecutionContext.pending(action.getId());
             return "已生成周期任务待确认：%s（ID: %s）。确认后会按 %s 定时执行。"
                     .formatted(action.getTitle(), action.getId(), cronExpression);
         } catch (Exception e) {
             log.warn("Failed to prepare agent schedule", e);
-            return "创建周期任务待确认动作失败：" + e.getMessage();
+            throw new IllegalStateException("创建待确认任务失败", e);
         }
     }
 }

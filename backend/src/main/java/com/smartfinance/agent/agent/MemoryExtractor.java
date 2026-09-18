@@ -26,11 +26,29 @@ public class MemoryExtractor {
 
     private final ChatLanguageModel chatModel;
     private final AgentMemoryService agentMemoryService;
+    private final MemoryExtractionQueue extractionQueue;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public MemoryExtractor(ChatLanguageModel chatModel, AgentMemoryService agentMemoryService) {
+    public MemoryExtractor(ChatLanguageModel chatModel, AgentMemoryService agentMemoryService,
+                           MemoryExtractionQueue extractionQueue) {
         this.chatModel = chatModel;
         this.agentMemoryService = agentMemoryService;
+        this.extractionQueue = extractionQueue;
+    }
+
+    public void enqueue(Long userId, String userMessage, String finalAnswer) {
+        if (!extractionQueue.submit(() -> {
+            try {
+                // Preferences may change while this request is queued.
+                if (agentMemoryService.isAutoMemoryEnabled(userId)) {
+                    extractAndSave(userId, userMessage, finalAnswer);
+                }
+            } catch (Exception e) {
+                log.warn("Background memory extraction failed: userId={}", userId, e);
+            }
+        })) {
+            log.warn("Memory extraction skipped because queue is unavailable: userId={}", userId);
+        }
     }
 
     public void extractAndSave(Long userId, String userMessage, String finalAnswer) {

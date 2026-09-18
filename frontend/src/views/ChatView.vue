@@ -1717,11 +1717,23 @@ function formatTime(value) {
 }
 
 .user-bubble {
-  min-width: 72px;
+  align-self: flex-end;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+  white-space: normal;
   background: var(--chat-primary);
   border-radius: var(--radius);
   color: var(--chat-primary-foreground);
   box-shadow: var(--chat-shadow);
+}
+
+.user-bubble :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.user-bubble :deep(p:last-child) {
+  margin-bottom: 0;
 }
 
 .typing-bubble {

@@ -22,6 +22,15 @@ public class AgentSkill {
 
     private String name;
 
+    @TableField(exist = false)
+    private String displayName;
+
+    @TableField(exist = false)
+    private String userDescription;
+
+    @TableField(exist = false)
+    private String example;
+
     private String description;
 
     private String version;

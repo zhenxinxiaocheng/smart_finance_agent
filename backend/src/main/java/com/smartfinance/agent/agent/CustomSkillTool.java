@@ -52,7 +52,7 @@ public class CustomSkillTool {
                                     String riskLevel) {
         Long userId = UserIdContext.get();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            throw new IllegalStateException("用户会话不可用");
         }
         CustomSkillDraftRequest request = new CustomSkillDraftRequest();
         request.setName(defaultText(name, "Custom Skill"));
@@ -63,6 +63,7 @@ public class CustomSkillTool {
         request.setCategory(defaultText(category, "Custom"));
         request.setRiskLevel(defaultText(riskLevel, riskFromTools(request.getBoundTools())));
         PendingAction action = pendingActionService.prepareCustomSkill(userId, request);
+        com.smartfinance.agent.common.ToolExecutionContext.pending(action.getId());
         return "已生成自定义 Skill 安装确认，请用户确认后生效：%s。待确认ID：%d"
                 .formatted(request.getName(), action.getId());
     }

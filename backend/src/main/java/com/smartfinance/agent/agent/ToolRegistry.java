@@ -211,9 +211,13 @@ public class ToolRegistry {
         AgentSkill invocationSkill;
         try {
             invocationSkill = agentSkillService.resolveInvocationSkill(userId, normalizedToolName, requestedSkillKey);
+            if (requestedSkillKey != null && !requestedSkillKey.isBlank()
+                    && !isRuntimeEnabled(agentSkillService.resolveInvocationSkill(userId, normalizedToolName, null))) {
+                throw new IllegalArgumentException("Bound tool is disabled");
+            }
         } catch (Exception e) {
             String skillName = requestedSkillKey == null || requestedSkillKey.isBlank() ? toolName : requestedSkillKey.trim();
-            String summary = "Skill rejected: " + e.getMessage();
+            String summary = "该技能或所需能力不可用，本次操作已拦截。";
             skillInvocationRecordService.record(userId, traceId, skillName, tool.category(), "UNKNOWN",
                     tool.riskLevel(), safeInput, false, true, 0L, summary, summary);
             return ToolObservation.builder()
@@ -235,6 +239,7 @@ public class ToolRegistry {
         }
 
         long started = System.currentTimeMillis();
+        com.smartfinance.agent.common.ToolExecutionContext.begin();
         try {
             UserIdContext.set(userId);
             String result = tool.executor().apply(safeInput);
@@ -250,8 +255,8 @@ public class ToolRegistry {
             return observation;
         } catch (Exception e) {
             long durationMs = System.currentTimeMillis() - started;
-            String summary = "工具执行失败：" + e.getMessage();
-            String raw = e.getClass().getSimpleName() + ": " + e.getMessage();
+            String summary = "本次操作未完成，请稍后重试。";
+            String raw = "工具执行失败：" + summary;
             skillInvocationRecordService.record(userId, traceId, runtimeInfo.skillName(), runtimeInfo.category(),
                     runtimeInfo.sourceType(), runtimeInfo.riskLevel(), safeInput, false, false, durationMs, summary, raw);
             return ToolObservation.builder()
@@ -261,6 +266,7 @@ public class ToolRegistry {
                     .build();
         } finally {
             UserIdContext.clear();
+            com.smartfinance.agent.common.ToolExecutionContext.clear();
         }
     }
 

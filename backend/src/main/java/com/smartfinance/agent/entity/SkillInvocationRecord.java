@@ -20,6 +20,12 @@ public class SkillInvocationRecord {
 
     private String traceId;
 
+    private Long pendingActionId;
+    private String executionState;
+
+    @TableField(exist = false)
+    private String outcome;
+
     private String skillName;
 
     private String category;

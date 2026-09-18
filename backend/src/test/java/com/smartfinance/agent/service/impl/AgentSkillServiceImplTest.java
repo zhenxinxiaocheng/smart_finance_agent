@@ -57,7 +57,7 @@ class AgentSkillServiceImplTest {
                 List.of("get_total_expense"));
         AgentSkill existing = new AgentSkill();
         existing.setSkillKey("get_total_income");
-        when(mapper.selectByUserAndSource(1L, "BUILT_IN", "builtin", "get_total_expense")).thenReturn(null);
+        when(mapper.selectList(any())).thenReturn(List.of());
 
         service.syncBuiltInSkills(1L, List.of(definition));
 

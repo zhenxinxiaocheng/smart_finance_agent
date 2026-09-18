@@ -164,13 +164,13 @@ public class ChatServiceImpl implements ChatService {
             @Override
             public void onFinal(String response, String traceId) {
                 agentRunService.completeRun(traceId, response);
-                reflectRunQuietly(userId, traceId);
                 if (emitter != null) {
                     sendEvent(emitter, "final", Map.of(
                             "response", response,
                             "traceId", traceId
                     ));
                 }
+                reflectRunQuietly(userId, traceId);
             }
 
             @Override

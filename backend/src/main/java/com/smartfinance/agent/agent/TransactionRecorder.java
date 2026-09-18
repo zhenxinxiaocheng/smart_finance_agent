@@ -36,7 +36,7 @@ public class TransactionRecorder {
 
         Long userId = UserIdContext.get();
         if (userId == null) {
-            return "无法获取用户信息，请重新登录后重试";
+            throw new IllegalStateException("用户会话不可用");
         }
 
         type = normalizeType(type);
@@ -58,14 +58,19 @@ public class TransactionRecorder {
         try {
             PendingAction action = pendingActionService.prepareTransaction(
                     userId, amount, type, category, description, txDate);
-            categorizationService.recordUserPreference(userId, description, category);
+            com.smartfinance.agent.common.ToolExecutionContext.pending(action.getId());
+            try {
+                categorizationService.recordUserPreference(userId, description, category);
+            } catch (Exception preferenceError) {
+                log.warn("Skip category preference update: userId={}", userId, preferenceError);
+            }
             String typeLabel = "INCOME".equals(type) ? "收入" : "支出";
             return String.format(
                     "已生成待确认记账，请用户确认后再入账：%s %.2f 元，分类 %s，日期 %s，备注 %s。待确认ID：%d",
                     typeLabel, amount, category, txDate, description == null ? "" : description, action.getId());
         } catch (Exception e) {
             log.error("Create pending transaction failed: userId={}, error={}", userId, e.getMessage());
-            return "生成待确认记账失败：" + e.getMessage() + "。请稍后重试或在「消费记录」页面手动录入。";
+            throw new IllegalStateException("生成待确认记账失败", e);
         }
     }
 

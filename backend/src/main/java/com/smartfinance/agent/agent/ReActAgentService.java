@@ -216,11 +216,8 @@ public class ReActAgentService {
         }
 
         saveAnalysis(userId, userMessage, traceId, steps, finalAnswer);
-        if (agentMemoryService.isAutoMemoryEnabled(userId)
-                && !(usedTool && agentMemoryService.shouldSkipToolAssistedMemory(userId))) {
-            extractMemory(userId, userMessage, finalAnswer);
-        }
         listener.onFinal(finalAnswer, traceId);
+        extractMemory(userId, userMessage, finalAnswer, usedTool);
 
         return ReActResult.builder()
                 .traceId(traceId)
@@ -324,9 +321,12 @@ public class ReActAgentService {
         }
     }
 
-    private void extractMemory(Long userId, String userMessage, String finalAnswer) {
+    private void extractMemory(Long userId, String userMessage, String finalAnswer, boolean usedTool) {
         try {
-            memoryExtractor.extractAndSave(userId, userMessage, finalAnswer);
+            if (agentMemoryService.isAutoMemoryEnabled(userId)
+                    && !(usedTool && agentMemoryService.shouldSkipToolAssistedMemory(userId))) {
+                memoryExtractor.enqueue(userId, userMessage, finalAnswer);
+            }
         } catch (Exception e) {
             log.warn("Memory extraction failed: userId={}, error={}", userId, e.getMessage());
         }
@@ -365,6 +365,8 @@ public class ReActAgentService {
                 - 当用户明确要求“做成 Skill / 记成 Skill / 包装成 Skill / 以后遇到这类问题按这个流程做”时，调用 create_custom_skill 生成自定义 Skill 草稿；普通偏好不要自动做成 Skill。
                 - 当用户明确要求“定期 / 每天 / 每周 / 每月 / 提醒我 / 自动帮我”执行某个财务分析、复盘或监控任务时，调用 create_agent_schedule 生成待确认周期任务；不要直接创建任务，不要把一次性偏好做成周期任务；input 必须包含 name、description、cronExpression、taskQuery、timezone。
                 - 需要用户账单、预算、记账、实时财经信息时，先调用工具，不要编造数据。
+                - 用户陈述一笔已发生的收支（例如“我中午吃了50”）时，调用记账工具生成待确认操作；缺少必要信息则追问，禁止直接入账。
+                - 产品能力以当前可用 Skills 为准。不能因为尚未调用工具就声称系统不支持该功能，也不要把用户引导到其他记账软件。
                 - 如果任务需要读取或改变系统数据、生成待确认动作、查询实时信息，必须先根据可用 Skills 输出 action；没有对应 Observation，不允许声称已经查询、创建、设置、记录或完成。
                 - 如果工具返回空数据，要诚实说明，并建议用户补录数据或缩小查询范围。
                 - 最终答案默认用中文，简洁自然，默认不超过 500 字；如果当前问题或 Agent 长期记忆指定了其他语言，必须使用指定语言。
@@ -394,6 +396,8 @@ public class ReActAgentService {
 
                         裁决规则：
                         - 如果 final answer 只是通用建议、澄清、解释，且不依赖系统私有数据、外部实时信息或写操作，requiresTool=false。
+                        - 用户描述一笔已发生的收入或支出时，应使用可用的记账工具生成待确认操作；不能把这种请求当成普通闲聊。
+                        - 回答声称不支持某功能，但可用工具清单包含该功能时，应要求调用对应工具；缺少必要信息可以澄清。
                         - 如果 final answer 声称已经查询、创建、设置、记录、删除、确认、导入、搜索或生成待确认动作，但当前尚未提供对应工具 Observation，requiresTool=true。
                         - 如果用户请求需要系统私有数据、外部实时信息或会改变系统状态，且 final answer 没有先基于工具 Observation 回答，requiresTool=true。
                         - tool 必须来自可用工具清单；根据工具描述和输入 schema 自行选择最匹配的工具。

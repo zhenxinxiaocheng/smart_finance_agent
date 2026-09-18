@@ -19,6 +19,7 @@ import com.smartfinance.agent.service.AgentMemoryService;
 import com.smartfinance.agent.service.FinancialProfileService;
 import com.smartfinance.agent.service.RagKnowledgeService;
 import dev.langchain4j.data.message.ChatMessage;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Service
+@Slf4j
 public class AgentContextService {
 
     private final List<AgentContextProvider> providers;
@@ -92,9 +94,16 @@ public class AgentContextService {
                 .build();
         List<ContextBlock> blocks = new ArrayList<>();
         for (AgentContextProvider provider : providers) {
-            List<ContextBlock> provided = provider.provide(request);
-            if (provided != null && !provided.isEmpty()) {
-                blocks.addAll(provided);
+            long started = System.nanoTime();
+            try {
+                List<ContextBlock> provided = provider.provide(request);
+                if (provided != null && !provided.isEmpty()) {
+                    blocks.addAll(provided);
+                }
+            } finally {
+                log.info("Chat context: traceId={}, provider={}, elapsedMs={}", traceId,
+                        provider.getClass().getSimpleName(),
+                        java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
         }
 

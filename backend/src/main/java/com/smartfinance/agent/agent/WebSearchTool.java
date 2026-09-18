@@ -34,7 +34,7 @@ public class WebSearchTool {
     @Tool("搜索网络上的财经资讯、汇率、股市等信息，当用户问到实时财经动态时使用此工具")
     public String searchWeb(@P("搜索关键词") String query) {
         if (searchApiKey == null || searchApiKey.isEmpty()) {
-            return "搜索功能暂未配置 API Key，无法联网搜索。如需使用请在 application.yml 中配置 search.api-key";
+            throw new IllegalStateException("联网搜索暂不可用");
         }
         try {
             Map<String, Object> requestBody = Map.of(
@@ -59,7 +59,7 @@ public class WebSearchTool {
             return parseTavilyResponse(responseBody, query);
         } catch (Exception e) {
             log.warn("Tool[searchWeb] 搜索失败: {}", e.getMessage());
-            return "联网搜索暂时不可用，请稍后再试。错误：" + e.getMessage();
+            throw new IllegalStateException("联网搜索暂不可用", e);
         }
     }
 
@@ -104,7 +104,7 @@ public class WebSearchTool {
             return result.toString();
         } catch (JsonProcessingException e) {
             log.warn("Tool[searchWeb] 解析响应失败: {}", e.getMessage());
-            return "搜索结果解析失败：" + responseBody;
+            throw new IllegalStateException("搜索结果解析失败", e);
         }
     }
 }

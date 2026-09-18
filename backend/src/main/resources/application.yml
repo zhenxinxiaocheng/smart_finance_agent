@@ -53,6 +53,9 @@ langchain4j:
   dashscope:
     chat-model:
       model-name: qwen3.6-flash
+      enable-thinking: ${DASHSCOPE_CHAT_ENABLE_THINKING:false}
+      base-url: ${DASHSCOPE_CHAT_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      timeout: ${DASHSCOPE_CHAT_TIMEOUT:120s}
       temperature: 0.4
       top-p: 0.9
     embedding-model:
@@ -69,6 +72,8 @@ bill:
     multimodal-model: ${DASHSCOPE_VL_MODEL:qwen3.5-omni-plus-2026-03-15}
 
 agent:
+  memory:
+    queue-capacity: ${AGENT_MEMORY_QUEUE_CAPACITY:64}
   context:
     max-tokens: ${AGENT_CONTEXT_MAX_TOKENS:12000}
     reserved-output-tokens: ${AGENT_CONTEXT_RESERVED_OUTPUT_TOKENS:1500}

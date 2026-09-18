@@ -30,9 +30,10 @@ public class BudgetTool {
     @Tool("Set monthly budget for a category")
     public String setBudget(@P("Category name") String category, @P("Amount") BigDecimal amount, @P("Month yyyy-MM") String month) {
         Long userId = UserIdContext.get();
-        if (userId == null) return "Cannot get user info";
+        if (userId == null) throw new IllegalStateException("用户会话不可用");
         if (month == null || month.isBlank()) month = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM"));
         PendingAction action = pendingActionService.prepareBudget(userId, category, month, amount);
+        com.smartfinance.agent.common.ToolExecutionContext.pending(action.getId());
         return String.format("已生成待确认预算设置，请用户确认后再生效：%s %s %.2f 元。待确认ID：%d",
                 month, category, amount, action.getId());
     }
@@ -40,7 +41,7 @@ public class BudgetTool {
     @Tool("Check budget status for a month")
     public String getBudgetStatus(@P("Month yyyy-MM") String month) {
         Long userId = UserIdContext.get();
-        if (userId == null) return "Cannot get user info";
+        if (userId == null) throw new IllegalStateException("用户会话不可用");
         if (month == null || month.isBlank()) month = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM"));
         Map<String, Object> summary = budgetService.getBudgetSummary(userId, month);
         if (!(boolean) summary.get("hasBudget")) return "No budget set for " + month;
@@ -55,7 +56,7 @@ public class BudgetTool {
     @Tool("Check unread budget alerts")
     public String checkAlerts() {
         Long userId = UserIdContext.get();
-        if (userId == null) return "Cannot get user info";
+        if (userId == null) throw new IllegalStateException("用户会话不可用");
         List<BudgetAlert> alerts = budgetService.getUnreadAlerts(userId);
         if (alerts.isEmpty()) return "No alerts.";
         StringBuilder sb = new StringBuilder("Alerts:\n");
@@ -66,7 +67,7 @@ public class BudgetTool {
     @Tool("Get recent alert history")
     public String getAlertHistory(@P("Limit") int limit) {
         Long userId = UserIdContext.get();
-        if (userId == null) return "Cannot get user info";
+        if (userId == null) throw new IllegalStateException("用户会话不可用");
         if (limit <= 0 || limit > 20) limit = 5;
         List<BudgetAlert> alerts = budgetService.getRecentAlerts(userId, limit);
         if (alerts.isEmpty()) return "No history.";

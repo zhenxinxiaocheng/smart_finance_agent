@@ -17,10 +17,13 @@ public class SkillInvocationRecordServiceImpl implements SkillInvocationRecordSe
 
     private final SkillInvocationRecordMapper mapper;
     private final ObjectMapper objectMapper;
+    private final com.smartfinance.agent.mapper.PendingActionMapper pendingActionMapper;
 
-    public SkillInvocationRecordServiceImpl(SkillInvocationRecordMapper mapper, ObjectMapper objectMapper) {
+    public SkillInvocationRecordServiceImpl(SkillInvocationRecordMapper mapper, ObjectMapper objectMapper,
+            com.smartfinance.agent.mapper.PendingActionMapper pendingActionMapper) {
         this.mapper = mapper;
         this.objectMapper = objectMapper;
+        this.pendingActionMapper = pendingActionMapper;
     }
 
     @Override
@@ -52,6 +55,9 @@ public class SkillInvocationRecordServiceImpl implements SkillInvocationRecordSe
             SkillInvocationRecord record = new SkillInvocationRecord();
             record.setUserId(userId);
             record.setTraceId(traceId);
+            record.setPendingActionId(com.smartfinance.agent.common.ToolExecutionContext.pendingActionId());
+            record.setExecutionState(blocked ? "BLOCKED" : !success ? "FAILED"
+                    : record.getPendingActionId() != null ? "PENDING" : "RETURNED");
             record.setSkillName(skillName);
             record.setCategory(category);
             record.setSourceType(sourceType);
@@ -79,7 +85,31 @@ public class SkillInvocationRecordServiceImpl implements SkillInvocationRecordSe
         if (skillName != null && !skillName.isBlank()) {
             query.eq(SkillInvocationRecord::getSkillName, skillName.trim());
         }
-        return mapper.selectList(query);
+        List<SkillInvocationRecord> records = mapper.selectList(query);
+        var ids = records.stream().map(SkillInvocationRecord::getPendingActionId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        java.util.Map<Long, String> states = new java.util.HashMap<>();
+        if (!ids.isEmpty()) {
+            pendingActionMapper.selectList(new LambdaQueryWrapper<com.smartfinance.agent.entity.PendingAction>()
+                    .eq(com.smartfinance.agent.entity.PendingAction::getUserId, userId)
+                    .in(com.smartfinance.agent.entity.PendingAction::getId, ids))
+                    .forEach(action -> states.put(action.getId(), action.getStatus()));
+        }
+        records.forEach(record -> {
+            if (Integer.valueOf(1).equals(record.getBlocked())) record.setOutcome("BLOCKED");
+            else if (!Integer.valueOf(1).equals(record.getSuccess())) record.setOutcome("FAILED");
+            else if (record.getExecutionState() == null) record.setOutcome("UNKNOWN");
+            else if (record.getPendingActionId() != null) {
+                record.setOutcome(switch (states.getOrDefault(record.getPendingActionId(), "UNKNOWN")) {
+                    case "PENDING" -> "PENDING";
+                    case "CONFIRMED" -> "COMPLETED";
+                    case "CANCELLED" -> "CANCELLED";
+                    default -> "UNKNOWN";
+                });
+            } else if ("REQUIRES_CONFIRMATION".equals(record.getRiskLevel())) record.setOutcome("UNKNOWN");
+            else record.setOutcome("RETURNED");
+        });
+        return records;
     }
 
     @Override

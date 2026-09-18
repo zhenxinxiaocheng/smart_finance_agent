@@ -94,14 +94,18 @@ class ReActAgentServiceTest {
                         .rawResult("total expense: 100")
                         .build());
 
-        var result = service.run(1L, "我这个月花了多少");
+        var listener = org.mockito.Mockito.mock(ReActAgentService.ReActEventListener.class);
+        var result = service.run(1L, "我这个月花了多少", listener);
 
         assertEquals("本月目前支出 100 元。", result.getFinalAnswer());
         assertEquals(1, result.getSteps().size());
         assertTrue(result.getSteps().get(0).isSuccess());
         verify(toolRegistry).execute(eq("get_total_expense"), any(), eq(1L), any(), eq(""));
         verify(analysisRecordMapper).insert(any());
-        verify(memoryExtractor).extractAndSave(eq(1L), eq("我这个月花了多少"), any());
+        verify(memoryExtractor).enqueue(eq(1L), eq("我这个月花了多少"), any());
+        var order = org.mockito.Mockito.inOrder(listener, memoryExtractor);
+        order.verify(listener).onFinal(result.getFinalAnswer(), result.getTraceId());
+        order.verify(memoryExtractor).enqueue(1L, "我这个月花了多少", result.getFinalAnswer());
     }
 
     @Test
@@ -398,7 +402,7 @@ class ReActAgentServiceTest {
 
         service.run(1L, "以后回答短一点");
 
-        verify(memoryExtractor, never()).extractAndSave(any(), any(), any());
+        verify(memoryExtractor, never()).enqueue(any(), any(), any());
     }
 
     @Test
@@ -420,7 +424,7 @@ class ReActAgentServiceTest {
 
         service.run(1L, "查一下支出");
 
-        verify(memoryExtractor, never()).extractAndSave(any(), any(), any());
+        verify(memoryExtractor, never()).enqueue(any(), any(), any());
     }
 
     private int countOccurrences(String text, String target) {

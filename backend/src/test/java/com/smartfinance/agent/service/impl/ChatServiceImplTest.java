@@ -216,6 +216,41 @@ class ChatServiceImplTest {
     }
 
     @Test
+    void streamReactChat_shouldSendFinalBeforeSlowReflectionCompletes() throws Exception {
+        var reflectionStarted = new java.util.concurrent.CountDownLatch(1);
+        var releaseReflection = new java.util.concurrent.CountDownLatch(1);
+        when(chatMessageMapper.selectRecentByConversation(1L, 99L, 12)).thenReturn(List.of());
+        when(pendingActionService.listPending(1L)).thenReturn(List.of());
+        when(agentReflectionService.reflectRun(1L, "trace-slow-reflection"))
+                .thenAnswer(invocation -> {
+                    reflectionStarted.countDown();
+                    releaseReflection.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    return List.of();
+                });
+        when(reactAgentService.run(eq(1L), eq(99L), eq("分析预算"),
+                org.mockito.ArgumentMatchers.<List<ChatMessage>>any(), any()))
+                .thenAnswer(invocation -> {
+                    ReActAgentService.ReActEventListener listener = invocation.getArgument(4);
+                    listener.onRunStarted("trace-slow-reflection");
+                    listener.onFinal("预算正常。", "trace-slow-reflection");
+                    return ReActResult.builder().traceId("trace-slow-reflection")
+                            .finalAnswer("预算正常。").steps(List.of()).build();
+                });
+
+        try {
+            SseEmitter emitter = chatService.streamReactChat(1L, 99L, "分析预算");
+            assertThat(reflectionStarted.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(earlySseData(emitter)).contains("event:final").contains("预算正常。");
+        } finally {
+            releaseReflection.countDown();
+        }
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                verify(chatMessageMapper).insert(argThat(message ->
+                        "ASSISTANT".equals(message.getRole())
+                                && "trace-slow-reflection".equals(message.getTraceId()))));
+    }
+
+    @Test
     void streamReactChat_shouldEmitContextUsageSnapshot() {
         when(chatMessageMapper.selectRecentByConversation(1L, 99L, 12)).thenReturn(List.of());
         when(pendingActionService.listPending(1L)).thenReturn(List.of());

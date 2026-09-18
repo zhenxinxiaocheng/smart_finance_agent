@@ -115,7 +115,7 @@ class ToolRegistryTest {
                 registry.execute("search_web", null, 1L, "trace-rejected", "pdf-helper");
 
         assertThat(observation.isSuccess()).isFalse();
-        assertThat(observation.getSummary()).contains("Skill rejected");
+        assertThat(observation.getSummary()).contains("已拦截");
         verify(skillInvocationRecordService).record(eq(1L), eq("trace-rejected"),
                 eq("pdf-helper"), eq("联网搜索"), eq("UNKNOWN"), eq("EXTERNAL_INFORMATION"),
                 any(), eq(false), eq(true), eq(0L), any(), any());
@@ -182,6 +182,27 @@ class ToolRegistryTest {
         verify(skillInvocationRecordService).record(eq(1L), eq("trace-investment"),
                 eq("get_investment_overview"), eq("投资分析"), eq("BUILT_IN"), eq("READ_ONLY"),
                 any(), eq(true), eq(false), any(Long.class), any(), any());
+    }
+
+    @Test
+    void toolFailureMustBeRecordedAsFailureWithoutInternalErrorText() {
+        when(webSearchTool.searchWeb(any())).thenThrow(new IllegalStateException("private upstream details"));
+        var result = registry.execute("search_web", null, 1L, "failed-search");
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getRawResult()).contains("工具执行失败").doesNotContain("private upstream");
+        verify(skillInvocationRecordService).record(eq(1L), eq("failed-search"), any(), any(), any(), any(),
+                any(), eq(false), eq(false), any(Long.class), any(), any());
+        assertThat(com.smartfinance.agent.common.ToolExecutionContext.pendingActionId()).isNull();
+    }
+
+    @Test
+    void customSkillMustNotBypassDisabledBoundTool() {
+        when(agentSkillService.resolveInvocationSkill(1L, "search_web", "custom-search"))
+                .thenReturn(builtInSkill("custom-search", "查询", "CUSTOM", "READ_ONLY", 1));
+        when(agentSkillService.resolveInvocationSkill(1L, "search_web", null))
+                .thenReturn(builtInSkill("search_web", "查询", "BUILT_IN", "READ_ONLY", 0));
+        assertThat(registry.execute("search_web", null, 1L, "disabled-bound", "custom-search").isSuccess()).isFalse();
+        org.mockito.Mockito.verifyNoInteractions(webSearchTool);
     }
 
     private AgentSkill builtInSkill(String key, String category, String sourceType, String riskLevel, int enabled) {

@@ -65,12 +65,18 @@ public class AgentSkillServiceImpl implements AgentSkillService {
         if (userId == null || definitions == null) {
             return;
         }
+        var existingSkills = mapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AgentSkill>()
+                .eq(AgentSkill::getUserId, userId).eq(AgentSkill::getSourceType, BUILT_IN_SOURCE)
+                .eq(AgentSkill::getSourceUri, BUILT_IN_URI)).stream()
+                .collect(java.util.stream.Collectors.toMap(AgentSkill::getSkillKey, skill -> skill, (first, second) -> first));
         for (AgentSkillDefinition definition : definitions) {
-            AgentSkill existing = mapper.selectByUserAndSource(userId, BUILT_IN_SOURCE, BUILT_IN_URI, definition.skillKey());
+            AgentSkill existing = existingSkills.get(definition.skillKey());
             if (existing == null) {
                 AgentSkill skill = fromDefinition(userId, definition);
                 mapper.insert(skill);
             } else {
+                AgentSkill before = new AgentSkill();
+                org.springframework.beans.BeanUtils.copyProperties(existing, before);
                 existing.setName(definition.name());
                 existing.setCategory(definition.category());
                 existing.setDescription(definition.description());
@@ -85,7 +91,7 @@ public class AgentSkillServiceImpl implements AgentSkillService {
                 if (existing.getEnabled() == null) {
                     existing.setEnabled(1);
                 }
-                mapper.updateById(existing);
+                if (!existing.equals(before)) mapper.updateById(existing);
             }
         }
     }
@@ -113,12 +119,13 @@ public class AgentSkillServiceImpl implements AgentSkillService {
                 joiner.add("[" + currentCategory + "]");
             }
             joiner.add("- " + skill.getSkillKey() + " (" + clean(skill.getName(), skill.getSkillKey()) + "): "
-                    + clean(skill.getDescription(), "")
+                    + clean(skill.getDescription(), "").replaceFirst("(?is)\\s*input:.*$", "")
                     + " Risk: " + clean(skill.getRiskLevel(), "READ_ONLY")
                     + " input: " + clean(skill.getInputSchema(), "{}")
                     + " boundTools: " + clean(skill.getBoundTools(), skill.getSkillKey())
                     + " source: " + clean(skill.getSourceType(), "UNKNOWN"));
-            if (skill.getInstructionText() != null && !skill.getInstructionText().isBlank()) {
+            if (!Integer.valueOf(1).equals(skill.getBuiltIn())
+                    && skill.getInstructionText() != null && !skill.getInstructionText().isBlank()) {
                 joiner.add("  Skill instructions: " + compact(skill.getInstructionText(), 500));
             }
         }
@@ -164,7 +171,7 @@ public class AgentSkillServiceImpl implements AgentSkillService {
 
     @Override
     public List<AgentSkill> list(Long userId) {
-        return mapper.selectByUser(userId);
+        return mapper.selectByUser(userId).stream().map(SkillPresentation::apply).toList();
     }
 
     @Override
@@ -173,7 +180,7 @@ public class AgentSkillServiceImpl implements AgentSkillService {
         if (skill == null || !userId.equals(skill.getUserId()) || value(skill.getDeleted()) == 1) {
             throw new IllegalArgumentException("Skill not found");
         }
-        return skill;
+        return SkillPresentation.apply(skill);
     }
 
     @Override

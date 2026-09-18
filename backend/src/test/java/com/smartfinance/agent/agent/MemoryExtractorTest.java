@@ -22,12 +22,41 @@ class MemoryExtractorTest {
     private ChatLanguageModel chatModel;
     @Mock
     private AgentMemoryService agentMemoryService;
+    @Mock
+    private MemoryExtractionQueue extractionQueue;
 
     private MemoryExtractor extractor;
 
     @BeforeEach
     void setUp() {
-        extractor = new MemoryExtractor(chatModel, agentMemoryService);
+        extractor = new MemoryExtractor(chatModel, agentMemoryService, extractionQueue);
+    }
+
+    @Test
+    void enqueue_shouldDeferModelCallAndRespectDisabledMemoryWhenTaskRuns() {
+        var task = org.mockito.ArgumentCaptor.forClass(Runnable.class);
+        when(extractionQueue.submit(task.capture())).thenReturn(true);
+
+        extractor.enqueue(1L, "回答短一点", "好的");
+
+        verify(chatModel, never()).generate(anyList());
+        when(agentMemoryService.isAutoMemoryEnabled(1L)).thenReturn(false);
+        task.getValue().run();
+        verify(chatModel, never()).generate(anyList());
+    }
+
+    @Test
+    void enqueue_shouldExtractMemoryWhenBackgroundTaskRuns() {
+        var task = org.mockito.ArgumentCaptor.forClass(Runnable.class);
+        when(extractionQueue.submit(task.capture())).thenReturn(true);
+        when(agentMemoryService.isAutoMemoryEnabled(1L)).thenReturn(true);
+        when(chatModel.generate(anyList())).thenReturn(response("{\"memories\":[]}"));
+
+        extractor.enqueue(1L, "回答短一点", "好的");
+
+        verify(chatModel, never()).generate(anyList());
+        task.getValue().run();
+        verify(chatModel).generate(anyList());
     }
 
     @Test
