@@ -16,11 +16,13 @@ public class WorkbenchService {
     final JdbcTemplate db;
     final ObjectMapper json;
     final TransactionTemplate tx;
+    final WorkbenchTrackingIndex trackingIndex;
     static final Set<String> OBJECTS = Set.of("universes", "factors", "strategies");
     static final Set<String> TASKS = Set.of("training-runs", "backtests", "factor-runs");
     static final int MINIMUM_EVALUATION_DAYS = 60;
-    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager) {
+    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager, WorkbenchTrackingIndex trackingIndex) {
         this.db=db; this.json=json; this.tx=new TransactionTemplate(manager);
+        this.trackingIndex=trackingIndex;
     }
     static String now() { return Instant.now().toString(); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -262,6 +264,11 @@ public class WorkbenchService {
         if(!"factor-runs".equals(kind)) {var strategy=lockObject(u,"strategies",str(b.get("strategyId")));require(!"ARCHIVED".equals(strategy.get("status")),"策略已归档");var p=decode(strategy.get("payload"));strategyId=str(strategy.get("id"));sv=freeze(u,strategy);universeId=str(p.get("universeId"));config=map(p.get("config"));name=str(strategy.get("name"));if(p.get("factorSetId")!=null&&!str(p.get("factorSetId")).isBlank()){var f=lockObject(u,"factors",str(p.get("factorSetId")));require(!"ARCHIVED".equals(f.get("status")),"因子集已归档");config.put("factors",decode(f.get("payload")).get("factors"));req.put("factorVersionId",freeze(u,f));}}
         var universe=lockObject(u,"universes",universeId);require(!"ARCHIVED".equals(universe.get("status")),"资产池已归档");var pool=decode(universe.get("payload"));if("backtests".equals(kind)){var window=evaluationWindow(u,universeId,start,end);int available=((Number)window.get("selectedEvaluationDays")).intValue();require(available>=MINIMUM_EVALUATION_DAYS,"有效评估日期不足：当前区间只有"+available+"个共同有效交易日，至少需要"+MINIMUM_EVALUATION_DAYS+"日；可使用最近"+MINIMUM_EVALUATION_DAYS+"个有效交易日。");}req.put("universeId",universeId);req.put("universeVersionId",freeze(u,universe));req.put("universeVersion",req.get("universeVersionId"));config.put("assetClass",pool.get("assetClass"));config.put("corporateActionsVerified",false);if(b.get("initialCash")!=null)config.put("initialCash",b.get("initialCash"));
         req.put("kind",switch(kind){case "training-runs"->"TRAINING";case "backtests"->"BACKTEST";default->"FACTOR_RESEARCH";});req.put("config",config);req.put("assets",snapshot(u,pool,end));req.put("startDate",start);req.put("endDate",end);req.put("strategyVersionId",sv);req.put("universe",pool);
+        if ("backtests".equals(kind)) {
+            var members = ((List<?>)pool.get("assetIds")).stream().map(identity -> asset(u,identity)).toList();
+            var comparison = trackingIndex.resolve(members,LocalDate.parse(start),LocalDate.parse(end));
+            if (!comparison.isEmpty()) req.put("trackingIndex",comparison);
+        }
         String modelTask=str(b.getOrDefault("modelTaskId",b.get("trainingRunId")));if(!modelTask.isBlank()){var trained=row("quant_v2_task",u,modelTask);require("training-runs".equals(trained.get("kind"))&&"SUCCEEDED".equals(trained.get("status")),"请选择成功的训练结果");var trainingRequest=decode(trained.get("request_json"));var tc=map(trainingRequest.get("config"));for(String key:List.of("strategyType","assetClass","predictionHorizon","factors","lookback","slowWindow"))require(Objects.equals(tc.get(key),config.get(key)),"模型配置不兼容："+key);var response=decode(trained.get("result_json"));require(response.get("modelRef")!=null,"训练没有有效模型产物");req.put("modelRef",response.get("modelRef"));req.put("modelTaskId",modelTask);}
         String key=id();db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,strategy_id,strategy_version_id,universe_id,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",key,u,kind,name,"QUEUED","QUEUED",strategyId,sv,universeId,encode(req),now(),now());return get(u,kind,key);
     }); }

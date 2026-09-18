@@ -9,7 +9,8 @@ test('relative return preserves positive, negative and zero differences', () => 
     } })
     assert.equal(report.items.find(i => i.key === 'relativeReturn').value, expected)
     assert.equal(report.items.find(i => i.key === 'holdDrawdown').value, '20.00%')
-    assert.equal(report.items.find(i => i.key === 'holdFees').value, '0')
+    assert.equal(report.items.length, 5)
+    assert.ok(report.items.every(i => !/费用|年化|次数/.test(i.label)))
   }
 })
 

@@ -17,6 +17,25 @@ import static org.mockito.Mockito.when;
 class QuantBenchmarkProfileServiceTest {
 
     @Test
+    void comparisonRetainsObservedHolidayStartingLevelWithoutFetching() {
+        var mapper = mock(BenchmarkProfileMapper.class);
+        var snapshots = mock(QuantBenchmarkSnapshotMapper.class);
+        var client = mock(AnalysisServiceClient.class);
+        var profile = profile("A", "INDEX_FUND", "CSI300");
+        when(mapper.selectList(any())).thenReturn(List.of(profile));
+        var snapshot = new QuantBenchmarkSnapshot();
+        snapshot.setSnapshotVersion("frozen-v1");
+        snapshot.setRecordsJson("[{\"data_date\":\"2022-12-29\",\"close\":99},{\"data_date\":\"2022-12-30\",\"close\":100},{\"data_date\":\"2023-01-03\",\"close\":110},{\"data_date\":\"2023-01-04\",\"close\":105}]");
+        when(snapshots.selectOne(any())).thenReturn(snapshot);
+        var resolved = new QuantBenchmarkProfileService(mapper,snapshots,client,new ObjectMapper())
+                .resolveCachedComparison("MUTUAL_FUND","A",LocalDate.parse("2023-01-01"),LocalDate.parse("2023-01-04"));
+        assertThat(resolved.available()).isTrue();
+        assertThat(resolved.records()).hasSize(3);
+        assertThat(resolved.records().get(0)).containsEntry("data_date","2022-12-30");
+        verifyNoInteractions(client);
+    }
+
+    @Test
     void exactOfficialProfileWinsAndLoadsVersionedRecords() {
         BenchmarkProfileMapper mapper = mock(BenchmarkProfileMapper.class);
         QuantBenchmarkSnapshotMapper snapshotMapper = mock(QuantBenchmarkSnapshotMapper.class);

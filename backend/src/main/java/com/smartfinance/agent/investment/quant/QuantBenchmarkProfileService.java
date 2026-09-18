@@ -116,6 +116,21 @@ public class QuantBenchmarkProfileService {
         return resolved(profile, cached, readRecords(cached.getRecordsJson()), startDate, endDate);
     }
 
+    public ResolvedBenchmark resolveCachedComparison(String productType, String productCode,
+                                                     LocalDate startDate, LocalDate endDate) {
+        BenchmarkProfile profile = configuration(productType, productCode, startDate);
+        if (profile == null || benchmarkContractIssue(profile) != null) {
+            return ResolvedBenchmark.unavailable("跟踪指数配置不可用");
+        }
+        QuantBenchmarkSnapshot cached = cachedSnapshot(profile, startDate, endDate);
+        if (cached == null) return ResolvedBenchmark.unavailable("跟踪指数历史尚未准备完成");
+        var records = readRecords(cached.getRecordsJson());
+        // Retain the last observed starting level when the start falls on a market holiday.
+        LocalDate baseDate = records.stream().map(QuantBenchmarkProfileService::recordDate)
+                .filter(day -> !day.isAfter(startDate)).max(LocalDate::compareTo).orElse(startDate);
+        return resolved(profile, cached, records, baseDate, endDate);
+    }
+
     public ResolvedBenchmark resolve(String productType,
                                      String productCode,
                                      LocalDate asOfDate,

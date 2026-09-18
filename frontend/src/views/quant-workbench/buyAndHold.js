@@ -1,7 +1,6 @@
 const finite = value => typeof value === 'number' && Number.isFinite(value)
 const percent = (value, signed = false) => !finite(value) ? '—'
   : `${signed && value > 0 ? '+' : ''}${(value * 100).toFixed(2)}%`
-const amount = value => finite(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
 
 export function buyAndHoldComparison(result = {}) {
   const baseline = result.buyAndHold
@@ -22,11 +21,10 @@ export function buyAndHoldComparison(result = {}) {
     { key: 'strategyDrawdown', label: '策略最大回撤', value: percent(strategy.maxDrawdown) },
     { key: 'holdDrawdown', label: '买入并持有最大回撤', value: percent(hold.maxDrawdown) },
   ]
-  for (const [prefix, name, metrics] of [['strategy', '策略', strategy], ['hold', '买入并持有', hold]]) {
-    const annual = metrics.annualReturn ?? metrics.annualizedReturn
-    const fees = metrics.fees ?? metrics.totalFees
-    if (finite(annual)) items.push({ key: `${prefix}Annual`, label: `${name}年化收益`, value: percent(annual, true) })
-    if (finite(fees)) items.push({ key: `${prefix}Fees`, label: `${name}费用`, value: amount(fees) })
+  if (result.trackingIndex?.status === 'READY') {
+    const index = result.trackingIndex
+    items.push({ key: 'indexReturn', label: `跟踪指数 · ${index.name}累计收益`, value: percent(index.metrics?.netReturn, true) },
+      { key: 'indexDrawdown', label: '跟踪指数最大回撤', value: percent(index.metrics?.maxDrawdown) })
   }
   return { items, message: '' }
 }

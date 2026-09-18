@@ -22,6 +22,7 @@ class WorkbenchServiceTest {
     private JdbcTemplate db;
     private WorkbenchService service;
     private DriverManagerDataSource source;
+    private WorkbenchTrackingIndex tracking;
 
     @BeforeEach
     void createDatabase() {
@@ -37,12 +38,27 @@ class WorkbenchServiceTest {
                     + "VALUES(?,?,?,?,?,?)", 1L, LocalDate.of(2023, 1, 2).plusDays(index).toString(),
                     BigDecimal.valueOf(1.25), BigDecimal.valueOf(1.25), "NONE", "TEST");
         }
-        service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source));
+        tracking = org.mockito.Mockito.mock(WorkbenchTrackingIndex.class);
+        service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source), tracking);
     }
 
     private Map<String,Object> universe() {
         return service.save(1L, "universes", null,
                 Map.of("name", "基金池", "assetClass", "FUND", "assetIds", List.of(1)));
+    }
+
+    @Test
+    void backtestFreezesResolvedTrackingHistoryInWorkerPayload() {
+        var index = Map.<String,Object>of("status","READY","code","NASDAQ100","name","纳斯达克100",
+                "records",List.of(Map.of("data_date","2023-01-01","close",100)),"sourceVersion","snapshot-v1");
+        org.mockito.Mockito.when(tracking.resolve(org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(index);
+        String pool = (String) universe().get("id");
+        String strategy = (String) strategy(pool).get("id");
+        var task = service.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
+        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
+        assertThat(request.get("trackingIndex")).isEqualTo(index);
+        org.mockito.Mockito.verify(tracking).resolve(org.mockito.ArgumentMatchers.argThat(members -> members.size()==1 && "fixture".equals(members.get(0).get("code"))),
+                org.mockito.ArgumentMatchers.eq(LocalDate.parse("2023-01-01")),org.mockito.ArgumentMatchers.eq(LocalDate.parse("2023-03-02")));
     }
 
     private Map<String,Object> strategy(String pool) {
@@ -152,7 +168,7 @@ class WorkbenchServiceTest {
         String snapshot = db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id"));
         service.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
-        var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source));
+        var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source), org.mockito.Mockito.mock(WorkbenchTrackingIndex.class));
         assertThat(restarted.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id")))
                 .isEqualTo(snapshot);

@@ -31,7 +31,7 @@ class ExperimentFlowTest {
         when(client.candidates(anyMap())).thenReturn(Map.of("parameterKey","slowWindow","baseline",60,"delta",6,"values",List.of(48,54,60,66,72),"ruleVersion","rule"));
         experiments=new ExperimentService(db,repository,snapshots,new ExperimentCandidateService(client),client,attempts,manager);
         resolver=new ExperimentExecutionResolver(repository,snapshots,db);validator=new ExperimentResultValidator();summaries=new ExperimentSummaryService(db,repository,validator,manager);
-        ordinary=new WorkbenchService(db,json,manager);worker=new WorkbenchWorker(ordinary,client);worker.configureExperiments(resolver,validator,summaries);
+        ordinary=new WorkbenchService(db,json,manager,org.mockito.Mockito.mock(com.smartfinance.agent.investment.quant.workbench.WorkbenchTrackingIndex.class));worker=new WorkbenchWorker(ordinary,client);worker.configureExperiments(resolver,validator,summaries);
         for(String[] object:List.of(new String[]{"strategy","strategies"},new String[]{"universe","universes"})) {
             db.update("INSERT INTO quant_v2_object VALUES(?,7,?,?,'ACTIVE',1,'{}','now','now')",object[0],object[1],object[0]);
             db.update("INSERT INTO quant_v2_version VALUES(?,7,?,1,'{}','now')",object[0]+"-v1",object[0]);

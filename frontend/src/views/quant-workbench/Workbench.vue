@@ -57,13 +57,20 @@ const links = [['/quant', '策略'], ['/quant/universes', '资产池'], ['/quant
 .qw .quant-backtest-period .toolbar { margin-top:0; margin-bottom:10px }
 .qw .quant-secondary { margin-block:16px; border:1px solid var(--border); border-radius:12px; padding:0 18px 12px }
 .qw .quant-secondary:not([open]) { padding-bottom:0 }
-.qw .quant-chart { height:460px; width:100%; min-width:0 }
+.qw .quant-chart { width:100%; min-width:0 }
+.qw .quant-chart--equity { height:410px }
+.qw .quant-chart--drawdown { height:290px }
+.qw .quant-chart--monthly { height:255px }
 .qw .fields input,.qw .fields select { max-width:520px }
 .qw [data-slot=table-cell] { padding-block:10px }
 .qw [data-slot=table-cell] > .flex { flex-wrap:wrap; align-items:center }
 @media (max-width:1100px) { .qw .quant-config-layout { grid-template-columns:minmax(0,1fr) } .qw .quant-summary { position:static } }
-@media (max-width:640px) { .qw .quant-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); padding:16px; gap:20px } .qw .quant-metrics-primary dd { font-size:22px } .qw .quant-chart { height:400px } .qw .quant-runtime-grid { grid-template-columns:minmax(0,1fr) } }
+@media (max-width:640px) { .qw .quant-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); padding:16px; gap:20px } .qw .quant-metrics-primary dd { font-size:22px } .qw .quant-chart--equity { height:340px } .qw .quant-chart--drawdown { height:260px } .qw .quant-chart--monthly { height:235px } .qw .quant-runtime-grid { grid-template-columns:minmax(0,1fr) } }
 .qw .panel { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:20px }
+.qw .quant-chart-panel { padding:22px 24px 14px; margin-bottom:14px }
+.qw .quant-chart-panel h3 { font-size:15px; font-weight:600; line-height:1.4; letter-spacing:-.01em }
+.qw .quant-chart-panel--equity { border-color:color-mix(in oklab,var(--primary) 18%,var(--border)); padding-top:24px }
+.qw .quant-chart-panel--equity h3 { font-size:16px }
 .qw details.panel > summary { padding:0; min-height:22px }
 .qw details.panel[open] > summary { margin-bottom:12px }
 .qw .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:16px }
@@ -90,6 +97,7 @@ const links = [['/quant', '策略'], ['/quant/universes', '资产池'], ['/quant
 .qw pre { overflow:auto; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere }
 .qw button:focus-visible,.qw input:focus-visible,.qw select:focus-visible,.qw a:focus-visible { outline:2px solid var(--ring); outline-offset:2px }
 @media (max-width:640px) { .qw .fields { grid-template-columns:minmax(0,1fr) } .qw .panel { padding:16px } }
+@media (max-width:640px) { .qw .quant-chart-panel { padding:18px 14px 10px } }
 .qw details > summary { cursor:pointer; font-weight:500; padding:12px 0 }
 .qw a.link:hover { text-decoration:underline }
 </style>

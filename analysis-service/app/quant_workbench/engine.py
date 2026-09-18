@@ -675,6 +675,56 @@ def buy_and_hold_baseline(payload, c, assets):
             **({"reason": "BUY_AND_HOLD_ASSETS_NOT_FILLED", "unfilledAssetIds": unfilled} if unfilled else {})}
 
 
+def comparison_series(result, initial, start):
+    """Presentation series only; never replace simulation curves or ledger metrics."""
+    curve = result.get("equityCurve", [])
+    result["chartEquityCurve"] = [{"date": start + "T00:00:00", "equity": initial, "drawdown": 0.0}] + [
+        {"date": p["date"] + "T23:59:59", "equity": p["equity"], "drawdown": p["drawdown"]} for p in curve]
+    month_ends = {p["date"][:7]: p["equity"] for p in curve}
+    previous, previous_month = initial, date.fromisoformat(start).year * 12 + date.fromisoformat(start).month
+    monthly = []
+    for month, equity in month_ends.items():
+        current_month = int(month[:4]) * 12 + int(month[5:])
+        consecutive = current_month - previous_month == (1 if monthly else 0)
+        value = equity / previous - 1 if consecutive and previous > 0 else None
+        monthly.append({"month": month, "return": value})
+        previous, previous_month = equity, current_month
+    result["monthlyReturns"] = monthly
+
+
+def tracking_index_result(payload, initial, start, end):
+    source = payload.get("trackingIndex")
+    if not source or source.get("status") != "READY":
+        return None
+    try:
+        prices = {}
+        for row in source.get("records", []):
+            day = date.fromisoformat(str(row.get("data_date") or row.get("date"))[:10]).isoformat()
+            price = float(row["close"])
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("Invalid index price")
+            if day in prices and prices[day] != price:
+                raise ValueError("Conflicting index observations")
+            prices[day] = price
+        base_dates = [day for day in prices if day <= start]
+        observed = sorted(day for day in prices if start <= day <= end)
+        if not base_dates or len(observed) < 2:
+            raise ValueError("Insufficient index observations")
+        base = prices[max(base_dates)]
+        peak, curve = initial, []
+        for day in observed:
+            equity = initial * prices[day] / base
+            peak = max(peak, equity)
+            curve.append({"date": day, "equity": equity, "drawdown": 1 - equity / peak})
+        result = {"status": "READY", "code": source.get("code"), "name": source["name"],
+                  "sourceVersion": source.get("sourceVersion"), "equityCurve": curve,
+                  "metrics": performance(curve, initial, [])}
+        comparison_series(result, initial, start)
+        return result
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return {"status": "UNAVAILABLE", "reason": "TRACKING_INDEX_HISTORY_INVALID"}
+
+
 def execute(payload):
     require_runtime(payload.get("expectedRuntime"))
     c, assets = prepare(payload)
@@ -733,6 +783,13 @@ def execute(payload):
                                    "equityCurve": baseline["equityCurve"],
                                    "excessReturn": result["metrics"]["netReturn"] - baseline["metrics"]["netReturn"]}
             result["buyAndHold"] = buy_and_hold_baseline(payload, c, assets)
+            start = str(payload.get("startDate") or result["equityCurve"][0]["date"])
+            comparison_series(result, c["initialCash"], start)
+            if result["buyAndHold"]["status"] == "READY":
+                comparison_series(result["buyAndHold"], c["initialCash"], start)
+            tracking = tracking_index_result(payload, c["initialCash"], start, str(payload.get("endDate") or result["equityCurve"][-1]["date"]))
+            if tracking is not None:
+                result["trackingIndex"] = tracking
         else:
             result["benchmark"] = {"status": "NOT_APPLICABLE", "reason": "Compare the immutable deployment source backtest for matched-exposure benchmark"}
         response.update(qualification={"status": "QUALIFIED" if not reasons else "UNQUALIFIED", "reasons": reasons, "scope": "PAPER_ELIGIBILITY_ONLY_NOT_PROFITABILITY_CERTIFICATION"}, result=result)
