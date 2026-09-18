@@ -1,0 +1,422 @@
+/* ==========================================================================
+   Auth shell (login / register)
+   Shared layout + motion. Imported by LoginShadcn.vue and RegisterShadcn.vue.
+
+   The composition is CAPPED and centred (see .auth-shell). Without a cap the
+   `1fr` brand column absorbs every spare pixel and the copy and the card drift
+   apart — at 2100px that was 1064px of dead space, 51% of the screen.
+
+   The page is one surface: the tinted backdrop and the grid live on the shell
+   and run edge to edge within it, so there is no seam between the brand column
+   and the form column.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- shell -- */
+
+.auth-page {
+  overflow: hidden;
+  min-height: 100vh;
+  background: var(--muted);
+  color: var(--foreground);
+  /* written by usePointerMotion() onto this element, inherited by every
+     parallax layer inside — cursor position, -1 .. 1 from the panel centre */
+  --nx: 0;
+  --ny: 0;
+}
+
+/* Backdrop host + width cap. `isolation` is required: the decorative layers
+   below use z-index: -1, and without a stacking context here they would paint
+   behind this element's own background instead of above it. */
+.auth-shell {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: grid;
+  min-height: 100vh;
+  width: 100%;
+  /* The cap is what keeps the layout from falling apart on wide screens. */
+  max-width: 1280px;
+  margin-inline: auto;
+}
+
+/* Both pages use the same arrangement: brand left, form right.
+
+   512px (not 460px) is chosen so the card lands on exactly 400px: the form
+   column carries the same 56px gutter as the hero, 512 - 112 = 400. That makes
+   the two page margins identical and pulls the card 26px closer to the copy.
+   At 460px the gutter between the copy and the card measured 221px against
+   56/39px page margins — the two halves read as unrelated islands. */
+.auth-shell-login,
+.auth-shell-register {
+  grid-template-columns: minmax(0, 1fr) 512px;
+}
+
+/* ----------------------------------------------------------------- hero -- */
+
+/* Purely a layout column now — no background, no divider. */
+.auth-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* the brand lockup and the body block are centred as ONE group. Previously
+     the body carried `margin: auto 0`, which centred it while the brand stayed
+     pinned to the top, so the gap between them grew with viewport height. */
+  justify-content: center;
+  padding: 48px 56px;
+}
+
+/* Register keeps the form first in the DOM (better reading order), so the hero
+   is pulled to column 1 visually. Ignored on mobile, where the shell is block
+   and the hero is hidden anyway. */
+.auth-shell-register .auth-hero {
+  order: 1;
+}
+
+.auth-shell-register .auth-main {
+  order: 2;
+}
+
+/* fine grid, faded out radially so it never reads as a hard texture. The mask
+   is tuned to be fully transparent at every edge of the shell, otherwise the
+   cap would show as a hard vertical cut down the left side. */
+.auth-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--foreground) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 4%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 52% 62% at 40% 42%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse 52% 62% at 40% 42%, #000 0%, transparent 78%);
+  pointer-events: none;
+}
+
+/* No colour blooms. Two attempts at a soft tinted halo (panel spotlight, then
+   these two blooms) both read as a coloured stain on a light background rather
+   than as light — a low-alpha wash of a saturated hue has no shape, so the eye
+   reads it as dirt. The backdrop is deliberately just the flat tint + grid.
+   If depth is ever wanted back, use a NEUTRAL shade (--foreground at 3-4%),
+   never --primary. */
+
+.auth-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* the brand -> headline spacing. Clamped so a tall viewport opens it up a
+     little but never orphans the lockup at the top of the screen. */
+  margin-bottom: clamp(40px, 6vh, 96px);
+  translate: calc(var(--nx, 0) * 7px) calc(var(--ny, 0) * 5px);
+  transition: translate 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.auth-hero-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* the break between "label + headline + prose" and the capability list.
+     This is the only large gap in the column; everything above it is 12-24px,
+     so the column reads as two tiers instead of six evenly-spaced rows. */
+  gap: 40px;
+  max-width: 560px;
+}
+
+/* The headline drifts *against* the cursor while the feature rows below drift
+   with it. That mismatch — not the raw distance — is what reads as depth. */
+.auth-hero-body > .auth-rise {
+  translate: calc(var(--nx, 0) * -11px) calc(var(--ny, 0) * -8px);
+  transition: translate 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ------------------------------------------------------------- features -- */
+
+/* Three across, not three stacked rows.
+
+   As stacked rows the list was the widest element in the column (560px) while
+   its content hugged the two ends — a title at the left edge and a value at the
+   right, with ~400px of nothing between them. It read as a table with two
+   missing columns. Three columns USE the width instead of spanning it, and cut
+   the block from ~200px to ~110px, so the left column stops towering over the
+   card.
+
+   The rules are gone with the rows: at this size the top border under the prose
+   is the only structure needed. */
+.auth-feature-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.auth-feature {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  /* depth-x / depth-y grow left to right, so the block shears instead of
+     sliding as one slab. `translate` is used (not `transform`) so it composes
+     with the entry animation. The horizontal spread is kept small — these sit
+     side by side, so a large x-offset reads as a broken grid, not as depth. */
+  translate: calc(var(--nx, 0) * var(--depth-x, 4px)) calc(var(--ny, 0) * var(--depth-y, 5px));
+  transition: translate 0.65s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.auth-feature:nth-child(1) {
+  --depth-x: 4px;
+  --depth-y: 6px;
+}
+
+.auth-feature:nth-child(2) {
+  --depth-x: 7px;
+  --depth-y: 10px;
+}
+
+.auth-feature:nth-child(3) {
+  --depth-x: 10px;
+  --depth-y: 14px;
+}
+
+/* Hover is carried by the tile only: colour and scale, no movement, so the
+   grid stays put under the cursor. */
+.auth-feature:hover .auth-feature-icon {
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  color: var(--primary);
+  scale: 1.06;
+}
+
+/* The tile is neutral (--foreground 6%), never a --primary wash: a small
+   saturated chip reads as a coloured sticker, which is the same failure mode
+   the backdrop notes describe. */
+.auth-feature-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+  color: var(--muted-foreground);
+  transition:
+    color 0.26s ease,
+    background-color 0.26s ease,
+    scale 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Sits under its title now rather than pushed to the far edge. */
+.auth-feature-value {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  transition: color 0.26s ease;
+}
+
+.auth-feature:hover .auth-feature-value {
+  color: var(--foreground);
+}
+
+/* ----------------------------------------------------------- form side -- */
+
+.auth-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 56px, matching .auth-hero, so the two page margins are equal. At 40px the
+     composition sat visibly off-centre (56 left / 39 right). */
+  padding: 48px 56px;
+}
+
+/* NOTE: this file is unlayered, so it outranks Tailwind's @layer utilities.
+   The Card ships with `ring-1 ring-foreground/10` (a box-shadow); setting
+   box-shadow here would wipe it, so the ring is re-declared inline. */
+.auth-card {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  transform: perspective(1000px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 26px 52px -34px rgba(15, 23, 42, 0.5);
+}
+
+/* No cursor-tracking sheen here on purpose: a light spot that chases the
+   pointer reads as a smudge over the form, not as lighting. Tilt only. */
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth-field-icon {
+  transition: color 0.22s ease, scale 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.auth-field:focus-within .auth-field-icon {
+  color: var(--primary);
+  scale: 1.1;
+}
+
+.auth-field:focus-within .auth-field-label {
+  color: var(--primary);
+}
+
+.auth-field-label {
+  transition: color 0.22s ease;
+}
+
+/* password reveal */
+.auth-reveal {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  translate: 0 -50%;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, scale 0.16s ease;
+}
+
+.auth-reveal:hover {
+  color: var(--foreground);
+  background: var(--accent);
+}
+
+.auth-reveal:active {
+  scale: 0.88;
+}
+
+.auth-reveal:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* submit */
+.auth-submit {
+  transition:
+    transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    box-shadow 0.2s ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  transform: translateY(-1.5px);
+  box-shadow: 0 12px 24px -12px color-mix(in oklab, var(--primary) 70%, transparent);
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+  box-shadow: none;
+}
+
+/* --------------------------------------------------------------- motion -- */
+
+@keyframes auth-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* `backwards` (not `both`) is deliberate: `both` would keep applying the final
+   keyframe's `transform: none` forever, which silently kills every hover
+   transform and the pointer tilt below. */
+.auth-rise {
+  animation: auth-rise 0.68s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes auth-shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-4px);
+  }
+  40%,
+  60% {
+    transform: translateX(4px);
+  }
+}
+
+.auth-shake {
+  animation: auth-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+/* ---------------------------------------------------------- responsive -- */
+
+@media (max-width: 1023px) {
+  .auth-shell {
+    display: block;
+    max-width: none;
+  }
+
+  .auth-hero {
+    display: none;
+  }
+
+  .auth-main {
+    min-height: 100vh;
+  }
+
+  /* no brand column to sit behind any more — pull the grid toward the middle */
+  .auth-shell::before {
+    -webkit-mask-image: radial-gradient(ellipse 70% 55% at 40% 38%, #000 0%, transparent 74%);
+    mask-image: radial-gradient(ellipse 70% 55% at 40% 38%, #000 0%, transparent 74%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-rise,
+  .auth-shake {
+    animation: none !important;
+  }
+
+  /* usePointerMotion() already bails out here, but a mid-session preference
+     flip would leave stale custom properties behind — pin them flat. */
+  .auth-brand,
+  .auth-hero-body > .auth-rise,
+  .auth-feature {
+    translate: none !important;
+  }
+
+  .auth-card {
+    transform: none !important;
+  }
+
+  .auth-feature,
+  .auth-feature-icon,
+  .auth-submit,
+  .auth-reveal,
+  .auth-field-icon,
+  .auth-field-label,
+  .auth-card {
+    transition: none !important;
+  }
+
+  .auth-submit:hover:not(:disabled) {
+    transform: none;
+  }
+}

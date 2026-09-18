@@ -5,9 +5,6 @@
         <div class="new-chat-panel">
           <h1 class="new-chat-title">今天有什么计划？</h1>
           <div class="new-chat-composer">
-            <button class="new-chat-add" type="button" aria-label="添加" disabled>
-              <Plus />
-            </button>
             <Textarea
               v-model="inputMessage"
               class="new-chat-input chat-input"
@@ -1415,29 +1412,13 @@ function formatTime(value) {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px 10px 18px;
+  /* the left inset was sized around the removed add-button; 24px keeps the
+     text clear of the pill's 32px corner radius on its own. */
+  padding: 10px 12px 10px 24px;
   border: 1px solid color-mix(in oklab, var(--border) 76%, white 8%);
   border-radius: 999px;
   background: color-mix(in oklab, var(--card) 82%, white 6%);
   box-shadow: 0 18px 45px rgb(0 0 0 / 0.18);
-}
-
-.new-chat-add {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted-foreground);
-}
-
-.new-chat-add svg {
-  width: 22px;
-  height: 22px;
 }
 
 .new-chat-input {
@@ -2499,7 +2480,7 @@ function formatTime(value) {
   .new-chat-composer {
     min-height: 58px;
     gap: 8px;
-    padding: 8px 10px 8px 14px;
+    padding: 8px 10px 8px 18px;
   }
 
   .new-chat-prompts {
