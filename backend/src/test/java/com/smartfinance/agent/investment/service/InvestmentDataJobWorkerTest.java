@@ -45,6 +45,16 @@ import static org.mockito.Mockito.*;
 
 class InvestmentDataJobWorkerTest {
 
+    @org.junit.jupiter.api.BeforeAll
+    static void initializeMapperMetadata() {
+        var assistant = new org.apache.ibatis.builder.MapperBuilderAssistant(
+                new com.baomidou.mybatisplus.core.MybatisConfiguration(), "detail-cache-test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant,
+                InvestmentAnalysisSnapshot.class);
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant,
+                com.smartfinance.agent.investment.entity.InvestmentAsset.class);
+    }
+
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 7, 22, 10, 0);
 
@@ -83,21 +93,8 @@ class InvestmentDataJobWorkerTest {
                 benchmarkPreparationService,
                 historyPreparationService
         );
-        when(historyPreparationService.prepare(any())).thenAnswer(invocation -> {
-            InvestmentDataJob job = invocation.getArgument(0);
-            InvestmentAssetDetailResponse detail = Boolean.TRUE.equals(job.getForceRefresh())
-                    ? analysisService.retryData(job.getUserId(), job.getAssetId())
-                    : analysisService.refresh(job.getUserId(), job.getAssetId());
-            int count = detail == null || detail.getQuoteSeries() == null
-                    ? 0 : detail.getQuoteSeries().size();
-            return new InvestmentHistoryPreparationService.PreparationResult(
-                    count,
-                    LocalDate.of(2001, 8, 27),
-                    LocalDate.of(2001, 8, 27),
-                    LocalDate.of(2026, 7, 21),
-                    true,
-                    "dataset-test");
-        });
+        when(historyPreparationService.prepare(any())).thenReturn(prepared(20));
+
     }
 
     @Test
@@ -181,7 +178,7 @@ class InvestmentDataJobWorkerTest {
 
         worker.scan();
 
-        verify(analysisService).retryData(7L, 11L);
+        verify(analysisService, never()).retryData(any(), any());
         verify(analysisService).refresh(7L, 11L);
         verify(jobService).markSucceeded(eq(91L), anyString(), eq(20), eq(NOW));
     }
@@ -226,7 +223,7 @@ class InvestmentDataJobWorkerTest {
         when(jobService.pendingJobs(2)).thenReturn(List.of(job));
         when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
         when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
-        when(analysisService.refresh(7L, 11L)).thenReturn(detailWithQuotes(7));
+        when(historyPreparationService.prepare(any())).thenReturn(prepared(7));
 
         worker.scan();
 
@@ -300,7 +297,7 @@ class InvestmentDataJobWorkerTest {
         when(jobService.pendingJobs(2)).thenReturn(List.of(job));
         when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
         when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
-        when(analysisService.refresh(7L, 11L)).thenReturn(detailWithQuotes(0));
+        when(historyPreparationService.prepare(any())).thenReturn(prepared(0));
 
         worker.scan();
 
@@ -331,9 +328,9 @@ class InvestmentDataJobWorkerTest {
         when(jobService.pendingJobs(2)).thenReturn(List.of(job));
         when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
         when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
-        when(analysisService.refresh(7L, 11L)).thenAnswer(invocation -> {
+        when(historyPreparationService.prepare(any())).thenAnswer(invocation -> {
             clock.advance(Duration.ofSeconds(30));
-            return detailWithQuotes(7);
+            return prepared(7);
         });
 
         worker.scan();
@@ -382,13 +379,13 @@ class InvestmentDataJobWorkerTest {
         when(jobService.pendingJobs(2)).thenReturn(List.of(pending));
         when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
         when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(claimed);
-        when(analysisService.retryData(7L, 11L))
+        when(historyPreparationService.prepare(any()))
                 .thenThrow(new IllegalStateException("forced refresh failed"));
 
         worker.scan();
 
-        verify(analysisService).retryData(7L, 11L);
-        verify(analysisService, never()).refresh(any(), any());
+        verify(historyPreparationService).prepare(claimed);
+        verifyNoInteractions(analysisService);
         verify(jobService).markRetryWait(eq(91L), anyString(), eq(1),
                 eq(NOW.plusSeconds(60)), eq("forced refresh failed"), eq(NOW));
         verify(jobService, never()).markFailed(any(), anyString(), anyInt(), anyString(), any());
@@ -411,23 +408,23 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void detailAutoAnalyzesAndQueuesHistoryWhenDataInsufficient() {
+    void detailReadsAvailableDataAndQueuesAnalysisWithoutRemoteCalls() {
         ReadOnlyFixture fixture = readOnlyFixture(5);
         Map<String, Object> queued = Map.of(
                 "status", "QUEUED", "recordCount", 0, "attemptCount", 0);
         when(fixture.jobService().statusForAsset(7L, 11L))
-                .thenReturn(Map.of(), queued);
+                .thenReturn(queued);
 
         InvestmentAssetDetailResponse first = fixture.service().detail(7L, 11L);
 
         assertThat(first.getSourceStatus()).containsEntry("historyJob", queued);
-        verify(fixture.analysisClient(), times(1)).technicalAnalysis(any(), any(), anyString(), any());
+        verifyNoInteractions(fixture.analysisClient());
         verify(fixture.jobService(), times(1))
-                .ensureQueued(7L, 11L, 21L, "STOCK", false);
+                .ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
     }
 
     @Test
-    void detailAutoAnalyzesAndKeepsHistoryJobWhenEnoughHistory() {
+    void missingSnapshotQueuesAnalysisEvenWhenEnoughHistoryExists() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
 
@@ -435,9 +432,8 @@ class InvestmentDataJobWorkerTest {
 
         assertThat(detail.getSourceStatus()).containsEntry("historyJob", Map.of());
         assertThat(detail.getPersonalizedAction()).isEmpty();
-        verify(fixture.analysisClient()).technicalAnalysis(any(), any(), anyString(), any());
-        verify(fixture.jobService(), never())
-                .ensureQueued(any(), any(), any(), anyString(), anyBoolean());
+        verifyNoInteractions(fixture.analysisClient());
+        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
     }
 
     @Test
@@ -487,7 +483,7 @@ class InvestmentDataJobWorkerTest {
                 .thenThrow(new IllegalStateException("provider timeout"));
         when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
 
-        InvestmentAssetDetailResponse detail = fixture.service().detail(7L, 11L);
+        InvestmentAssetDetailResponse detail = fixture.service().refresh(7L, 11L);
 
         assertThat(detail.getTechnicalAnalysis())
                 .containsEntry("status", "UNAVAILABLE")
@@ -524,8 +520,8 @@ class InvestmentDataJobWorkerTest {
                 .thenReturn(blockedEvaluation(), allowEvaluation(20));
         when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
 
-        InvestmentAssetDetailResponse blocked = fixture.service().detail(7L, 11L);
-        InvestmentAssetDetailResponse recovered = fixture.service().detail(7L, 11L);
+        InvestmentAssetDetailResponse blocked = fixture.service().refresh(7L, 11L);
+        InvestmentAssetDetailResponse recovered = fixture.service().refresh(7L, 11L);
 
         assertThat(blocked.getTechnicalAnalysis()).containsEntry("status", "BLOCKED");
         assertThat(recovered.getTechnicalAnalysis())
@@ -582,7 +578,7 @@ class InvestmentDataJobWorkerTest {
         ));
         when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of());
 
-        fixture.service().detail(7L, 11L);
+        fixture.service().refresh(7L, 11L);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> benchmarkCaptor = ArgumentCaptor.forClass(Map.class);
@@ -594,6 +590,12 @@ class InvestmentDataJobWorkerTest {
                 .containsEntry("code", "CSI300")
                 .containsEntry("sourceVersion", "a".repeat(64))
                 .containsEntry("records", benchmarkRecords);
+    }
+
+    private static InvestmentHistoryPreparationService.PreparationResult prepared(int count) {
+        return new InvestmentHistoryPreparationService.PreparationResult(count,
+                LocalDate.of(2001, 8, 27), LocalDate.of(2001, 8, 27),
+                LocalDate.of(2026, 7, 21), true, "dataset-test");
     }
 
     private static InvestmentDataJob job(boolean forceRefresh, int attempts, String status) {
@@ -609,9 +611,156 @@ class InvestmentDataJobWorkerTest {
         return job;
     }
 
+    @Test
+    void freshCacheReturnsStoredDetailWithoutAnalysisOrQueue() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var response = fixture.service().detail(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
+        clearInvocations(fixture.jobService(), fixture.analysisClient());
+
+        assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("cacheStatus", "FRESH");
+        verifyNoInteractions(fixture.analysisClient());
+        verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void staleCacheReturnsStoredDetailAndQueuesOneExistingDatabaseJob() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var response = fixture.service().detail(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now().minusSeconds(60), Instant.now().minusSeconds(30), key.getValue(), response));
+        when(fixture.jobService().statusForAsset(7L, 11L)).thenReturn(Map.of("status", "QUEUED"));
+        clearInvocations(fixture.jobService(), fixture.analysisClient());
+
+        var result = fixture.service().detail(7L, 11L);
+        assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "STALE").containsEntry("backgroundRefresh", true);
+        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void refreshWritesLatestDetailAndSubsequentReadUsesSnapshotWithoutRemoteCalls() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var refreshed = fixture.service().refresh(7L, 11L);
+        verify(fixture.detailCache()).evict(7L, 11L);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), anyString(), same(refreshed));
+        ArgumentCaptor<InvestmentAnalysisSnapshot> saved = ArgumentCaptor.forClass(InvestmentAnalysisSnapshot.class);
+        verify(fixture.snapshotMapper()).insert(saved.capture());
+        assertThat(saved.getValue().getAnalyzedAt().getNano()).isZero();
+        when(fixture.snapshotMapper().selectOne(any())).thenReturn(saved.getValue());
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "dataset-v2", "qualityRuleSetVersion", "quality-v1", "decision", "ALLOW", "status", "PASS"));
+        clearInvocations(fixture.analysisClient(), fixture.jobService());
+
+        var result = fixture.service().detail(7L, 11L);
+        assertThat(result.getSourceStatus()).containsEntry("dataState", "READY");
+        assertThat(result.getTechnicalAnalysis()).containsEntry("score", 60);
+        verifyNoInteractions(fixture.analysisClient());
+        verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void dataQualityRefreshEvictsAndQueuesWithoutAnalysis() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        fixture.service().queueDataRefresh(7L, 11L);
+        verify(fixture.detailCache()).evict(7L, 11L);
+        verify(fixture.jobService()).ensureQueued(7L, 11L, 21L, "STOCK", true);
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void preferenceChangesEvictAndReadWithoutAnalysis() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        fixture.service().updatePreference(7L, 11L, null);
+        fixture.service().clearPreference(7L, 11L);
+        verify(fixture.detailCache(), times(2)).evict(7L, 11L);
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void redisConnectionFailureStillReturnsDatabaseDetail() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var redis = mock(org.springframework.data.redis.core.StringRedisTemplate.class);
+        when(redis.opsForValue()).thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("offline"));
+        var actualCache = new InvestmentDetailCacheService(redis, new ObjectMapper().findAndRegisterModules(),
+                new com.smartfinance.agent.investment.config.InvestmentDetailCacheProperties());
+        when(fixture.detailCache().get(7L, 11L)).thenAnswer(call -> actualCache.get(7L, 11L));
+        var response = fixture.service().detail(7L, 11L);
+        assertThat(response.getAsset().getId()).isEqualTo(11L);
+        assertThat(response.getSourceStatus()).containsEntry("cacheStatus", "MISS");
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void unauthorizedOrDeletedAssetCannotReadRedis() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        when(fixture.assetService().get(8L, 11L)).thenThrow(new IllegalArgumentException("资产不存在"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> fixture.service().detail(8L, 11L))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(fixture.detailCache());
+    }
+
+    @Test
+    void changedQualityGateInvalidatesEvenFreshCachedConclusions() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var response = fixture.service().detail(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of("decision", "BLOCK", "datasetVersion", "blocked"));
+        var result = fixture.service().detail(7L, 11L);
+        assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "MISS").containsEntry("dataState", "BLOCKED");
+        assertThat(result.getAiExplanation()).isEmpty();
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void concurrentQualityBlockCannotStampOldReadyResponseWithNewContext() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "blocked-dataset", "decision", "BLOCK", "status", "BLOCKED"));
+        var response = fixture.service().refresh(7L, 11L);
+        assertThat(response.getSourceStatus()).containsEntry("dataState", "READY");
+        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any());
+        assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("dataState", "BLOCKED");
+    }
+
+    @Test
+    void concurrentOtherHoldingChangePreventsStaleFinancialWarningsFromBeingCached() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var otherAsset = new com.smartfinance.agent.investment.entity.InvestmentAsset();
+        otherAsset.setId(12L);
+        otherAsset.setQuantity(java.math.BigDecimal.TEN);
+        when(fixture.assetMapper().selectList(any())).thenReturn(List.of(), List.of(otherAsset));
+        fixture.service().refresh(7L, 11L);
+        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any());
+    }
+
+    @Test
+    void lateCacheFillAfterAnotherHoldingMutationIsRejectedOnNextRead() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        var response = fixture.service().detail(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
+        var otherAsset = new com.smartfinance.agent.investment.entity.InvestmentAsset();
+        otherAsset.setId(12L);
+        otherAsset.setQuantity(java.math.BigDecimal.TEN);
+        when(fixture.assetMapper().selectList(any())).thenReturn(List.of(otherAsset));
+        assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("cacheStatus", "MISS");
+    }
+
     private static InvestmentAssetDetailResponse detailWithQuotes(int count) {
         InvestmentAssetDetailResponse detail = new InvestmentAssetDetailResponse();
         detail.setQuoteSeries(Collections.nCopies(count, Map.of("close", 1)));
+        detail.setSourceStatus(Map.of("dataState", "READY", "historicalCache", false));
         return detail;
     }
 
@@ -655,6 +804,8 @@ class InvestmentDataJobWorkerTest {
         InvestmentAiExplanationService aiExplanationService = mock(InvestmentAiExplanationService.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
         QuantBenchmarkProfileService benchmarkProfileService = mock(QuantBenchmarkProfileService.class);
+        InvestmentDetailCacheService detailCache = mock(InvestmentDetailCacheService.class);
+        var assetMapper = mock(com.smartfinance.agent.investment.mapper.InvestmentAssetMapper.class);
 
         InvestmentAssetView asset = new InvestmentAssetView();
         asset.setId(11L);
@@ -687,6 +838,13 @@ class InvestmentDataJobWorkerTest {
         when(horizonService.resolve(7L, 11L)).thenReturn(profile);
         when(quoteMapper.selectList(any())).thenReturn(quotes);
         when(snapshotMapper.selectOne(any())).thenReturn(null);
+        when(snapshotMapper.insert(any())).thenAnswer(call -> {
+            InvestmentAnalysisSnapshot saved = call.getArgument(0);
+            when(snapshotMapper.selectOne(any())).thenReturn(saved);
+            return 1;
+        });
+        when(dataQualityService.latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "dataset-v2", "qualityRuleSetVersion", "quality-v1", "decision", "ALLOW", "status", "PASS"));
         when(wealthService.overview(7L)).thenReturn(new WealthOverviewResponse());
         when(dataQualityService.resolve(eq(product), any(), any(), anyBoolean()))
                 .thenReturn(allowEvaluation(quoteCount));
@@ -719,9 +877,9 @@ class InvestmentDataJobWorkerTest {
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
                 runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
                 wealthService, financialProfileMapper, aiExplanationService,
-                new ObjectMapper(), jobService,
+                new ObjectMapper().findAndRegisterModules(), jobService,
                 warningEngine,
-                benchmarkProfileService);
+                benchmarkProfileService, detailCache, assetMapper);
         return new ReadOnlyFixture(
                 service,
                 jobService,
@@ -729,7 +887,7 @@ class InvestmentDataJobWorkerTest {
                 syncWorker,
                 snapshotMapper,
                 dataQualityService,
-                benchmarkProfileService
+                benchmarkProfileService, detailCache, assetService, assetMapper
         );
     }
 
@@ -831,7 +989,9 @@ class InvestmentDataJobWorkerTest {
                                    InvestmentSyncWorker syncWorker,
                                    InvestmentAnalysisSnapshotMapper snapshotMapper,
                                    InvestmentDataQualityService dataQualityService,
-                                   QuantBenchmarkProfileService benchmarkProfileService) {
+                                   QuantBenchmarkProfileService benchmarkProfileService,
+                                   InvestmentDetailCacheService detailCache, InvestmentAssetService assetService,
+                                   com.smartfinance.agent.investment.mapper.InvestmentAssetMapper assetMapper) {
     }
 
     private static final class MutableClock extends Clock {

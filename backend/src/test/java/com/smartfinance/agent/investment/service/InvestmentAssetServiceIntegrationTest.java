@@ -72,6 +72,9 @@ class InvestmentAssetServiceIntegrationTest {
     @MockBean
     private QuantBenchmarkProfileService benchmarkProfileService;
 
+    @MockBean
+    private com.smartfinance.agent.investment.service.InvestmentDetailCacheService detailCache;
+
     @BeforeEach
     void setUpResolver() {
         when(tradingCalendar.isTradingDay(org.mockito.ArgumentMatchers.any(LocalDate.class))).thenReturn(true);
@@ -289,6 +292,8 @@ class InvestmentAssetServiceIntegrationTest {
         assetService.update(7L, asset.getId(), updateRequest("10", "1500", "首次录入"));
         var updated = assetService.update(7L, asset.getId(), updateRequest("8", "1480", "调整持仓"));
 
+        verify(detailCache, times(2)).evict(7L, asset.getId());
+
         assertThat(updated.getQuantity()).isEqualByComparingTo("8");
         assertThat(updated.getAverageCost()).isEqualByComparingTo("1480");
         assertThat(updated.getMarketValueCny()).isEqualByComparingTo("9589.76");
@@ -298,6 +303,8 @@ class InvestmentAssetServiceIntegrationTest {
                 .extracting("eventType").containsExactly("TRANSFER_IN", "REVERSAL", "TRANSFER_IN");
 
         assetService.delete(7L, asset.getId());
+
+        verify(detailCache, times(3)).evict(7L, asset.getId());
 
         assertThat(assetService.list(7L)).isEmpty();
         assertThat(investmentService.listTransactions(7L, updated.getAccountId(), 20))

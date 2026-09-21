@@ -1,9 +1,60 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
 
 const source = readFileSync(new URL('./InvestmentAssetDetail.vue', import.meta.url), 'utf8')
 const template = source.match(/<template>[\s\S]*<\/template>/)?.[0] || ''
+
+function loader(existing, request) {
+  const context = vm.createContext({
+    detail: { value: existing }, loading: { value: false }, reloading: { value: false },
+    error: { value: '' }, detailRequestToken: 0, route: { params: { assetId: '11' } },
+    isCurrentAsset: id => String(id) === '11', getInvestmentAssetDetailAPI: request,
+    syncHistoryJobPolling() {}
+  })
+  const start = source.indexOf('async function loadAll(')
+  const end = source.indexOf('\nasync function refreshData(', start)
+  vm.runInContext(source.slice(start, end), context)
+  return context
+}
+
+test('首次加载显示 Skeleton，后台重新加载保留现有内容', async () => {
+  let finish
+  const pending = new Promise(resolve => { finish = resolve })
+  const existing = { asset: { id: 11, name: '当前资产' } }
+  const refresh = loader(existing, () => pending)
+  const done = refresh.loadAll()
+  assert.equal(refresh.loading.value, false)
+  assert.equal(refresh.reloading.value, true)
+  assert.equal(refresh.detail.value, existing)
+  finish({ data: { asset: { id: 11, name: '更新后的资产' } } })
+  await done
+  assert.equal(refresh.reloading.value, false)
+  assert.equal(refresh.detail.value.asset.name, '更新后的资产')
+
+  const first = loader(null, () => new Promise(() => {}))
+  first.loadAll()
+  assert.equal(first.loading.value, true)
+})
+
+test('后台读取失败保留详情，新请求不会被旧响应覆盖', async () => {
+  const existing = { asset: { id: 11 } }
+  const failed = loader(existing, async () => { throw new Error('temporary') })
+  await failed.loadAll()
+  assert.equal(failed.detail.value, existing)
+  assert.equal(failed.loading.value, false)
+  assert.match(template, /v-else-if="error && !detail\?\.asset"/)
+  const resolvers = []
+  const state = loader(existing, () => new Promise(resolve => resolvers.push(resolve)))
+  const oldRequest = state.loadAll()
+  const newRequest = state.loadAll()
+  resolvers[1]({ data: { asset: { id: 11, name: 'new' } } })
+  await newRequest
+  resolvers[0]({ data: { asset: { id: 11, name: 'old' } } })
+  await oldRequest
+  assert.equal(state.detail.value.asset.name, 'new')
+})
 
 test('用户页面不展示内部数据质量诊断', () => {
   assert.doesNotMatch(template, /datasetVersion/)

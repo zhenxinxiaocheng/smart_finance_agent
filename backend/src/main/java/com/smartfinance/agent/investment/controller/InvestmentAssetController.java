@@ -124,9 +124,7 @@ public class InvestmentAssetController {
     @PostMapping("/{id}/data-quality/refresh")
     public Result<InvestmentAssetDetailResponse> refreshDataQuality(@RequestAttribute Long userId,
                                                                      @PathVariable Long id) {
-        InvestmentAssetView asset = assetService.get(userId, id);
-        dataJobService.ensureQueued(userId, id, asset.getProductId(), asset.getProductType(), true);
-        return Result.success(analysisService.detail(userId, id));
+        return Result.success(analysisService.queueDataRefresh(userId, id));
     }
 
     public record ResolveRequest(@NotBlank String productType, @NotBlank String code) {

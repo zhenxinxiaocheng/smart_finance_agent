@@ -30,6 +30,7 @@ class InvestmentDataJobServiceTest {
     @BeforeEach
     void setUp() {
         mapper = mock(InvestmentDataJobMapper.class);
+        when(mapper.requeueTerminal(any())).thenReturn(1);
         productMapper = mock(InvestmentProductMapper.class);
         assetMapper = mock(InvestmentAssetMapper.class);
         InvestmentProduct product = new InvestmentProduct();
@@ -170,7 +171,7 @@ class InvestmentDataJobServiceTest {
         assertThat(job.getLeaseToken()).isNull();
         assertThat(job.getStartedAt()).isNull();
         assertThat(job.getFinishedAt()).isNull();
-        verify(mapper).updateById(existing);
+        verify(mapper).requeueTerminal(existing.getId());
     }
 
     @Test
@@ -215,7 +216,7 @@ class InvestmentDataJobServiceTest {
         assertThat(job.getStatus()).isEqualTo("QUEUED");
         assertThat(job.getForceRefresh()).isTrue();
         assertThat(job.getRecordCount()).isZero();
-        verify(mapper).updateById(existing);
+        verify(mapper).requeueTerminal(existing.getId());
     }
 
     @Test
@@ -235,7 +236,7 @@ class InvestmentDataJobServiceTest {
         assertThat(job.getStatus()).isEqualTo("QUEUED");
         assertThat(job.getForceRefresh()).isTrue();
         assertThat(job.getAttemptCount()).isZero();
-        verify(mapper).updateById(existing);
+        verify(mapper).requeueTerminal(existing.getId());
     }
 
     @Test

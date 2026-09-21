@@ -9,4 +9,5 @@ public interface InvestmentAnalysisService {
     InvestmentAssetDetailResponse clearPreference(Long userId, Long assetId);
     InvestmentAssetDetailResponse refresh(Long userId, Long assetId);
     InvestmentAssetDetailResponse retryData(Long userId, Long assetId);
+    InvestmentAssetDetailResponse queueDataRefresh(Long userId, Long assetId);
 }

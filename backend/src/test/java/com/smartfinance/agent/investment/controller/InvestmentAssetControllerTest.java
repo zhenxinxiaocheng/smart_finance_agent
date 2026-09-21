@@ -120,13 +120,13 @@ class InvestmentAssetControllerTest {
         InvestmentAssetView asset = asset(11L, 21L, "MUTUAL_FUND");
         InvestmentAssetDetailResponse detail = new InvestmentAssetDetailResponse();
         when(assetService.get(7L, 11L)).thenReturn(asset);
-        when(analysisService.detail(7L, 11L)).thenReturn(detail);
+        when(analysisService.queueDataRefresh(7L, 11L)).thenReturn(detail);
         InvestmentAssetController controller = new InvestmentAssetController(
                 assetService, analysisService, jobService);
 
         assertThat(controller.refreshDataQuality(7L, 11L).getData()).isSameAs(detail);
-        verify(jobService).ensureQueued(7L, 11L, 21L, "MUTUAL_FUND", true);
-        verify(analysisService).detail(7L, 11L);
+        verifyNoInteractions(jobService);
+        verify(analysisService).queueDataRefresh(7L, 11L);
         verify(analysisService, never()).retryData(any(), any());
         verify(analysisService, never()).refresh(any(), any());
     }

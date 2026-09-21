@@ -53,8 +53,7 @@ public class InvestmentDataJobService {
                 return existing;
             }
             if (forceRefresh || (requiresCompleteHistory && recoveryDue(existing))) {
-                resetForRefresh(existing);
-                mapper.updateById(existing);
+                return requeueTerminal(existing);
             }
             return existing;
         }
@@ -91,9 +90,16 @@ public class InvestmentDataJobService {
         if (isActive(existing) || !recoveryDue(existing)) {
             return existing;
         }
-        resetForRefresh(existing);
-        mapper.updateById(existing);
-        return existing;
+        return requeueTerminal(existing);
+    }
+
+    private InvestmentDataJob requeueTerminal(InvestmentDataJob existing) {
+        // Another request may already have requeued/claimed this row since our SELECT.
+        if (mapper.requeueTerminal(existing.getId()) == 1) {
+            resetForRefresh(existing);
+            return existing;
+        }
+        return findByAssetAndType(existing.getAssetId(), existing.getJobType());
     }
 
     @Transactional

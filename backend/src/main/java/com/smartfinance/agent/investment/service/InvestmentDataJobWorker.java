@@ -125,7 +125,7 @@ public class InvestmentDataJobWorker {
                 return;
             }
             if (recordCount >= minimum) {
-                if (historyResult != null && Boolean.TRUE.equals(claimedJob.getForceRefresh())) {
+                if (historyResult != null) {
                     requireFreshAnalysis(claimedJob);
                     completionTime = LocalDateTime.now(clock);
                 }

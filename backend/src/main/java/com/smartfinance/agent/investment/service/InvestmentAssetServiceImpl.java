@@ -45,6 +45,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final ChinaTradingCalendarService tradingCalendar;
     private final FundClassificationService classificationService;
     private final QuantBenchmarkProfileService benchmarkProfileService;
+    private final InvestmentDetailCacheService detailCache;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -61,7 +62,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentRuntimeProperties runtimeProperties,
                                       ChinaTradingCalendarService tradingCalendar,
                                       FundClassificationService classificationService,
-                                      QuantBenchmarkProfileService benchmarkProfileService) {
+                                      QuantBenchmarkProfileService benchmarkProfileService,
+                                      InvestmentDetailCacheService detailCache) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -75,6 +77,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.tradingCalendar = tradingCalendar;
         this.classificationService = classificationService;
         this.benchmarkProfileService = benchmarkProfileService;
+        this.detailCache = detailCache;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -143,6 +146,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         InvestmentAsset asset = requireAsset(userId, assetId);
         reverseCurrent(userId, asset);
         assetMapper.deleteById(asset.getId());
+        detailCache.evict(userId, assetId);
+        invalidateUserDetails(userId);
     }
 
     @Override
@@ -381,6 +386,15 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
         asset.setUpdatedAt(LocalDateTime.now());
         assetMapper.updateById(asset);
+        invalidateUserDetails(userId);
+    }
+
+    private void invalidateUserDetails(Long userId) {
+        // Holdings change the user's total wealth and therefore other assets' risk warnings too.
+        for (InvestmentAsset asset : assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                .eq(InvestmentAsset::getUserId, userId))) {
+            detailCache.evict(userId, asset.getId());
+        }
     }
 
     private void reverseCurrent(Long userId, InvestmentAsset asset) {

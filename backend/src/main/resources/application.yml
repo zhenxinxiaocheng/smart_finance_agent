@@ -7,6 +7,16 @@ server:
       force: true
 
 spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+      timeout: ${REDIS_TIMEOUT:2s}
+      repositories:
+        enabled: false
   autoconfigure:
     exclude: org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
   task:
@@ -95,6 +105,12 @@ quant:
       max-compressed-bytes: ${QUANT_SNAPSHOT_MAX_COMPRESSED_BYTES:33554432}
 
 investment:
+  cache:
+    detail:
+      enabled: ${INVESTMENT_DETAIL_CACHE_ENABLED:true}
+      fresh-ttl: ${INVESTMENT_DETAIL_CACHE_FRESH_TTL:30s}
+      stale-ttl: ${INVESTMENT_DETAIL_CACHE_STALE_TTL:10m}
+      failure-backoff: ${INVESTMENT_DETAIL_CACHE_FAILURE_BACKOFF:30s}
   plan:
     zone: ${INVESTMENT_PLAN_ZONE:Asia/Shanghai}
     initial-delay-ms: ${INVESTMENT_PLAN_INITIAL_DELAY_MS:10000}

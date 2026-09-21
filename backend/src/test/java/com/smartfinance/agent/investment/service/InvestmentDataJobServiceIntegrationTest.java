@@ -82,6 +82,19 @@ class InvestmentDataJobServiceIntegrationTest {
         assertThat(service.statusForAsset(8L, 11L)).isEmpty();
     }
 
+    @Test
+    void concurrentRequeueCannotResetAQueuedOrClaimedJob() {
+        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "worker-1")).isTrue();
+        assertThat(service.markSucceeded(job.getId(), "worker-1", 30, now)).isTrue();
+        assertThat(mapper.requeueTerminal(job.getId())).isEqualTo(1);
+        assertThat(mapper.requeueTerminal(job.getId())).isZero();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "worker-2")).isTrue();
+        assertThat(mapper.requeueTerminal(job.getId())).isZero();
+        assertThat(mapper.selectById(job.getId()).getLeaseToken()).isEqualTo("worker-2");
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @MapperScan("com.smartfinance.agent.investment.mapper")

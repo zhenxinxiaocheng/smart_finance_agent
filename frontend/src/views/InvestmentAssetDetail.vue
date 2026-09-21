@@ -10,16 +10,18 @@
       <div class="detail-fade-in detail-delay-3 grid gap-4 md:grid-cols-3"><Skeleton v-for="n in 3" :key="n" class="h-40" /></div>
     </template>
 
-    <div v-else-if="error" class="detail-fade-in grid min-h-[440px] place-items-center">
+    <div v-else-if="error && !detail?.asset" class="detail-fade-in grid min-h-[440px] place-items-center">
       <div class="max-w-md text-center">
         <div class="mx-auto mb-4 grid size-12 place-items-center rounded-full bg-destructive/10 text-destructive"><TriangleAlert /></div>
         <h1 class="text-lg font-semibold">详情暂时无法加载</h1>
         <p class="mt-2 text-sm text-muted-foreground">{{ error }}</p>
-        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="returnToAssetList">返回</Button><Button @click="loadAll">重新加载</Button></div>
+        <div class="mt-5 flex justify-center gap-2"><Button variant="outline" @click="returnToAssetList">返回</Button><Button @click="loadAll()">重新加载</Button></div>
       </div>
     </div>
 
     <template v-else-if="detail?.asset">
+      <p v-if="backgroundRefreshing" role="status" class="text-sm text-muted-foreground">正在更新最新分析...</p>
+      <p v-if="error" role="status" class="text-sm text-muted-foreground">更新暂未完成，已保留当前内容。</p>
       <header class="detail-fade-in flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex min-w-0 items-start gap-3">
           <Button variant="ghost" size="icon" class="mt-0.5" title="返回" aria-label="返回" @click="returnToAssetList"><ArrowLeft /></Button>
@@ -467,6 +469,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const loading = ref(true)
+const reloading = ref(false)
 const refreshingData = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
@@ -484,6 +487,7 @@ const disclaimer = computed(() => detail.value?.disclaimer || {})
 const sourceStatus = computed(() => detail.value?.sourceStatus || {})
 const historyJob = computed(() => sourceStatus.value.historyJob || {})
 const historyJobStatus = computed(() => historyJob.value.status)
+const backgroundRefreshing = computed(() => reloading.value || ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(historyJobStatus.value))
 const historyJobNotice = computed(() => ({
   QUEUED: '最新价格已可使用，历史行情和分析会在后台继续准备。',
   RUNNING: '历史行情和分析正在后台准备，完成后页面会自动更新。',
@@ -634,6 +638,7 @@ const historyJobPolling = createHistoryJobPollingController({
 
 watch(() => route.params.assetId, async () => {
   const assetId = route.params.assetId
+  detail.value = null
   historyJobPolling.update(assetId, undefined)
   await loadAll(assetId)
 }, { immediate: true })
@@ -650,7 +655,8 @@ onBeforeUnmount(() => {
 
 async function loadAll(assetId = route.params.assetId) {
   const requestToken = ++detailRequestToken
-  loading.value = true
+  loading.value = !detail.value?.asset
+  reloading.value = !loading.value
   error.value = ''
   try {
     const response = await getInvestmentAssetDetailAPI(assetId)
@@ -662,6 +668,7 @@ async function loadAll(assetId = route.params.assetId) {
   } finally {
     if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     loading.value = false
+    reloading.value = false
     syncHistoryJobPolling()
   }
 }
