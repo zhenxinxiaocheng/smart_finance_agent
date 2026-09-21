@@ -8,6 +8,30 @@
       "aliases": ["沪深300", "CSI300", "000300"]
     },
     {
+      "indexCode": "CN_INDEX:000001",
+      "displayName": "上证指数",
+      "market": "CN",
+      "aliases": ["上证指数", "上证综指", "000001"]
+    },
+    {
+      "indexCode": "CN_INDEX:399001",
+      "displayName": "深证成指",
+      "market": "CN",
+      "aliases": ["深证成指", "深证成份指数", "399001"]
+    },
+    {
+      "indexCode": "CN_INDEX:000905",
+      "displayName": "中证500",
+      "market": "CN",
+      "aliases": ["中证500", "CSI500", "000905"]
+    },
+    {
+      "indexCode": "CN_INDEX:399006",
+      "displayName": "创业板指",
+      "market": "CN",
+      "aliases": ["创业板指", "创业板指数", "399006"]
+    },
+    {
       "indexCode": "GLOBAL_INDEX:NDX",
       "displayName": "纳斯达克100",
       "market": "US",

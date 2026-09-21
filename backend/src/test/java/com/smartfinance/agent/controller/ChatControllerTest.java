@@ -45,7 +45,7 @@ class ChatControllerTest {
 
     @Test
     void chat_shouldReturnAiResponse() throws Exception {
-        when(chatService.chat(1L, 7L, "hello")).thenReturn("Hi, this is your finance assistant.");
+        when(chatService.chat(1L, 7L, "hello", null)).thenReturn("Hi, this is your finance assistant.");
 
         mockMvc.perform(post("/api/chat")
                         .requestAttr("userId", 1L)
@@ -59,6 +59,49 @@ class ChatControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.response").value("Hi, this is your finance assistant."));
+    }
+
+    @Test
+    void chat_shouldPassChosenThinkingModeToService() throws Exception {
+        when(chatService.chat(1L, 7L, "hello", true)).thenReturn("已分析");
+
+        mockMvc.perform(post("/api/chat")
+                        .requestAttr("userId", 1L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"conversationId":7,"message":"hello","thinkingMode":"deep"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.response").value("已分析"));
+        org.mockito.Mockito.verify(chatService).chat(1L, 7L, "hello", true);
+    }
+
+    @Test
+    void streamChat_shouldPassChosenThinkingModeToService() {
+        var request = new com.smartfinance.agent.dto.ChatRequest();
+        request.setConversationId(7L);
+        request.setMessage("hello");
+        request.setThinkingMode("fast");
+        var emitter = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter();
+        when(chatService.streamReactChat(1L, 7L, "hello", false)).thenReturn(emitter);
+
+        org.junit.jupiter.api.Assertions.assertSame(emitter, new ChatController(chatService, conversationService)
+                .reactStream(1L, request));
+        org.mockito.Mockito.verify(chatService).streamReactChat(1L, 7L, "hello", false);
+    }
+
+    @Test
+    void chat_shouldRejectUnknownThinkingMode() throws Exception {
+        mockMvc.perform(post("/api/chat")
+                        .requestAttr("userId", 1L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"conversationId":7,"message":"hello","thinkingMode":"unknown"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("思考模式无效"));
+        org.mockito.Mockito.verifyNoInteractions(chatService);
     }
 
     @Test

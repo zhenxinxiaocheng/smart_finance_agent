@@ -43,10 +43,12 @@ public class DashScopeChatLanguageModel implements ChatLanguageModel {
     public Response<AiMessage> generate(List<ChatMessage> messages) {
         long started = System.nanoTime();
         boolean success = false;
+        Boolean requestedMode = ChatModelThinkingContext.current();
+        boolean thinking = requestedMode == null ? enableThinking : requestedMode;
         try {
             JsonNode body = client.post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("model", modelName, "temperature", temperature,
-                            "enable_thinking", enableThinking, "stream", false,
+                            "enable_thinking", thinking, "stream", false,
                             "messages", messages.stream().map(this::toMessage).toList()))
                     .retrieve().onStatus(status -> status.isError(), (request, response) -> {
                         // Do not propagate upstream bodies, which may echo private inputs.
@@ -70,7 +72,7 @@ public class DashScopeChatLanguageModel implements ChatLanguageModel {
             return Response.from(AiMessage.from(content.asText()), tokens, reason);
         } finally {
             log.info("Chat model call: model={}, thinking={}, elapsedMs={}, success={}",
-                    modelName, enableThinking, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), success);
+                    modelName, thinking, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), success);
         }
     }
 

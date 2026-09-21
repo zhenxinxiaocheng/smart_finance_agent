@@ -54,14 +54,14 @@ public class ChatController {
     @PostMapping
     public Result<Map<String, String>> chat(@RequestAttribute Long userId,
                                             @Valid @RequestBody ChatRequest request) {
-        String response = chatService.chat(userId, request.getConversationId(), request.getMessage());
+        String response = chatService.chat(userId, request.getConversationId(), request.getMessage(), request.thinkingOverride());
         return Result.success(Map.of("response", response));
     }
 
     @PostMapping(value = "/react/stream", produces = "text/event-stream")
     public SseEmitter reactStream(@RequestAttribute Long userId,
                                   @Valid @RequestBody ChatRequest request) {
-        return chatService.streamReactChat(userId, request.getConversationId(), request.getMessage());
+        return chatService.streamReactChat(userId, request.getConversationId(), request.getMessage(), request.thinkingOverride());
     }
 
     @GetMapping("/history")

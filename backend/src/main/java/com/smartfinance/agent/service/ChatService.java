@@ -10,9 +10,13 @@ public interface ChatService {
 
     String chat(Long userId, Long conversationId, String message);
 
+    String chat(Long userId, Long conversationId, String message, Boolean thinkingOverride);
+
     SseEmitter streamReactChat(Long userId, String message);
 
     SseEmitter streamReactChat(Long userId, Long conversationId, String message);
+
+    SseEmitter streamReactChat(Long userId, Long conversationId, String message, Boolean thinkingOverride);
 
     List<Map<String, Object>> getChatHistory(Long userId, int limit);
 

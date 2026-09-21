@@ -45,6 +45,30 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class ChatServiceImplTest {
 
+    @Test
+    void streamChat_shouldApplyThinkingModeOnWorkerThread() throws Exception {
+        var observed = new java.util.concurrent.atomic.AtomicReference<Boolean>();
+        var called = new CountDownLatch(1);
+        when(chatMessageMapper.selectRecentByConversation(1L, 99L, 12)).thenReturn(List.of());
+        when(reactAgentService.run(eq(1L), eq(99L), eq("分析预算"),
+                org.mockito.ArgumentMatchers.<List<ChatMessage>>any(), any()))
+                .thenAnswer(invocation -> {
+                    observed.set(com.smartfinance.agent.config.ChatModelThinkingContext.current());
+                    called.countDown();
+                    var listener = (ReActAgentService.ReActEventListener) invocation.getArgument(4);
+                    listener.onRunStarted("trace-thinking");
+                    listener.onFinal("预算正常", "trace-thinking");
+                    return ReActResult.builder().traceId("trace-thinking")
+                            .finalAnswer("预算正常").steps(List.of()).build();
+                });
+
+        chatService.streamReactChat(1L, 99L, "分析预算", true);
+
+        assertTrue(called.await(2, TimeUnit.SECONDS));
+        assertEquals(Boolean.TRUE, observed.get());
+        assertEquals(null, com.smartfinance.agent.config.ChatModelThinkingContext.current());
+    }
+
     @Mock
     private ReActAgentService reactAgentService;
     @Mock

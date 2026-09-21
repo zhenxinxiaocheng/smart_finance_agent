@@ -2,6 +2,7 @@ package com.smartfinance.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.agent.ReActAgentService;
+import com.smartfinance.agent.config.ChatModelThinkingContext;
 import com.smartfinance.agent.context.ContextUsageSnapshot;
 import com.smartfinance.agent.entity.ChatConversation;
 import com.smartfinance.agent.entity.ChatMessage;
@@ -58,6 +59,11 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public String chat(Long userId, Long conversationId, String message) {
+        return chat(userId, conversationId, message, null);
+    }
+
+    @Override
+    public String chat(Long userId, Long conversationId, String message, Boolean thinkingOverride) {
         ChatConversation conversation = conversationService.ensureConversation(userId, conversationId);
         Long activeConversationId = conversation.getId();
         List<ChatMessage> recentHistory = loadRecentHistory(userId, activeConversationId);
@@ -65,7 +71,7 @@ public class ChatServiceImpl implements ChatService {
         conversationService.updateTitleFromFirstMessage(userId, activeConversationId, message);
         AtomicReference<String> traceRef = new AtomicReference<>();
         String response;
-        try {
+        try (var ignored = ChatModelThinkingContext.override(thinkingOverride)) {
             var result = reactAgentService.run(userId, activeConversationId, message, recentHistory,
                     runRecorder(userId, message, traceRef, null));
             response = result.getFinalAnswer();
@@ -86,6 +92,11 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public SseEmitter streamReactChat(Long userId, Long conversationId, String message) {
+        return streamReactChat(userId, conversationId, message, null);
+    }
+
+    @Override
+    public SseEmitter streamReactChat(Long userId, Long conversationId, String message, Boolean thinkingOverride) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
         ChatConversation conversation = conversationService.ensureConversation(userId, conversationId);
         Long activeConversationId = conversation.getId();
@@ -95,7 +106,7 @@ public class ChatServiceImpl implements ChatService {
         AtomicReference<String> traceRef = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
-            try {
+            try (var ignored = ChatModelThinkingContext.override(thinkingOverride)) {
                 var result = reactAgentService.run(userId, activeConversationId, message, recentHistory,
                         runRecorder(userId, message, traceRef, emitter));
                 saveMessage(userId, activeConversationId, "ASSISTANT", result.getFinalAnswer(), result.getTraceId());

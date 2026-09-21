@@ -14,6 +14,21 @@
               @keydown.enter.prevent="handleSend"
               @input="autoResizeInput"
             />
+            <Select v-model="thinkingMode">
+              <SelectTrigger class="thinking-mode-trigger" aria-label="思考模式" title="思考模式" :disabled="conversationLoading || loading">
+                <!-- Below 720px the text label is dropped and the glyph carries the
+                     meaning: the composer is only ~254px wide next to the icon rail,
+                     and a 98px label left the textarea 74px (the placeholder wrapped
+                     onto two lines). -->
+                <Zap v-if="thinkingMode === 'fast'" class="thinking-mode-glyph" />
+                <Brain v-else class="thinking-mode-glyph" />
+                <SelectValue class="thinking-mode-label" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fast">快速回复</SelectItem>
+                <SelectItem value="deep">深度思考</SelectItem>
+              </SelectContent>
+            </Select>
             <Button
               class="new-chat-send"
               size="icon-lg"
@@ -22,18 +37,6 @@
               @click="handleSend"
             >
               <SendHorizontal />
-            </Button>
-          </div>
-          <div class="new-chat-prompts">
-            <Button
-              v-for="item in landingSuggestions"
-              :key="item"
-              variant="outline"
-              size="sm"
-              class="new-chat-prompt"
-              @click="sendSuggestion(item)"
-            >
-              {{ item }}
             </Button>
           </div>
         </div>
@@ -285,21 +288,6 @@
         </div>
       </div>
 
-      <div class="suggestions-bar" v-if="messages.length === 0 || !loading">
-        <div class="suggestions-scroll">
-          <Button
-            v-for="(item, index) in suggestions"
-            :key="index"
-            variant="outline"
-            size="sm"
-            class="suggestion-chip"
-            @click="sendSuggestion(item)"
-          >
-            <span>{{ item }}</span>
-          </Button>
-        </div>
-      </div>
-
       <div class="input-area-container">
         <div class="composer-shell">
           <Textarea
@@ -313,6 +301,15 @@
           />
           <div class="composer-toolbar">
             <div class="composer-tools-left">
+              <Select v-model="thinkingMode">
+                <SelectTrigger class="thinking-mode-trigger" aria-label="思考模式" :disabled="loading">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fast">快速回复</SelectItem>
+                  <SelectItem value="deep">深度思考</SelectItem>
+                </SelectContent>
+              </Select>
               <DropdownMenu>
                 <DropdownMenuTrigger as-child>
                   <button
@@ -485,7 +482,7 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { Bell, Plus, SendHorizontal } from '@lucide/vue'
+import { Bell, Brain, Plus, SendHorizontal, Zap } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { Badge } from '@/components/ui/badge'
@@ -503,6 +500,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { feedback } from '@/lib/feedback'
 import {
   streamReactChatAPI,
@@ -523,6 +521,8 @@ marked.setOptions({
 
 const messages = ref([])
 const inputMessage = ref('')
+const thinkingMode = ref(localStorage.getItem('chatThinkingMode') === 'deep' ? 'deep' : 'fast')
+watch(thinkingMode, mode => localStorage.setItem('chatThinkingMode', mode))
 const loading = ref(false)
 const unreadAlertCount = ref(0)
 const alertList = ref([])
@@ -552,20 +552,6 @@ let chatAbortController = null
 let suppressNextConversationRouteLoad = false
 const PENDING_ACTION_NOTICE = 'PENDING_ACTION_NOTICE'
 const contextConfig = ref({ maxTokens: 0, reservedOutputTokens: 0, effectiveBudget: 0 })
-
-const suggestions = [
-  '我这个月消费情况如何？',
-  '帮我分析支出分类占比',
-  '有什么省钱建议吗？',
-  '我在餐饮上花了多少？',
-  '帮我看看我的预算设置'
-]
-
-const landingSuggestions = [
-  '记录一笔今天的支出',
-  '分析我这个月消费',
-  '帮我规划下月预算'
-]
 
 const isNewConversationLanding = computed(() => {
   return !currentConversationId.value && !loading.value && !showTypingAnimation.value && !historyLoading.value
@@ -819,7 +805,7 @@ async function handleSend() {
   let terminalEventReceived = false
 
   try {
-    await streamReactChatAPI({ conversationId: currentConversationId.value, message: text }, {
+    await streamReactChatAPI({ conversationId: currentConversationId.value, message: text, thinkingMode: thinkingMode.value }, {
       step_started: payload => {
         upsertStep({
           stepNumber: payload.stepNumber,
@@ -1089,11 +1075,6 @@ async function cancelPendingAction(action) {
   } catch {
     action.confirming = false
   }
-}
-
-function sendSuggestion(text) {
-  inputMessage.value = text
-  handleSend()
 }
 
 async function loadHistory() {
@@ -1434,16 +1415,29 @@ function formatTime(value) {
   border-radius: 999px;
 }
 
-.new-chat-prompts {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-}
-
-.new-chat-prompt {
+/* Lives inside the composer pill now, so it drops its own border and background
+   — an outlined control inside an outlined pill reads as a box in a box. It
+   behaves as a quiet chip that only tints on hover. */
+.thinking-mode-trigger {
+  flex-shrink: 0;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px 0 10px;
+  border-color: transparent;
   border-radius: 999px;
   background: transparent;
+  color: var(--muted-foreground);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.thinking-mode-trigger:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+/* Shown only on narrow screens, where the text label has to go. */
+.thinking-mode-glyph {
+  display: none;
 }
 
 .chat-container {
@@ -1999,31 +1993,6 @@ function formatTime(value) {
   border: 1px solid var(--chat-border);
 }
 
-.suggestions-bar {
-  flex-shrink: 0;
-  padding: 10px var(--app-card-padding) 6px;
-  background: var(--chat-panel);
-  border-top: 1px solid var(--chat-border);
-  overflow: hidden;
-}
-
-.suggestions-scroll {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 4px 0;
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.suggestions-scroll::-webkit-scrollbar {
-  display: none;
-}
-
-.suggestion-chip {
-  flex-shrink: 0;
-}
-
 .input-area-container {
   flex-shrink: 0;
   padding: 10px var(--app-card-padding) calc(var(--app-card-padding) * 0.9);
@@ -2483,8 +2452,20 @@ function formatTime(value) {
     padding: 8px 10px 8px 18px;
   }
 
-  .new-chat-prompts {
-    gap: 8px;
+  /* Compact form: glyph + chevron only, ~46px instead of ~98px. */
+  .thinking-mode-trigger {
+    gap: 4px;
+    padding: 0 6px;
+  }
+
+  .thinking-mode-glyph {
+    display: block;
+    width: 16px;
+    height: 16px;
+  }
+
+  .thinking-mode-label {
+    display: none;
   }
 
   .composer-shell {

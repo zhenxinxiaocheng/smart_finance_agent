@@ -37,9 +37,13 @@ class DashScopeChatLanguageModelTest {
         try {
             for (boolean thinking : List.of(false, true)) {
                 var model = new DashScopeChatLanguageModel("http://127.0.0.1:" + server.getAddress().getPort() + "/compatible-mode/v1",
-                        "test-key", "test-model", 0.4, thinking, Duration.ofSeconds(2));
-                var response = model.generate(List.of(SystemMessage.from("中文回复"),
-                        UserMessage.from("hi"), AiMessage.from("你好"), UserMessage.from("继续")));
+                        "test-key", "test-model", 0.4, false, Duration.ofSeconds(2));
+                dev.langchain4j.model.output.Response<AiMessage> response;
+                try (var ignored = ChatModelThinkingContext.override(thinking)) {
+                    response = model.generate(List.of(SystemMessage.from("中文回复"),
+                            UserMessage.from("hi"), AiMessage.from("你好"), UserMessage.from("继续")));
+                }
+                assertNull(ChatModelThinkingContext.current());
                 assertEquals(thinking, request.get().path("enable_thinking").booleanValue());
                 assertFalse(request.get().path("stream").asBoolean());
                 assertEquals("test-model", request.get().path("model").asText());

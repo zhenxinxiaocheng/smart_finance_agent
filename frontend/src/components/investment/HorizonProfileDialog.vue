@@ -8,12 +8,6 @@
         </DialogDescription>
       </DialogHeader>
 
-      <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Badge variant="outline">{{ sourceLabel }}</Badge>
-        <span v-if="draft.version" class="font-mono">{{ draft.version }}</span>
-        <span v-if="draft.maxHistoryTradingDays">历史数据能力约 {{ draft.maxHistoryTradingDays }} 个交易日</span>
-      </div>
-
       <Alert v-for="warning in draft.warnings" :key="warning" class="py-2.5">
         <TriangleAlert />
         <AlertTitle>数据能力提醒</AlertTitle>
@@ -75,10 +69,9 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { Loader2, Plus, Trash2, TriangleAlert, Undo2 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -110,12 +103,6 @@ watch(
   },
   { deep: true, immediate: true },
 )
-
-const sourceLabel = computed(() => ({
-  ASSET: '当前资产单独设置',
-  GLOBAL: '继承全局设置',
-  TEMPLATE: '平台示例设置',
-}[draft.value.sourceScope] || draft.value.sourceScope))
 
 function addSetting() {
   const sortOrder = Math.max(0, ...draft.value.settings.map(item => Number(item.sortOrder) || 0)) + 10
