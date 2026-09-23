@@ -113,7 +113,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ArrowDownRight, ArrowUpRight, Banknote, Scale, TrendingUp, WalletCards } from '@lucide/vue'
-import { listTransactionsAPI } from '../../api/transaction'
+import { transactionStatisticsAPI } from '../../api/transaction'
 import { getWealthOverviewAPI } from '../../api/wealth'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -222,15 +222,15 @@ async function fetchData() {
   const fmtLabel = d => `${d.getMonth() + 1}/${d.getDate()}`
 
   const [transactionResult, wealthResult] = await Promise.allSettled([
-    listTransactionsAPI({ page: 1, size: 1000, startDate: fmtDate(start), endDate: fmtDate(end) }),
+    transactionStatisticsAPI({ startDate: fmtDate(start), endDate: fmtDate(end) }),
     getWealthOverviewAPI()
   ])
 
   if (transactionResult.status === 'fulfilled') {
     const res = transactionResult.value
     if (res.code === 200) {
-      const records = res.data.records || []
-      transactionSummary.value.transactionCount = res.data.total || records.length
+      const records = res.data || []
+      transactionSummary.value.transactionCount = records.reduce((sum, row) => sum + Number(row.transactionCount), 0)
 
       // 初始化7天数据
       const days = []

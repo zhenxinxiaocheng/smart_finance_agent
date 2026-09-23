@@ -15,6 +15,14 @@ import java.util.Map;
 @Mapper
 public interface TransactionMapper extends BaseMapper<Transaction> {
 
+    @Select("SELECT transaction_date, type, category, SUM(amount) AS amount, COUNT(*) AS transaction_count " +
+            "FROM `transaction` WHERE user_id = #{userId} AND deleted = 0 " +
+            "AND transaction_date BETWEEN #{startDate} AND #{endDate} " +
+            "GROUP BY transaction_date, type, category ORDER BY transaction_date, type, category")
+    List<com.smartfinance.agent.dto.TransactionStatisticsRow> statisticsByDateRange(
+            @Param("userId") Long userId, @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate);
+
     @Select("SELECT COALESCE(SUM(amount), 0) FROM `transaction` " +
             "WHERE user_id = #{userId} AND type = #{type} " +
             "AND transaction_date BETWEEN #{startDate} AND #{endDate} AND deleted = 0")

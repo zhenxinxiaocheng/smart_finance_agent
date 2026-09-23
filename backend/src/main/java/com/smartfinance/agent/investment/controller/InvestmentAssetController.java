@@ -62,6 +62,8 @@ public class InvestmentAssetController {
     }
 
     @PostMapping("/refresh")
+    @com.smartfinance.agent.ratelimit.RateLimited(value = com.smartfinance.agent.ratelimit.RateLimitScope.QUOTE_REFRESH,
+            booleanParameter = "force")
     public Result<List<InvestmentAssetView>> refresh(
             @RequestAttribute Long userId,
             @RequestParam(defaultValue = "false") boolean force) {
@@ -87,6 +89,7 @@ public class InvestmentAssetController {
     }
 
     @PostMapping("/{id}/sync")
+    @com.smartfinance.agent.ratelimit.RateLimited(com.smartfinance.agent.ratelimit.RateLimitScope.QUOTE_REFRESH)
     public Result<InvestmentAssetView> sync(@RequestAttribute Long userId, @PathVariable Long id) {
         return Result.success(assetService.sync(userId, id));
     }

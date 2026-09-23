@@ -29,6 +29,14 @@ export async function streamReactChatAPI(data, handlers = {}, signal) {
   }
 
   if (!response.ok || !response.body) {
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get('Retry-After'))
+      const error = new Error(Number.isSafeInteger(seconds) && seconds > 0
+        ? `操作太频繁，请在 ${seconds} 秒后重试`
+        : '操作太频繁，请稍后重试')
+      error.code = 'RATE_LIMITED'
+      throw error
+    }
     throw new Error(`流式请求失败：${response.status}`)
   }
 

@@ -140,7 +140,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { ArrowDownRight, ArrowUpRight, Search, WalletCards } from '@lucide/vue'
-import { listTransactionsAPI } from '../../api/transaction'
+import { transactionStatisticsAPI } from '../../api/transaction'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -170,7 +170,7 @@ for (let y = currentYear; y >= earliestYear; y--) {
 }
 const selectedYear = ref(currentYear)
 
-const allTransactions = ref([])
+const statisticsRows = ref([])
 
 const yearIncome = ref(0)
 const yearExpense = ref(0)
@@ -199,12 +199,12 @@ const monthlyData = computed(() => {
     const key = `${selectedYear.value}-${String(m).padStart(2, '0')}`
     map[key] = { month: key, income: 0, expense: 0, balance: 0, count: 0 }
   }
-  for (const r of allTransactions.value) {
+  for (const r of statisticsRows.value) {
     const key = r.transactionDate.substring(0, 7)
     if (map[key]) {
       if (r.type === 'INCOME') map[key].income += Number(r.amount)
       else map[key].expense += Number(r.amount)
-      map[key].count++
+      map[key].count += Number(r.transactionCount)
     }
   }
   const result = Object.values(map)
@@ -254,7 +254,7 @@ const assetTrendOption = computed(() => {
 // 分类占比数据（根据 ratioType 切换：支出分类 / 收入分类）
 const categoryRatioData = computed(() => {
   const map = {}
-  for (const r of allTransactions.value) {
+  for (const r of statisticsRows.value) {
     const matchType = ratioType.value === 'expense' ? 'EXPENSE' : 'INCOME'
     if (r.type !== matchType) continue
     const cat = r.category || '其他'
@@ -295,11 +295,11 @@ async function fetchYearData() {
   const startStr = `${selectedYear.value}-01-01`
   const endStr = `${selectedYear.value}-12-31`
   try {
-    const res = await listTransactionsAPI({ page: 1, size: 5000, startDate: startStr, endDate: endStr })
+    const res = await transactionStatisticsAPI({ startDate: startStr, endDate: endStr })
     if (res.code === 200) {
-      allTransactions.value = res.data.records || []
+      statisticsRows.value = res.data || []
       let inc = 0, exp = 0
-      for (const r of allTransactions.value) {
+      for (const r of statisticsRows.value) {
         if (r.type === 'INCOME') inc += Number(r.amount)
         else exp += Number(r.amount)
       }

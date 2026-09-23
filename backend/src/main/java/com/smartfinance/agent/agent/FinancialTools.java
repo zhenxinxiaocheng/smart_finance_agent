@@ -25,11 +25,14 @@ public class FinancialTools {
 
     private final TransactionMapper transactionMapper;
     private final ExpenseCategoryMapper expenseCategoryMapper;
+    private final com.smartfinance.agent.service.FinanceStatisticsService statistics;
 
     public FinancialTools(TransactionMapper transactionMapper,
-                          ExpenseCategoryMapper expenseCategoryMapper) {
+                          ExpenseCategoryMapper expenseCategoryMapper,
+                          com.smartfinance.agent.service.FinanceStatisticsService statistics) {
         this.transactionMapper = transactionMapper;
         this.expenseCategoryMapper = expenseCategoryMapper;
+        this.statistics = statistics;
     }
 
     @Tool("查询用户在指定时间范围内的总支出")
@@ -41,7 +44,7 @@ public class FinancialTools {
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
-        BigDecimal total = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+        BigDecimal total = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
         String result = String.format("在 %s 至 %s 期间，总支出为 %.2f 元", startDate, endDate, total);
         log.info("Tool[getTotalExpense] userId={}, result={}", userId, result);
         return result;
@@ -56,7 +59,7 @@ public class FinancialTools {
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
-        BigDecimal total = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
+        BigDecimal total = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
         String result = String.format("在 %s 至 %s 期间，总收入为 %.2f 元", startDate, endDate, total);
         log.info("Tool[getTotalIncome] userId={}, result={}", userId, result);
         return result;
@@ -71,7 +74,7 @@ public class FinancialTools {
         }
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
-        List<Map<String, Object>> categoryData = transactionMapper.sumByCategory(userId, start, end);
+        List<Map<String, Object>> categoryData = statistics.sumByCategory(userId, start, end);
 
         if (categoryData.isEmpty()) {
             return "该时间范围内暂无支出记录";
@@ -138,11 +141,11 @@ public class FinancialTools {
         LocalDate start = LocalDate.of(year, month, 1);
         LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
 
-        BigDecimal income = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
-        BigDecimal expense = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+        BigDecimal income = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
+        BigDecimal expense = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
         BigDecimal balance = income.subtract(expense);
 
-        List<Map<String, Object>> categoryData = transactionMapper.sumByCategory(userId, start, end);
+        List<Map<String, Object>> categoryData = statistics.sumByCategory(userId, start, end);
 
         String topCategories = categoryData.stream()
                 .limit(3)
@@ -187,9 +190,9 @@ public class FinancialTools {
         LocalDate start = LocalDate.parse(startDate);
         LocalDate end = LocalDate.parse(endDate);
 
-        BigDecimal income = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
-        BigDecimal expense = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
-        List<Map<String, Object>> categoryData = transactionMapper.sumByCategory(userId, start, end);
+        BigDecimal income = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
+        BigDecimal expense = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+        List<Map<String, Object>> categoryData = statistics.sumByCategory(userId, start, end);
 
         return String.format("""
                 财务概览数据：
@@ -208,7 +211,7 @@ public class FinancialTools {
         }
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusMonths(3);
-        BigDecimal totalExpense = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+        BigDecimal totalExpense = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
 
         if (totalExpense.compareTo(BigDecimal.ZERO) == 0) {
             return "暂无足够的支出数据来分析紧急备用金情况，请先录入消费记录";
@@ -239,8 +242,8 @@ public class FinancialTools {
         LocalDate now = LocalDate.now();
         LocalDate monthStart = now.withDayOfMonth(1);
 
-        BigDecimal income = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", monthStart, now);
-        BigDecimal expense = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", monthStart, now);
+        BigDecimal income = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", monthStart, now);
+        BigDecimal expense = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", monthStart, now);
 
         if (income.compareTo(BigDecimal.ZERO) == 0) {
             return "本月暂无收入数据，无法评估储蓄率";
@@ -301,7 +304,7 @@ public class FinancialTools {
         LocalDate prevStart = prevEnd.minusDays(89);
         long windowDays = ChronoUnit.DAYS.between(start, end) + 1;
 
-        List<Map<String, Object>> dailyExpenses = transactionMapper.sumDailyExpense(userId, start, end);
+        List<Map<String, Object>> dailyExpenses = statistics.sumDailyExpense(userId, start, end);
         if (dailyExpenses.isEmpty()) {
             return "近90天暂无支出数据，无法进行异常检测";
         }
@@ -346,8 +349,8 @@ public class FinancialTools {
             anomalies.append("\n");
         }
 
-        List<Map<String, Object>> currentCategories = transactionMapper.sumByCategory(userId, start, end);
-        List<Map<String, Object>> prevCategories = transactionMapper.sumByCategory(userId, prevStart, prevEnd);
+        List<Map<String, Object>> currentCategories = statistics.sumByCategory(userId, start, end);
+        List<Map<String, Object>> prevCategories = statistics.sumByCategory(userId, prevStart, prevEnd);
         if (!currentCategories.isEmpty() && !prevCategories.isEmpty()) {
             Map<String, BigDecimal> prevMap = prevCategories.stream()
                     .collect(Collectors.toMap(m -> (String) m.get("category"), m -> (BigDecimal) m.get("total")));
@@ -384,10 +387,10 @@ public class FinancialTools {
         LocalDate start = end.minusMonths(6);
         LocalDate monthStart = end.withDayOfMonth(1);
 
-        BigDecimal monthlyIncome = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", monthStart, end);
+        BigDecimal monthlyIncome = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", monthStart, end);
         boolean hasIncome = monthlyIncome.compareTo(BigDecimal.ZERO) > 0;
 
-        List<Map<String, Object>> categories = transactionMapper.sumByCategory(userId, start, end);
+        List<Map<String, Object>> categories = statistics.sumByCategory(userId, start, end);
         if (categories.isEmpty()) {
             return "暂无足够的消费数据进行比较分析，请先录入消费记录";
         }
@@ -461,8 +464,8 @@ public class FinancialTools {
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusMonths(6);
 
-        BigDecimal totalExpense = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
-        BigDecimal totalIncome = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
+        BigDecimal totalExpense = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+        BigDecimal totalIncome = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", start, end);
         int months = Math.max(1, (int) (end.toEpochDay() - start.toEpochDay()) / 30);
 
         BigDecimal avgExpense = totalExpense.divide(BigDecimal.valueOf(months), 2, RoundingMode.HALF_UP);
@@ -482,7 +485,7 @@ public class FinancialTools {
         BigDecimal wants = baseAmount.multiply(new BigDecimal("0.30"));
         BigDecimal savings = baseAmount.multiply(new BigDecimal("0.20"));
 
-        List<Map<String, Object>> categories = transactionMapper.sumByCategory(userId, start, end);
+        List<Map<String, Object>> categories = statistics.sumByCategory(userId, start, end);
         StringBuilder catCurrent = new StringBuilder();
         if (!categories.isEmpty()) {
             catCurrent.append("\n近6月实际月均支出：\n");
@@ -528,7 +531,7 @@ public class FinancialTools {
         LocalDate end = LocalDate.now();
         LocalDate yearStart = end.withDayOfYear(1);
 
-        BigDecimal yearIncome = transactionMapper.sumByUserAndTypeAndDateRange(userId, "INCOME", yearStart, end);
+        BigDecimal yearIncome = statistics.sumByUserAndTypeAndDateRange(userId, "INCOME", yearStart, end);
         if (yearIncome.compareTo(BigDecimal.ZERO) == 0) {
             return "暂无本年度收入数据，无法进行个税估算。请在「消费记录」中录入工资等收入记录";
         }

@@ -5,7 +5,7 @@ import com.smartfinance.agent.entity.Budget;
 import com.smartfinance.agent.entity.BudgetAlert;
 import com.smartfinance.agent.mapper.BudgetAlertMapper;
 import com.smartfinance.agent.mapper.BudgetMapper;
-import com.smartfinance.agent.mapper.TransactionMapper;
+import com.smartfinance.agent.service.FinanceStatisticsService;
 import com.smartfinance.agent.service.BudgetService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,14 +22,14 @@ public class BudgetServiceImpl implements BudgetService {
 
     private final BudgetMapper budgetMapper;
     private final BudgetAlertMapper budgetAlertMapper;
-    private final TransactionMapper transactionMapper;
+    private final FinanceStatisticsService statistics;
 
     public BudgetServiceImpl(BudgetMapper budgetMapper,
                               BudgetAlertMapper budgetAlertMapper,
-                              TransactionMapper transactionMapper) {
+                              FinanceStatisticsService statistics) {
         this.budgetMapper = budgetMapper;
         this.budgetAlertMapper = budgetAlertMapper;
-        this.transactionMapper = transactionMapper;
+        this.statistics = statistics;
     }
 
     @Override
@@ -94,9 +94,9 @@ public class BudgetServiceImpl implements BudgetService {
             BigDecimal budgetAmount = budget.getBudgetAmount();
             BigDecimal spent;
             if ("ALL".equals(category)) {
-                spent = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+                spent = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
             } else {
-                spent = transactionMapper.sumByUserAndCategoryAndDateRange(userId, category, start, end);
+                spent = statistics.sumByUserAndCategoryAndDateRange(userId, category, start, end);
             }
             if (spent == null) spent = BigDecimal.ZERO;
 
@@ -211,9 +211,9 @@ public class BudgetServiceImpl implements BudgetService {
             BigDecimal budgetAmt = budget.getBudgetAmount();
             BigDecimal spent;
             if ("ALL".equals(cat)) {
-                spent = transactionMapper.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
+                spent = statistics.sumByUserAndTypeAndDateRange(userId, "EXPENSE", start, end);
             } else {
-                spent = transactionMapper.sumByUserAndCategoryAndDateRange(userId, cat, start, end);
+                spent = statistics.sumByUserAndCategoryAndDateRange(userId, cat, start, end);
             }
             if (spent == null) spent = BigDecimal.ZERO;
             totalBudget = totalBudget.add(budgetAmt);

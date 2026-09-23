@@ -13,6 +13,9 @@ import com.smartfinance.agent.mapper.BillCandidateTransactionMapper;
 import com.smartfinance.agent.mapper.BillImportRecordMapper;
 import com.smartfinance.agent.service.BillImportService;
 import com.smartfinance.agent.service.TransactionService;
+import com.smartfinance.agent.service.BillConfirmationGuard;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +29,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.HashSet;
+import java.util.Objects;
 
 @Service
 public class BillImportServiceImpl implements BillImportService {
@@ -36,17 +41,20 @@ public class BillImportServiceImpl implements BillImportService {
     private final BillImportRecordMapper billImportRecordMapper;
     private final BillCandidateTransactionMapper candidateMapper;
     private final TransactionService transactionService;
+    private final BillConfirmationGuard confirmationGuard;
     private final Path uploadDir;
 
     public BillImportServiceImpl(BillAiClient billAiClient,
                                  BillImportRecordMapper billImportRecordMapper,
                                  BillCandidateTransactionMapper candidateMapper,
                                  TransactionService transactionService,
+                                 BillConfirmationGuard confirmationGuard,
                                  @Value("${bill.upload-dir:uploads/bills}") String uploadDir) {
         this.billAiClient = billAiClient;
         this.billImportRecordMapper = billImportRecordMapper;
         this.candidateMapper = candidateMapper;
         this.transactionService = transactionService;
+        this.confirmationGuard = confirmationGuard;
         this.uploadDir = Path.of(uploadDir);
     }
 
@@ -102,7 +110,27 @@ public class BillImportServiceImpl implements BillImportService {
     @Override
     @Transactional
     public List<Transaction> confirm(Long userId, Long id, BillConfirmRequest request) {
-        BillImportRecord record = billImportRecordMapper.selectById(id);
+        if (request == null || request.getCandidates() == null || request.getCandidates().isEmpty())
+            throw new IllegalArgumentException("候选交易不能为空");
+        var ids = new HashSet<Long>();
+        for (var item : request.getCandidates()) {
+            if (item == null || item.getId() == null || !ids.add(item.getId()))
+                throw new IllegalArgumentException("候选交易编号不能为空或重复");
+            if (!Boolean.FALSE.equals(item.getSelected()) && (item.getAmount() == null
+                    || item.getAmount().signum() <= 0 || item.getAmount().stripTrailingZeros().scale() > 2
+                    || item.getAmount().compareTo(new BigDecimal("10000000000")) >= 0))
+                throw new IllegalArgumentException("请输入有效金额，最多保留两位小数");
+        }
+        try (var lease = confirmationGuard.acquire(userId, id)) {
+            return confirmLocked(userId, id, request);
+        }
+    }
+
+    private List<Transaction> confirmLocked(Long userId, Long id, BillConfirmRequest request) {
+        // SQLite requires a write before reading: its write transaction serializes confirmations.
+        // MySQL additionally uses current locking reads to avoid an outer transaction's old snapshot.
+        billImportRecordMapper.acquireWriteLock(userId, id);
+        BillImportRecord record = billImportRecordMapper.selectOwnedForUpdate(userId, id);
         if (record == null || !record.getUserId().equals(userId)) {
             throw new IllegalArgumentException("账单导入记录不存在");
         }
@@ -112,8 +140,26 @@ public class BillImportServiceImpl implements BillImportService {
 
         List<Transaction> imported = new ArrayList<>();
         for (BillConfirmRequest.ConfirmCandidate item : request.getCandidates()) {
+            BillCandidateTransaction candidate = candidateMapper.selectOwnedForUpdate(userId, id, item.getId());
+            if (candidate == null || !Objects.equals(candidate.getUserId(), userId)
+                    || !Objects.equals(candidate.getBillImportId(), id))
+                throw new IllegalArgumentException("候选交易不存在");
+            if ("CONFIRMED".equals(candidate.getStatus()) || candidate.getTransactionId() != null) {
+                // Never clear a confirmed link, even when a later request deselects this row.
+                if (Boolean.FALSE.equals(item.getSelected())) continue;
+                if (candidate.getTransactionId() == null || !sameConfirmation(candidate, item))
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "该候选交易已导入，请到交易记录中修改");
+                try { imported.add(transactionService.getById(candidate.getTransactionId(), userId)); }
+                catch (IllegalArgumentException exception) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "该候选交易已导入，原交易已删除或不可用，请到交易记录中核对");
+                }
+                continue;
+            }
+            if (!"PENDING".equals(candidate.getStatus()) && !"IGNORED".equals(candidate.getStatus()))
+                throw new IllegalArgumentException("候选交易状态不可确认");
             if (Boolean.FALSE.equals(item.getSelected())) {
-                markCandidate(item.getId(), userId, id, "IGNORED", null);
+                candidate.setStatus("IGNORED");
+                candidateMapper.updateById(candidate);
                 continue;
             }
             Transaction transaction = transactionService.add(
@@ -125,7 +171,14 @@ public class BillImportServiceImpl implements BillImportService {
                     item.getTransactionDate()
             );
             imported.add(transaction);
-            markCandidate(item.getId(), userId, id, "CONFIRMED", transaction.getId());
+            candidate.setAmount(item.getAmount());
+            candidate.setType(item.getType());
+            candidate.setCategory(item.getCategory());
+            candidate.setDescription(item.getDescription());
+            candidate.setTransactionDate(item.getTransactionDate());
+            candidate.setStatus("CONFIRMED");
+            candidate.setTransactionId(transaction.getId());
+            candidateMapper.updateById(candidate);
         }
         record.setStatus("CONFIRMED");
         billImportRecordMapper.updateById(record);
@@ -192,15 +245,13 @@ public class BillImportServiceImpl implements BillImportService {
         return dto;
     }
 
-    private void markCandidate(Long candidateId, Long userId, Long billImportId, String status, Long transactionId) {
-        if (candidateId == null) return;
-        BillCandidateTransaction candidate = candidateMapper.selectById(candidateId);
-        if (candidate == null || !candidate.getUserId().equals(userId) || !candidate.getBillImportId().equals(billImportId)) {
-            throw new IllegalArgumentException("候选交易不存在");
-        }
-        candidate.setStatus(status);
-        candidate.setTransactionId(transactionId);
-        candidateMapper.updateById(candidate);
+    private boolean sameConfirmation(BillCandidateTransaction candidate, BillConfirmRequest.ConfirmCandidate item) {
+        return candidate.getAmount() != null && item.getAmount() != null
+                && candidate.getAmount().compareTo(item.getAmount()) == 0
+                && Objects.equals(candidate.getType(), item.getType())
+                && Objects.equals(candidate.getCategory(), item.getCategory())
+                && Objects.equals(candidate.getDescription(), item.getDescription())
+                && Objects.equals(candidate.getTransactionDate(), item.getTransactionDate());
     }
 
     private String resolveStatus(String billType, BigDecimal confidence, String warnings) {

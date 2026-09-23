@@ -840,9 +840,9 @@ async function handleSend() {
     if (!terminalEventReceived && loading.value) {
       finishWithError('连接已结束，但没有收到完整回复，请稍后再试。')
     }
-  } catch {
+  } catch (error) {
     if (!chatAbortController?.signal.aborted) {
-      finishWithError()
+      finishWithError(error?.code === 'RATE_LIMITED' ? error.message : undefined)
     }
   } finally {
     contextUsageLoading.value = false

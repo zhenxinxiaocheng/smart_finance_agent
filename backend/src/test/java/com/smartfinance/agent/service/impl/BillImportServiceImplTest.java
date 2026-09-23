@@ -57,11 +57,15 @@ class BillImportServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        var properties = new com.smartfinance.agent.config.BillConfirmationGuardProperties();
+        properties.setEnabled(false);
         billImportService = new BillImportServiceImpl(
                 billAiClient,
                 billImportRecordMapper,
                 candidateMapper,
                 transactionService,
+                new com.smartfinance.agent.service.BillConfirmationGuard(
+                        org.mockito.Mockito.mock(org.springframework.data.redis.core.StringRedisTemplate.class), properties),
                 "target/test-bill-uploads"
         );
     }
@@ -144,10 +148,10 @@ class BillImportServiceImplTest {
         record.setId(100L);
         record.setUserId(1L);
         record.setStatus("ANALYZED");
-        when(billImportRecordMapper.selectById(100L)).thenReturn(record);
+        when(billImportRecordMapper.selectOwnedForUpdate(1L, 100L)).thenReturn(record);
 
         BillCandidateTransaction candidate = existingCandidate(200L, 100L, 1L);
-        when(candidateMapper.selectById(200L)).thenReturn(candidate);
+        when(candidateMapper.selectOwnedForUpdate(1L, 100L, 200L)).thenReturn(candidate);
 
         Transaction transaction = new Transaction();
         transaction.setId(300L);
@@ -179,6 +183,45 @@ class BillImportServiceImplTest {
         assertThat(record.getStatus()).isEqualTo("CONFIRMED");
         verify(candidateMapper).updateById(candidate);
         verify(billImportRecordMapper).updateById(record);
+
+        when(transactionService.getById(300L, 1L)).thenReturn(transaction);
+        assertThat(billImportService.confirm(1L, 100L, request)).containsExactly(transaction);
+        verify(transactionService, org.mockito.Mockito.times(1)).add(any(), any(), any(), any(), any(), any());
+
+        item.setAmount(new BigDecimal("99.00"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> billImportService.confirm(1L, 100L, request))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        item.setSelected(false);
+        assertThat(billImportService.confirm(1L, 100L, request)).isEmpty();
+        assertThat(candidate.getTransactionId()).isEqualTo(300L);
+        assertThat(candidate.getStatus()).isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    void confirm_rejectsMissingOrRepeatedCandidateIdsBeforeWriting() {
+        var request = new BillConfirmRequest();
+        var item = new BillConfirmRequest.ConfirmCandidate();
+        request.setCandidates(List.of(item));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> billImportService.confirm(1L, 100L, request))
+                .isInstanceOf(IllegalArgumentException.class);
+        item.setId(200L);
+        item.setAmount(BigDecimal.ONE);
+        request.setCandidates(List.of(item, item));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> billImportService.confirm(1L, 100L, request))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.mockito.Mockito.verifyNoInteractions(transactionService, candidateMapper, billImportRecordMapper);
+    }
+
+    @Test
+    void confirm_rejectsFractionalCentsBeforePersistenceCanRoundThem() {
+        var item = new BillConfirmRequest.ConfirmCandidate();
+        item.setId(200L);
+        item.setAmount(new BigDecimal("15.675"));
+        var request = new BillConfirmRequest();
+        request.setCandidates(List.of(item));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> billImportService.confirm(1L, 100L, request))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("两位小数");
+        org.mockito.Mockito.verifyNoInteractions(transactionService, candidateMapper, billImportRecordMapper);
     }
 
     private void mockUploadFile() throws Exception {

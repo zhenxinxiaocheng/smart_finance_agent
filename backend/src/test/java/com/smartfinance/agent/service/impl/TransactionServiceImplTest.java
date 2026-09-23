@@ -27,6 +27,10 @@ class TransactionServiceImplTest {
 
     @Mock
     private TransactionMapper transactionMapper;
+    @Mock
+    private com.smartfinance.agent.service.FinanceStatisticsCache statisticsCache;
+    @Mock
+    private com.smartfinance.agent.service.FinanceStatisticsService statistics;
 
     @InjectMocks
     private TransactionServiceImpl transactionService;
@@ -99,7 +103,7 @@ class TransactionServiceImplTest {
 
     @Test
     void categorySummary_shouldDelegateToMapper() {
-        when(transactionMapper.sumByCategory(
+        when(statistics.sumByCategory(
                 1L, LocalDate.parse("2026-05-01"), LocalDate.parse("2026-05-31")
         )).thenReturn(List.of(Map.of("category", "food", "total", new BigDecimal("200.00"))));
 

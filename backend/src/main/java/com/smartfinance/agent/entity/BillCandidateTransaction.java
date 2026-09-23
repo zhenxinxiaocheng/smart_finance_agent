@@ -29,6 +29,7 @@ public class BillCandidateTransaction {
 
     private String category;
 
+    @TableField(updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.ALWAYS)
     private String description;
 
     private LocalDate transactionDate;

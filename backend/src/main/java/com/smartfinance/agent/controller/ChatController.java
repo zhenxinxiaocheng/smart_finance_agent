@@ -52,6 +52,7 @@ public class ChatController {
     }
 
     @PostMapping
+    @com.smartfinance.agent.ratelimit.RateLimited(com.smartfinance.agent.ratelimit.RateLimitScope.CHAT)
     public Result<Map<String, String>> chat(@RequestAttribute Long userId,
                                             @Valid @RequestBody ChatRequest request) {
         String response = chatService.chat(userId, request.getConversationId(), request.getMessage(), request.thinkingOverride());
@@ -59,6 +60,7 @@ public class ChatController {
     }
 
     @PostMapping(value = "/react/stream", produces = "text/event-stream")
+    @com.smartfinance.agent.ratelimit.RateLimited(com.smartfinance.agent.ratelimit.RateLimitScope.CHAT)
     public SseEmitter reactStream(@RequestAttribute Long userId,
                                   @Valid @RequestBody ChatRequest request) {
         return chatService.streamReactChat(userId, request.getConversationId(), request.getMessage(), request.thinkingOverride());

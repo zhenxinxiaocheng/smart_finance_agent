@@ -23,3 +23,7 @@ export function listTransactionsAPI(params) {
 export function categorySummaryAPI(params) {
   return request.get('/transactions/category-summary', { params })
 }
+
+export function transactionStatisticsAPI(params) {
+  return request.get('/transactions/statistics', { params })
+}

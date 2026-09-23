@@ -17,6 +17,7 @@ public class BillConfirmRequest {
     @Data
     @EqualsAndHashCode(callSuper = false)
     public static class ConfirmCandidate extends TransactionRequest {
+        @jakarta.validation.constraints.NotNull(message = "候选交易编号不能为空")
         private Long id;
         private Boolean selected = true;
     }

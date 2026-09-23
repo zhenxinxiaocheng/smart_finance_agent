@@ -18,6 +18,7 @@ import java.time.LocalDate;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -46,6 +47,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final FundClassificationService classificationService;
     private final QuantBenchmarkProfileService benchmarkProfileService;
     private final InvestmentDetailCacheService detailCache;
+    private final InvestmentQuoteCacheService quoteCache;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -63,7 +65,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       ChinaTradingCalendarService tradingCalendar,
                                       FundClassificationService classificationService,
                                       QuantBenchmarkProfileService benchmarkProfileService,
-                                      InvestmentDetailCacheService detailCache) {
+                                      InvestmentDetailCacheService detailCache,
+                                      InvestmentQuoteCacheService quoteCache) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -78,6 +81,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.classificationService = classificationService;
         this.benchmarkProfileService = benchmarkProfileService;
         this.detailCache = detailCache;
+        this.quoteCache = quoteCache;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -235,7 +239,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
 
         try {
-            RefreshOutcome outcome = fetchLatest(currentProduct, alreadyResolved);
+            RefreshOutcome outcome = fetchLatest(currentProduct, alreadyResolved, force);
             LocalDateTime completedAt = LocalDateTime.now(runtimeProperties.getMarket().getZone());
             refreshOutcomes.put(productKey, new CachedRefreshOutcome(outcome, completedAt));
             applyOutcome(asset, outcome);
@@ -251,17 +255,23 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         }
     }
 
-    private RefreshOutcome fetchLatest(InvestmentProduct product) {
-        return fetchLatest(product, null);
-    }
-
     private RefreshOutcome fetchLatest(InvestmentProduct product,
-                                       AnalysisServiceClient.ResolvedProduct alreadyResolved) {
+                                       AnalysisServiceClient.ResolvedProduct alreadyResolved,
+                                       boolean force) {
         try {
             if ("STOCK".equals(product.getProductType())) {
+                InvestmentQuoteCacheService.Entry cached = force ? null
+                        : quoteCache.get(product.getMarket(), product.getCode());
+                if (cached != null) {
+                    saveRealtimeQuote(product, cached.quote());
+                    return new RefreshOutcome("SUCCESS", joinWarnings(cached.quote().warnings()),
+                            LocalDateTime.ofInstant(cached.expiresAt(), runtimeProperties.getMarket().getZone()));
+                }
                 AnalysisServiceClient.RealtimeQuote quote = analysisClient.realtimeQuote(
                         product.getCode(), product.getMarket());
+                Instant retrievedAt = Instant.now();
                 saveRealtimeQuote(product, quote);
+                quoteCache.put(product.getMarket(), product.getCode(), quote, retrievedAt);
                 return new RefreshOutcome("SUCCESS", joinWarnings(quote.warnings()));
             }
             AnalysisServiceClient.ResolvedProduct resolved = alreadyResolved != null
@@ -303,6 +313,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private boolean canReuse(InvestmentProduct product, CachedRefreshOutcome cached, LocalDateTime now) {
         if (cached == null || "FAILED".equals(cached.outcome().status())) return false;
         if ("STOCK".equals(product.getProductType()) && !isStockMarketOpen(now)) return true;
+        if (cached.outcome().validUntil() != null && !now.isBefore(cached.outcome().validUntil())) return false;
         long freshnessMs = "STOCK".equals(product.getProductType())
                 ? runtimeProperties.getMarket().getStockActiveFreshnessMs()
                 : runtimeProperties.getMarket().getFundActiveFreshnessMs();
@@ -347,7 +358,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private record CachedRefreshOutcome(RefreshOutcome outcome, LocalDateTime refreshedAt) {
     }
 
-    private record RefreshOutcome(String status, String error) {
+    private record RefreshOutcome(String status, String error, LocalDateTime validUntil) {
+        private RefreshOutcome(String status, String error) { this(status, error, null); }
     }
 
     private void replaceHolding(Long userId, InvestmentAsset asset, BigDecimal quantity,

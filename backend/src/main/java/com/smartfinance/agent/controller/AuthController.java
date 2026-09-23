@@ -40,6 +40,7 @@ public class AuthController {
     }
 
     @PostMapping("/login")
+    @com.smartfinance.agent.ratelimit.RateLimited(com.smartfinance.agent.ratelimit.RateLimitScope.LOGIN)
     public Result<Map<String, Object>> login(@Valid @RequestBody LoginRequest request) {
         User user = userService.login(request.getUsername(), request.getPassword());
         String token = jwtUtils.generateToken(user.getId(), user.getUsername());

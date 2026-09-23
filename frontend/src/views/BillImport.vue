@@ -74,25 +74,25 @@
             <TableBody>
               <TableRow v-for="row in candidates" :key="row.id || `${row.transactionDate}-${row.amount}-${row.description}`">
                 <TableCell>
-                  <Checkbox v-model="row.selected" />
+                  <Checkbox v-model="row.selected" :disabled="confirming || row.status === 'CONFIRMED'" />
                 </TableCell>
                 <TableCell>
-                  <Input v-model.number="row.amount" min="0.01" step="0.01" type="number" />
+                  <Input v-model.number="row.amount" :disabled="confirming || row.status === 'CONFIRMED'" min="0.01" step="0.01" type="number" />
                 </TableCell>
                 <TableCell>
                   <div class="grid grid-cols-2 gap-2">
-                    <Button size="sm" :variant="row.type === 'EXPENSE' ? 'destructive' : 'outline'" @click="row.type = 'EXPENSE'">支出</Button>
-                    <Button size="sm" :variant="row.type === 'INCOME' ? 'default' : 'outline'" @click="row.type = 'INCOME'">收入</Button>
+                    <Button size="sm" :disabled="confirming || row.status === 'CONFIRMED'" :variant="row.type === 'EXPENSE' ? 'destructive' : 'outline'" @click="row.type = 'EXPENSE'">支出</Button>
+                    <Button size="sm" :disabled="confirming || row.status === 'CONFIRMED'" :variant="row.type === 'INCOME' ? 'default' : 'outline'" @click="row.type = 'INCOME'">收入</Button>
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Input v-model="row.category" placeholder="如 餐饮 / 购物" />
+                  <Input v-model="row.category" :disabled="confirming || row.status === 'CONFIRMED'" placeholder="如 餐饮 / 购物" />
                 </TableCell>
                 <TableCell>
-                  <Input v-model="row.transactionDate" type="date" />
+                  <Input v-model="row.transactionDate" :disabled="confirming || row.status === 'CONFIRMED'" type="date" />
                 </TableCell>
                 <TableCell>
-                  <Input v-model="row.description" placeholder="补充描述" />
+                  <Input v-model="row.description" :disabled="confirming || row.status === 'CONFIRMED'" placeholder="补充描述" />
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -165,6 +165,9 @@ async function submitImport() {
 }
 
 async function confirmImport() {
+  if (confirming.value) return
+  const billId = result.value?.id
+  if (!billId) return
   const selectedCount = candidates.value.filter(item => item.selected).length
   if (!selectedCount) {
     feedback.warning('请至少选择一条候选交易')
@@ -183,12 +186,13 @@ async function confirmImport() {
         transactionDate: item.transactionDate
       }))
     }
-    const res = await confirmBillAPI(result.value.id, payload)
+    const res = await confirmBillAPI(billId, payload)
+    if (result.value?.id !== billId) return
     feedback.success(`已导入 ${res.data.length} 条交易记录`)
     candidates.value = candidates.value.map(item => ({
       ...item,
       selected: false,
-      status: item.selected ? 'CONFIRMED' : 'IGNORED'
+      status: item.status === 'CONFIRMED' || item.selected ? 'CONFIRMED' : 'IGNORED'
     }))
   } finally {
     confirming.value = false

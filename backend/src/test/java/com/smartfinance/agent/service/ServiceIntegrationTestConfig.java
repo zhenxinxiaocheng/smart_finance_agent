@@ -28,8 +28,16 @@ import static org.mockito.Mockito.mock;
         }
 )
 @Import({MyBatisPlusConfig.class, UserServiceImpl.class, TransactionServiceImpl.class,
-        InvestmentServiceImpl.class, ChinaTradingCalendarService.class, InvestmentRuntimeProperties.class})
+        InvestmentServiceImpl.class, ChinaTradingCalendarService.class, InvestmentRuntimeProperties.class,
+        FinanceStatisticsService.class, FinanceStatisticsCache.class})
 class ServiceIntegrationTestConfig {
+
+    @Bean
+    com.smartfinance.agent.config.FinanceStatisticsCacheProperties financeStatisticsCacheProperties() {
+        var properties = new com.smartfinance.agent.config.FinanceStatisticsCacheProperties();
+        properties.setEnabled(false);
+        return properties;
+    }
 
     @Bean
     AnalysisServiceClient analysisServiceClient() {

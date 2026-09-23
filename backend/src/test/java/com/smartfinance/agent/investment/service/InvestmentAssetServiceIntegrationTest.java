@@ -74,6 +74,8 @@ class InvestmentAssetServiceIntegrationTest {
 
     @MockBean
     private com.smartfinance.agent.investment.service.InvestmentDetailCacheService detailCache;
+    @MockBean
+    private com.smartfinance.agent.investment.service.InvestmentQuoteCacheService quoteCache;
 
     @BeforeEach
     void setUpResolver() {
@@ -154,6 +156,7 @@ class InvestmentAssetServiceIntegrationTest {
                         InvestmentDataJob::getForceRefresh)
                 .containsExactly(7L, asset.getProductId(), "FUND_NAV_HISTORY", "QUEUED", true);
         verify(analysisServiceClient, times(1)).resolveProduct("MUTUAL_FUND", "000001");
+        verifyNoInteractions(quoteCache);
     }
 
     @Test
@@ -201,9 +204,59 @@ class InvestmentAssetServiceIntegrationTest {
     }
 
     @Test
+    void redisHit_shouldPersistQuoteWithoutCallingProviderAndForceShouldBypassIt() throws Exception {
+        var asset = assetService.create(7L, createRequest("STOCK", "600519"));
+        reset(analysisServiceClient, quoteCache);
+        Thread.sleep(3100);
+        var quote = realtimeQuote(LocalDateTime.now());
+        var now = java.time.Instant.now();
+        when(quoteCache.get("SSE", "600519")).thenReturn(
+                new com.smartfinance.agent.investment.service.InvestmentQuoteCacheService.Entry(
+                        now, now.plusSeconds(3), quote));
+
+        var refreshed = assetService.refreshAll(7L, false).get(0);
+
+        assertThat(refreshed.getLatestPrice()).isEqualByComparingTo(quote.latestPrice());
+        assertThat(assetService.get(7L, asset.getId()).getLatestPrice()).isEqualByComparingTo(quote.latestPrice());
+        assertThat(jdbc.queryForObject("select count(*) from product_daily_quote where product_id = ? and trade_date = ?",
+                Integer.class, asset.getProductId(), quote.dataDate())).isEqualTo(1);
+        verifyNoInteractions(analysisServiceClient);
+        verify(quoteCache).get("SSE", "600519");
+        when(analysisServiceClient.realtimeQuote("600519", "SSE")).thenReturn(quote);
+
+        assetService.refreshAll(7L, true);
+
+        verify(analysisServiceClient).realtimeQuote("600519", "SSE");
+        verify(quoteCache, times(1)).get("SSE", "600519");
+        verify(quoteCache).put(org.mockito.ArgumentMatchers.eq("SSE"),
+                org.mockito.ArgumentMatchers.eq("600519"), org.mockito.ArgumentMatchers.eq(quote),
+                org.mockito.ArgumentMatchers.any(java.time.Instant.class));
+    }
+
+    @Test
+    void redisHit_shouldNotExtendLocalFreshnessPastItsExpiry() throws Exception {
+        assetService.create(7L, createRequest("STOCK", "600519"));
+        reset(analysisServiceClient, quoteCache);
+        Thread.sleep(3100);
+        var quote = realtimeQuote(LocalDateTime.now());
+        var now = java.time.Instant.now();
+        when(quoteCache.get("SSE", "600519")).thenReturn(
+                new com.smartfinance.agent.investment.service.InvestmentQuoteCacheService.Entry(
+                        now.minusSeconds(2), now.plusMillis(100), quote), null);
+        when(analysisServiceClient.realtimeQuote("600519", "SSE")).thenReturn(quote);
+
+        assetService.refreshAll(7L, false);
+        Thread.sleep(150);
+        assetService.refreshAll(7L, false);
+
+        verify(quoteCache, times(2)).get("SSE", "600519");
+        verify(analysisServiceClient).realtimeQuote("600519", "SSE");
+    }
+
+    @Test
     void refreshFailure_shouldKeepLastSuccessfulQuoteAndMarkAssetFailed() {
         var created = assetService.create(7L, createRequest("STOCK", "600519"));
-        reset(analysisServiceClient);
+        reset(analysisServiceClient, quoteCache);
         when(analysisServiceClient.realtimeQuote("600519", "SSE"))
                 .thenThrow(new IllegalStateException("provider unavailable"));
 
@@ -212,6 +265,7 @@ class InvestmentAssetServiceIntegrationTest {
         assertThat(refreshed.getLatestPrice()).isEqualByComparingTo(created.getLatestPrice());
         assertThat(refreshed.getSyncStatus()).isEqualTo("FAILED");
         assertThat(refreshed.getSyncError()).contains("provider unavailable");
+        verifyNoInteractions(quoteCache);
     }
 
     @Test

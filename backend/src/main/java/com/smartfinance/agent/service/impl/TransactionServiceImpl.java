@@ -6,7 +6,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.smartfinance.agent.entity.Transaction;
 import com.smartfinance.agent.mapper.TransactionMapper;
 import com.smartfinance.agent.service.TransactionService;
+import com.smartfinance.agent.service.FinanceStatisticsCache;
+import com.smartfinance.agent.service.FinanceStatisticsService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -17,12 +20,18 @@ import java.util.Map;
 public class TransactionServiceImpl implements TransactionService {
 
     private final TransactionMapper transactionMapper;
+    private final FinanceStatisticsCache statisticsCache;
+    private final FinanceStatisticsService statistics;
 
-    public TransactionServiceImpl(TransactionMapper transactionMapper) {
+    public TransactionServiceImpl(TransactionMapper transactionMapper, FinanceStatisticsCache statisticsCache,
+                                  FinanceStatisticsService statistics) {
         this.transactionMapper = transactionMapper;
+        this.statisticsCache = statisticsCache;
+        this.statistics = statistics;
     }
 
     @Override
+    @Transactional
     public Transaction add(Long userId, BigDecimal amount, String type, String category, String description, LocalDate transactionDate) {
         Transaction transaction = new Transaction();
         transaction.setUserId(userId);
@@ -32,10 +41,12 @@ public class TransactionServiceImpl implements TransactionService {
         transaction.setDescription(description);
         transaction.setTransactionDate(transactionDate);
         transactionMapper.insert(transaction);
+        statisticsCache.invalidate(userId);
         return transaction;
     }
 
     @Override
+    @Transactional
     public Transaction update(Long id, Long userId, BigDecimal amount, String type, String category, String description, LocalDate transactionDate) {
         Transaction existing = getById(id, userId);
         existing.setAmount(amount);
@@ -44,13 +55,16 @@ public class TransactionServiceImpl implements TransactionService {
         existing.setDescription(description);
         existing.setTransactionDate(transactionDate);
         transactionMapper.updateById(existing);
+        statisticsCache.invalidate(userId);
         return existing;
     }
 
     @Override
+    @Transactional
     public void delete(Long id, Long userId) {
         Transaction existing = getById(id, userId);
         transactionMapper.deleteById(existing.getId());
+        statisticsCache.invalidate(userId);
     }
 
     @Override
@@ -89,6 +103,6 @@ public class TransactionServiceImpl implements TransactionService {
 
     @Override
     public List<Map<String, Object>> getCategorySummary(Long userId, LocalDate startDate, LocalDate endDate) {
-        return transactionMapper.sumByCategory(userId, startDate, endDate);
+        return statistics.sumByCategory(userId, startDate, endDate);
     }
 }

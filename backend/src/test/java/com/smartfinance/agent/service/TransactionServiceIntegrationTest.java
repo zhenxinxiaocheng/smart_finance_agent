@@ -40,6 +40,34 @@ class TransactionServiceIntegrationTest {
     @Autowired
     private UserMapper userMapper;
 
+    @Autowired
+    private FinanceStatisticsService statistics;
+
+    @Test
+    void statistics_shouldAggregateAmountsAndCountsWithUserDateAndDeletionIsolation() {
+        Long userId = createUser("statistics-user");
+        Long otherUser = createUser("statistics-other");
+        addTransaction(userId, "EXPENSE", "food", "10.01", "2026-09-22");
+        addTransaction(userId, "EXPENSE", "food", "20.02", "2026-09-22");
+        addTransaction(userId, "INCOME", "salary", "100.00", "2026-09-22");
+        var deleted = addTransaction(userId, "EXPENSE", "food", "50.00", "2026-09-22");
+        transactionService.delete(deleted.getId(), userId);
+        addTransaction(otherUser, "EXPENSE", "food", "999.00", "2026-09-22");
+        addTransaction(userId, "EXPENSE", "food", "888.00", "2026-09-21");
+
+        var date = LocalDate.of(2026, 9, 22);
+        var rows = statistics.statisticsByDateRange(userId, date, date);
+
+        assertThat(rows).hasSize(2);
+        var expense = rows.stream().filter(row -> "EXPENSE".equals(row.getType())).findFirst().orElseThrow();
+        assertThat(expense.getAmount()).isEqualByComparingTo("30.03");
+        assertThat(expense.getTransactionCount()).isEqualTo(2);
+        assertThat(expense.getTransactionDate()).isEqualTo(date);
+        assertThat(statistics.statisticsByDateRange(userId, date.plusDays(1), date.plusDays(1))).isEmpty();
+        assertThatThrownBy(() -> statistics.statisticsByDateRange(userId, date.plusDays(1), date))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void addAndGetById_shouldPersistTransactionForUser() {
         Long userId = createUser("alice");

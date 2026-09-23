@@ -76,6 +76,10 @@ search:
   api-key: ${TAVILY_API_KEY:}
 
 bill:
+  confirmation-guard:
+    enabled: ${BILL_CONFIRMATION_GUARD_ENABLED:true}
+    lease-ttl: ${BILL_CONFIRMATION_GUARD_LEASE_TTL:30s}
+    failure-backoff: ${BILL_CONFIRMATION_GUARD_FAILURE_BACKOFF:30s}
   upload-dir: ${BILL_UPLOAD_DIR:uploads/bills}
   ai:
     endpoint: ${DASHSCOPE_VL_ENDPOINT:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
@@ -104,8 +108,34 @@ quant:
       max-uncompressed-bytes: ${QUANT_SNAPSHOT_MAX_UNCOMPRESSED_BYTES:134217728}
       max-compressed-bytes: ${QUANT_SNAPSHOT_MAX_COMPRESSED_BYTES:33554432}
 
+api:
+  rate-limit:
+    enabled: ${API_RATE_LIMIT_ENABLED:true}
+    failure-backoff: ${API_RATE_LIMIT_FAILURE_BACKOFF:30s}
+    local-max-entries: ${API_RATE_LIMIT_LOCAL_MAX_ENTRIES:10000}
+    login:
+      limit: ${API_RATE_LIMIT_LOGIN_LIMIT:20}
+      window: ${API_RATE_LIMIT_LOGIN_WINDOW:60s}
+    chat:
+      limit: ${API_RATE_LIMIT_CHAT_LIMIT:10}
+      window: ${API_RATE_LIMIT_CHAT_WINDOW:60s}
+    quote-refresh:
+      limit: ${API_RATE_LIMIT_QUOTE_REFRESH_LIMIT:6}
+      window: ${API_RATE_LIMIT_QUOTE_REFRESH_WINDOW:60s}
+
+finance:
+  cache:
+    statistics:
+      enabled: ${FINANCE_STATISTICS_CACHE_ENABLED:true}
+      ttl: ${FINANCE_STATISTICS_CACHE_TTL:60s}
+      failure-backoff: ${FINANCE_STATISTICS_CACHE_FAILURE_BACKOFF:30s}
+
 investment:
   cache:
+    quote:
+      enabled: ${INVESTMENT_QUOTE_CACHE_ENABLED:true}
+      ttl: ${INVESTMENT_QUOTE_CACHE_TTL:3s}
+      failure-backoff: ${INVESTMENT_QUOTE_CACHE_FAILURE_BACKOFF:30s}
     detail:
       enabled: ${INVESTMENT_DETAIL_CACHE_ENABLED:true}
       fresh-ttl: ${INVESTMENT_DETAIL_CACHE_FRESH_TTL:30s}
