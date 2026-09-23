@@ -23,17 +23,13 @@ public class InvestmentAnalysisSnapshot {
     private String analysisCacheKey;
     private String qualityStatus;
     private Boolean historicalCache;
-    private String signalHash;
     private LocalDate quoteDate;
     private String technicalJson;
     private String fundamentalJson;
     private String fundJson;
-    private String backtestJson;
     private String sourceStatusJson;
-    private String aiExplanation;
     private String analysisStatus;
     private LocalDateTime analyzedAt;
-    private LocalDateTime aiUpdatedAt;
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
     @TableField(fill = FieldFill.INSERT_UPDATE)

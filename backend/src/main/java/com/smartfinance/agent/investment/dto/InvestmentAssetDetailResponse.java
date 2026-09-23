@@ -14,8 +14,6 @@ public class InvestmentAssetDetailResponse {
     private Map<String, Object> personalizedAction = Map.of();
     private List<Map<String, Object>> financialWarnings = List.of();
     private Map<String, Object> disclaimer = Map.of();
-    private Map<String, Object> backtestSummary = Map.of();
-    private Map<String, Object> aiExplanation = Map.of();
     private Map<String, Object> sourceStatus = Map.of();
     private HorizonProfileResponse analysisPreference;
 }

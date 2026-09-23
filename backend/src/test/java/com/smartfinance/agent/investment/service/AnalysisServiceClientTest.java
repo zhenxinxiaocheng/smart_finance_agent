@@ -171,29 +171,6 @@ class AnalysisServiceClientTest {
     }
 
     @Test
-    void backtest_shouldSendEveryConfiguredHorizonWithoutLegacyFixedDays() {
-        RestClient.Builder builder = RestClient.builder();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
-        server.expect(requestTo("http://analysis.test/internal/v1/analysis/backtest"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(content().json("""
-                        {"records":[{"data_date":"2026-07-14","close":"10.50"}],
-                         "horizons":{"WAVE":[7,33],"POSITION":[55,233]}}
-                        """))
-                .andExpect(content().string(org.hamcrest.Matchers.not(
-                        org.hamcrest.Matchers.containsString("horizon_days"))))
-                .andRespond(withSuccess("{\"status\":\"READY\",\"horizons\":{}}",
-                        MediaType.APPLICATION_JSON));
-
-        client.backtest(
-                List.of(Map.of("data_date", "2026-07-14", "close", "10.50")),
-                Map.of("WAVE", List.of(7, 33), "POSITION", List.of(55, 233)));
-
-        server.verify();
-    }
-
-    @Test
     void realtimeQuote_shouldMapExactQuoteTimeAndDecimalPrice() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

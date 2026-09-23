@@ -310,14 +310,6 @@ public class AnalysisServiceClient {
         return postAnalysis("/internal/v1/analysis/fund", body);
     }
 
-    public Map<String, Object> backtest(List<? extends Map<String, ?>> records,
-                                        Map<String, ? extends List<Integer>> horizons) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("records", records);
-        body.put("horizons", horizons);
-        return postAnalysis("/internal/v1/analysis/backtest", body);
-    }
-
     public Map<String, Object> benchmarkHistory(String benchmarkCode,
                                                 LocalDate startDate,
                                                 LocalDate endDate) {

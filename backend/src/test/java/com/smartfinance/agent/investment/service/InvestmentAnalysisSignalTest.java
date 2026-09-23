@@ -8,43 +8,12 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class InvestmentAnalysisSignalTest {
-
-    @Test
-    void changedSignalInvalidatesStaleAiExplanationButKeepsCooldownTimestamp() {
-        InvestmentAnalysisSnapshot snapshot = new InvestmentAnalysisSnapshot();
-        LocalDateTime updatedAt = LocalDateTime.now().minusMinutes(10);
-        snapshot.setSignalHash("old-signal");
-        snapshot.setAiExplanation("旧技术结论的解释");
-        snapshot.setAiUpdatedAt(updatedAt);
-
-        boolean changed = InvestmentAnalysisServiceImpl.invalidateStaleExplanation(
-                snapshot, "new-signal");
-
-        assertThat(changed).isTrue();
-        assertThat(snapshot.getSignalHash()).isEqualTo("new-signal");
-        assertThat(snapshot.getAiExplanation()).isNull();
-        assertThat(snapshot.getAiUpdatedAt()).isEqualTo(updatedAt);
-    }
-
-    @Test
-    void unchangedSignalKeepsCachedAiExplanation() {
-        InvestmentAnalysisSnapshot snapshot = new InvestmentAnalysisSnapshot();
-        snapshot.setSignalHash("same-signal");
-        snapshot.setAiExplanation("当前解释");
-
-        boolean changed = InvestmentAnalysisServiceImpl.invalidateStaleExplanation(
-                snapshot, "same-signal");
-
-        assertThat(changed).isFalse();
-        assertThat(snapshot.getAiExplanation()).isEqualTo("当前解释");
-    }
 
     @Test
     void quoteRefreshUsesTheResolvedProfileHistoryRequirement() {

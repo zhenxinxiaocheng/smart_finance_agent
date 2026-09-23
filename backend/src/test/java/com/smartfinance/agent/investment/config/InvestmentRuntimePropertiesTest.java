@@ -45,15 +45,6 @@ class InvestmentRuntimePropertiesTest {
         properties.getMarket().setCalendarCacheHours(6);
         properties.getMarket().setCalendarSearchLimitDays(500);
         properties.getMarket().setFallbackClosedDates(List.of(LocalDate.of(2026, 3, 2)));
-        properties.getAi().setCooldownMinutes(45);
-        properties.getAi().setMinimumParagraphs(2);
-        properties.getAi().setMaximumParagraphs(4);
-        properties.getAi().setMaxExplanationCharacters(2000);
-        properties.getAi().setMaxInputJsonCharacters(3000);
-        properties.getAi().setSummaryMaxCharacters(48);
-        properties.getAi().setMaximumReasons(3);
-        properties.getAi().setMaximumRisks(3);
-        properties.getAi().setTechnicalDetailMaxCharacters(300);
         properties.getApi().setProductSearchLimit(30);
         properties.getApi().setDefaultTransactionLimit(50);
         properties.getApi().setMaxTransactionLimit(150);

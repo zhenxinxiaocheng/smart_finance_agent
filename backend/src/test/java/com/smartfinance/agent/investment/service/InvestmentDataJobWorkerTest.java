@@ -456,10 +456,6 @@ class InvestmentDataJobWorkerTest {
         assertThat(detail.getTechnicalAnalysis())
                 .containsEntry("status", "BLOCKED")
                 .doesNotContainKeys("score", "verdict", "outlook", "action");
-        assertThat(detail.getBacktestSummary())
-                .containsEntry("status", "BLOCKED")
-                .doesNotContainKey("occurrences");
-        assertThat(detail.getAiExplanation()).isEmpty();
         assertThat(detail.getSourceStatus())
                 .containsEntry("dataState", "BLOCKED")
                 .containsEntry("historicalCache", false);
@@ -488,7 +484,6 @@ class InvestmentDataJobWorkerTest {
         assertThat(detail.getTechnicalAnalysis())
                 .containsEntry("status", "UNAVAILABLE")
                 .doesNotContainKeys("score", "verdict", "outlook", "action");
-        assertThat(detail.getAiExplanation()).isEmpty();
         assertThat(detail.getSourceStatus())
                 .containsEntry("dataState", "WAITING")
                 .containsEntry("qualityStatus", "UNAVAILABLE")
@@ -767,7 +762,6 @@ class InvestmentDataJobWorkerTest {
         when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of("decision", "BLOCK", "datasetVersion", "blocked"));
         var result = fixture.service().detail(7L, 11L);
         assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "MISS").containsEntry("dataState", "BLOCKED");
-        assertThat(result.getAiExplanation()).isEmpty();
         verifyNoInteractions(fixture.analysisClient());
     }
 
@@ -844,7 +838,6 @@ class InvestmentDataJobWorkerTest {
         runtimeProperties.getMarket().setZone(ZoneId.of("Asia/Shanghai"));
         runtimeProperties.getDataQuality().setStockAdjustType("QFQ");
         runtimeProperties.getDataQuality().setFundAdjustType("NONE");
-        runtimeProperties.getAi().setCooldownMinutes(30);
         runtimeProperties.getAnalysis().setStrategyVersion("technical-strategy-v4");
         InvestmentAnalysisSnapshotMapper snapshotMapper = mock(InvestmentAnalysisSnapshotMapper.class);
         AnalysisServiceClient analysisClient = mock(AnalysisServiceClient.class);
@@ -852,7 +845,6 @@ class InvestmentDataJobWorkerTest {
         InvestmentSyncWorker syncWorker = mock(InvestmentSyncWorker.class);
         WealthService wealthService = mock(WealthService.class);
         FinancialProfileMapper financialProfileMapper = mock(FinancialProfileMapper.class);
-        InvestmentAiExplanationService aiExplanationService = mock(InvestmentAiExplanationService.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
         QuantBenchmarkProfileService benchmarkProfileService = mock(QuantBenchmarkProfileService.class);
         InvestmentDetailCacheService detailCache = mock(InvestmentDetailCacheService.class);
@@ -915,19 +907,13 @@ class InvestmentDataJobWorkerTest {
                         "verdict", "FAIR",
                         "strategyVersion", "technical-strategy-v4"
                 ));
-        when(analysisClient.backtest(any(), any()))
-                .thenReturn(Map.of(
-                        "status", "READY",
-                        "strategyVersion", "technical-strategy-v4",
-                        "horizons", Map.of()
-                ));
         InvestmentFinancialWarningEngine warningEngine = mock(InvestmentFinancialWarningEngine.class);
         when(warningEngine.evaluate(any())).thenReturn(List.of());
 
         InvestmentAnalysisServiceImpl service = new InvestmentAnalysisServiceImpl(
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
                 runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
-                wealthService, financialProfileMapper, aiExplanationService,
+                wealthService, financialProfileMapper,
                 new ObjectMapper().findAndRegisterModules(), jobService,
                 warningEngine,
                 benchmarkProfileService, detailCache, assetMapper);
@@ -961,14 +947,7 @@ class InvestmentDataJobWorkerTest {
                 "verdict", "ATTRACTIVE"
         )));
         snapshot.setFundJson("{}");
-        snapshot.setBacktestJson(objectMapper.writeValueAsString(Map.of(
-                "status", "READY",
-                "occurrences", 42
-        )));
         snapshot.setSourceStatusJson("{}");
-        snapshot.setAiExplanation(objectMapper.writeValueAsString(Map.of(
-                "summary", "旧分析结论"
-        )));
         return snapshot;
     }
 

@@ -56,7 +56,7 @@ class InvestmentDetailCacheServiceTest {
         var fresh = cache.get(7L, 11L);
         assertThat(fresh.fresh(now)).isTrue();
         assertThat(fresh.data().getAsset().getId()).isEqualTo(11L);
-        verify(values).set(eq("investment:detail:v1:7:11"), anyString(), eq(Duration.ofMinutes(10)));
+        verify(values).set(eq("investment:detail:v2:7:11"), anyString(), eq(Duration.ofMinutes(10)));
         assertThat(cache.get(8L, 11L)).isNull();
         time.set(now.plusSeconds(30));
         assertThat(cache.get(7L, 11L).fresh(time.get())).isFalse();
@@ -79,11 +79,11 @@ class InvestmentDetailCacheServiceTest {
 
     @Test
     void corruptJsonAndMismatchedOwnerAreMisses() {
-        entries.put("investment:detail:v1:7:11", "broken json");
+        entries.put("investment:detail:v2:7:11", "broken json");
         assertThat(cache.get(7L, 11L)).isNull();
         time.set(now.plusSeconds(31));
         cache.put(8L, 11L, "context", detail());
-        entries.put("investment:detail:v1:7:11", entries.get("investment:detail:v1:8:11"));
+        entries.put("investment:detail:v2:7:11", entries.get("investment:detail:v2:8:11"));
         assertThat(cache.get(7L, 11L)).isNull();
     }
 
@@ -106,7 +106,7 @@ class InvestmentDetailCacheServiceTest {
             verifyNoInteractions(redis);
             TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
             assertThat(entries).isEmpty();
-            verify(redis).delete("investment:detail:v1:7:11");
+            verify(redis).delete("investment:detail:v2:7:11");
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);

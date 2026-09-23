@@ -106,7 +106,7 @@ public class InvestmentDetailCacheService {
     }
 
     private static String key(Long userId, Long assetId) {
-        return "investment:detail:v1:" + userId + ":" + assetId;
+        return "investment:detail:v2:" + userId + ":" + assetId;
     }
 
     private static void afterCommit(Runnable action) {

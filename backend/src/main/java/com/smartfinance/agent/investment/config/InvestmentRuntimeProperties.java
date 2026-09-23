@@ -25,7 +25,6 @@ public class InvestmentRuntimeProperties {
     private Risk risk = new Risk();
     private Sync sync = new Sync();
     private Market market = new Market();
-    private Ai ai = new Ai();
     private Api api = new Api();
     private Plan plan = new Plan();
     private DataQuality dataQuality = new DataQuality();
@@ -60,18 +59,6 @@ public class InvestmentRuntimeProperties {
         requirePositive(market.activeRefreshConcurrency, "market.active-refresh-concurrency");
         requirePositive(market.calendarCacheHours, "market.calendar-cache-hours");
         requirePositive(market.calendarSearchLimitDays, "market.calendar-search-limit-days");
-        requirePositive(ai.cooldownMinutes, "ai.cooldown-minutes");
-        requirePositive(ai.minimumParagraphs, "ai.minimum-paragraphs");
-        requirePositive(ai.maximumParagraphs, "ai.maximum-paragraphs");
-        if (ai.maximumParagraphs < ai.minimumParagraphs) {
-            throw invalid("ai.maximum-paragraphs 不能小于 minimum-paragraphs");
-        }
-        requirePositive(ai.maxExplanationCharacters, "ai.max-explanation-characters");
-        requirePositive(ai.maxInputJsonCharacters, "ai.max-input-json-characters");
-        requirePositive(ai.summaryMaxCharacters, "ai.summary-max-characters");
-        requirePositive(ai.maximumReasons, "ai.maximum-reasons");
-        requirePositive(ai.maximumRisks, "ai.maximum-risks");
-        requirePositive(ai.technicalDetailMaxCharacters, "ai.technical-detail-max-characters");
         requirePositive(api.productSearchLimit, "api.product-search-limit");
         requirePositive(api.defaultTransactionLimit, "api.default-transaction-limit");
         requirePositive(api.maxTransactionLimit, "api.max-transaction-limit");
@@ -157,19 +144,6 @@ public class InvestmentRuntimeProperties {
         private long calendarCacheHours;
         private int calendarSearchLimitDays;
         private List<LocalDate> fallbackClosedDates = new ArrayList<>();
-    }
-
-    @Data
-    public static class Ai {
-        private int cooldownMinutes;
-        private int minimumParagraphs;
-        private int maximumParagraphs;
-        private int maxExplanationCharacters;
-        private int maxInputJsonCharacters;
-        private int summaryMaxCharacters;
-        private int maximumReasons;
-        private int maximumRisks;
-        private int technicalDetailMaxCharacters;
     }
 
     @Data
