@@ -87,7 +87,7 @@ class InvestmentQuoteCacheServiceTest {
         verify(values, times(1)).get(anyString());
         verify(values, never()).set(anyString(), anyString(), any(Duration.class));
         now.set(start.plusSeconds(30));
-        when(values.get(anyString())).thenReturn(null);
+        doReturn(null).when(values).get(anyString());
         assertThat(cache.get("SSE", "600000")).isNull();
         verify(values, times(2)).get(anyString());
     }

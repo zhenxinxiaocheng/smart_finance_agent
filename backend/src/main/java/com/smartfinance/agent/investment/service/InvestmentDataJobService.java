@@ -8,11 +8,11 @@ import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
@@ -27,9 +27,6 @@ public class InvestmentDataJobService {
     private final InvestmentProductMapper productMapper;
     private final InvestmentAssetMapper assetMapper;
     private final ProductDailyQuoteMapper quoteMapper;
-
-    @Value("${investment.history-job.recovery-delay-seconds:1800}")
-    private long recoveryDelaySeconds = 1800;
 
     public InvestmentDataJobService(InvestmentDataJobMapper mapper,
                                     InvestmentProductMapper productMapper,
@@ -52,8 +49,8 @@ public class InvestmentDataJobService {
             if (isActive(existing)) {
                 return existing;
             }
-            if (forceRefresh || (requiresCompleteHistory && recoveryDue(existing))) {
-                return requeueTerminal(existing);
+            if (forceRefresh) {
+                return requeueTerminal(existing, true);
             }
             return existing;
         }
@@ -85,18 +82,27 @@ public class InvestmentDataJobService {
         String jobType = jobTypeFor(productType);
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing == null) {
-            return ensureQueued(userId, assetId, productId, productType, true);
+            return ensureQueued(userId, assetId, productId, productType, false);
         }
-        if (isActive(existing) || !recoveryDue(existing)) {
+        if (isActive(existing) || !"SUCCEEDED".equals(existing.getStatus())) {
             return existing;
         }
-        return requeueTerminal(existing);
+        LocalDate latestQuoteDate = quoteMapper.latestTradeDate(productId);
+        if (latestQuoteDate == null || (existing.getSampleEndDate() != null
+                && !latestQuoteDate.isAfter(existing.getSampleEndDate()))) {
+            return existing;
+        }
+        return requeueTerminal(existing, false);
     }
 
-    private InvestmentDataJob requeueTerminal(InvestmentDataJob existing) {
+    private InvestmentDataJob requeueTerminal(InvestmentDataJob existing, boolean forceRefresh) {
         // Another request may already have requeued/claimed this row since our SELECT.
-        if (mapper.requeueTerminal(existing.getId()) == 1) {
+        int updated = forceRefresh
+                ? mapper.requeueTerminal(existing.getId())
+                : mapper.requeueTerminalIncremental(existing.getId());
+        if (updated == 1) {
             resetForRefresh(existing);
+            existing.setForceRefresh(forceRefresh);
             return existing;
         }
         return findByAssetAndType(existing.getAssetId(), existing.getJobType());
@@ -112,13 +118,7 @@ public class InvestmentDataJobService {
             }
             String jobType = jobTypeFor(product.getProductType());
             InvestmentDataJob existing = findByAssetAndType(asset.getId(), jobType);
-            boolean unfinished = existing != null
-                    && List.of("FAILED", "PARTIAL").contains(existing.getStatus());
-            if (!unfinished && Boolean.TRUE.equals(historyCoverageComplete(product.getId()))) {
-                continue;
-            }
-            if (existing != null
-                    && (isActive(existing) || !recoveryDue(existing))) {
+            if (existing != null || Boolean.TRUE.equals(historyCoverageComplete(product.getId()))) {
                 continue;
             }
             ensureQueued(
@@ -126,7 +126,7 @@ public class InvestmentDataJobService {
                     asset.getId(),
                     product.getId(),
                     product.getProductType(),
-                    true
+                    false
             );
             requeued++;
         }
@@ -295,13 +295,6 @@ public class InvestmentDataJobService {
         }
         return !"FUND_NAV_HISTORY".equals(jobTypeFor(product.getProductType()))
                 || !quoteMapper.hasMissingFundReturns(productId);
-    }
-
-    private boolean recoveryDue(InvestmentDataJob job) {
-        return !List.of("FAILED", "PARTIAL").contains(job.getStatus())
-                || job.getFinishedAt() == null
-                || !job.getFinishedAt().plusSeconds(Math.max(60, recoveryDelaySeconds))
-                    .isAfter(LocalDateTime.now(RUNTIME_ZONE));
     }
 
     private static boolean isAssetHistoryJob(String jobType) {

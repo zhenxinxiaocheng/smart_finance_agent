@@ -44,6 +44,19 @@ public class InvestmentDataQualityService {
         public boolean blocked() {
             return "BLOCK".equals(snapshot.getDecision());
         }
+
+        public boolean failedRule(String ruleCode) {
+            Object report = response.get("qualityReport");
+            if (!(report instanceof Map<?, ?> reportMap)
+                    || !(reportMap.get("issues") instanceof List<?> issues)) {
+                return false;
+            }
+            return issues.stream()
+                    .filter(Map.class::isInstance)
+                    .map(Map.class::cast)
+                    .anyMatch(issue -> ruleCode.equals(issue.get("ruleCode"))
+                            && "FAIL".equals(issue.get("outcome")));
+        }
     }
 
     private final InvestmentDataQualitySnapshotMapper snapshotMapper;

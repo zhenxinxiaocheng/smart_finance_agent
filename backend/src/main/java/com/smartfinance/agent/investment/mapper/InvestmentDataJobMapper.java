@@ -23,6 +23,15 @@ public interface InvestmentDataJobMapper extends BaseMapper<InvestmentDataJob> {
 
     @Update("""
             UPDATE investment_data_job
+            SET status = 'QUEUED', force_refresh = 0, record_count = 0, attempt_count = 0,
+                next_retry_at = NULL, lease_until = NULL, lease_token = NULL,
+                error_message = NULL, started_at = NULL, finished_at = NULL
+            WHERE id = #{id} AND status = 'SUCCEEDED'
+            """)
+    int requeueTerminalIncremental(@Param("id") Long id);
+
+    @Update("""
+            UPDATE investment_data_job
             SET status = 'RUNNING', started_at = #{now}, lease_until = #{leaseUntil},
                 lease_token = #{leaseToken}, updated_at = #{now}
             WHERE id = #{id}

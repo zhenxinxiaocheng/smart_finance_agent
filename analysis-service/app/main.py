@@ -44,6 +44,7 @@ class QuoteRequest(BaseModel):
     product_type: str = Field(min_length=2, max_length=30)
     start_date: date
     end_date: date
+    adjust_type: str | None = None
 
 
 class BenchmarkHistoryRequest(BaseModel):
@@ -225,8 +226,27 @@ def internal_auth(x_internal_token: str | None = Header(default=None)) -> None:
 
 
 from .quant_workbench.router import router as quant_workbench_router
+from .market_catalog import catalog as market_catalog, current_members as market_current_members, daily_history
 
 app.include_router(quant_workbench_router, dependencies=[Depends(internal_auth)])
+
+
+@app.get("/internal/v1/market-data/catalog", dependencies=[Depends(internal_auth)])
+def catalog_snapshot(market: str):
+    try:
+        return {"items": market_catalog(market), "membershipCapability": "CURRENT_SNAPSHOT"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/internal/v1/market-data/universe-members", dependencies=[Depends(internal_auth)])
+def universe_members_snapshot(preset: str):
+    try:
+        return {"codes": market_current_members(preset), "membershipCapability": "CURRENT_SNAPSHOT"}
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/health")
@@ -274,17 +294,24 @@ def daily_quotes(request: QuoteRequest):
     if request.end_date < request.start_date:
         raise HTTPException(status_code=400, detail="end_date must not be before start_date")
     try:
-        records, warnings = registry.daily_quotes(
-            request.code, request.market, request.product_type, request.start_date, request.end_date
-        )
+        if request.adjust_type is None:
+            records, warnings = registry.daily_quotes(
+                request.code, request.market, request.product_type, request.start_date, request.end_date
+            )
+        else:
+            records = daily_history(request.code, request.market, request.product_type,
+                                    request.start_date, request.end_date, request.adjust_type)
+            warnings = []
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    latest = max(item.data_date for item in records)
+    latest = max((item.data_date for item in records), default=None)
     return {
-        "provider": records[0].provider,
-        "dataDate": latest.isoformat(),
-        "fetchedAt": records[0].fetched_at.isoformat(),
-        "adapterVersion": records[0].adapter_version,
+        "provider": records[0].provider if records else "AKSHARE",
+        "dataDate": latest.isoformat() if latest else None,
+        "fetchedAt": records[0].fetched_at.isoformat() if records else None,
+        "adapterVersion": records[0].adapter_version if records else "1",
         "records": [item.json_dict() for item in records],
         "warnings": warnings,
     }

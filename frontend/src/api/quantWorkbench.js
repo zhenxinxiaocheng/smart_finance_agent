@@ -11,6 +11,14 @@ const request = {
 const base = '/quant/v2'
 const data = promise => promise.then(response => response.data)
 export const quant = {
+  marketData: {
+    overview: () => data(request.get(`${base}/market-data/overview`)),
+    products: params => data(request.get(`${base}/market-data/products`, { params })),
+    detail: id => data(request.get(`${base}/market-data/products/${encodeURIComponent(id)}`)),
+    daily: (id, limit = 180) => data(request.get(`${base}/market-data/products/${encodeURIComponent(id)}/daily`, { params: { limit } })),
+    jobs: () => data(request.get(`${base}/market-data/jobs`)),
+    members: (id, asOfDate) => data(request.get(`${base}/market-data/universes/${encodeURIComponent(id)}/members`, { params: { asOfDate } })),
+  },
   remove: (resource, id) => data(request.delete(`${base}/${resource}/${encodeURIComponent(id)}`)),
   deleteStrategy: id => data(request.delete(`${base}/strategies/${encodeURIComponent(id)}`)),
   list: (resource, params) => data(request.get(`${base}/${resource}`, { params })),

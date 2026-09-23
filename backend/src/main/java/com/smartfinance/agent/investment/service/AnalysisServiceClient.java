@@ -180,6 +180,51 @@ public class AnalysisServiceClient {
     }
 
     @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> marketCatalog(String market) {
+        Map<String, Object> response = benchmarkRestClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/internal/v1/market-data/catalog")
+                        .queryParam("market", market).build())
+                .header("X-Internal-Token", internalToken)
+                .retrieve().body(Map.class);
+        if (response == null || !(response.get("items") instanceof List<?> items))
+            throw new IllegalStateException("分析服务返回空市场目录");
+        return (List<Map<String, Object>>) (List<?>) items;
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<String> marketUniverseMembers(String preset) {
+        Map<String, Object> response = benchmarkRestClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/internal/v1/market-data/universe-members")
+                        .queryParam("preset", preset).build())
+                .header("X-Internal-Token", internalToken)
+                .retrieve().body(Map.class);
+        if (response == null || !(response.get("codes") instanceof List<?> codes))
+            throw new IllegalStateException("分析服务返回空指数成分");
+        return codes.stream().map(String::valueOf).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> marketDailyQuotes(InvestmentProduct product,
+                                                  LocalDate startDate, LocalDate endDate,
+                                                  String adjustType) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", product.getCode());
+        body.put("market", product.getMarket());
+        body.put("product_type", product.getProductType());
+        body.put("start_date", startDate.toString());
+        body.put("end_date", endDate.toString());
+        body.put("adjust_type", adjustType);
+        Map<String, Object> response = benchmarkRestClient.post()
+                .uri("/internal/v1/market-data/quotes/daily")
+                .header("X-Internal-Token", internalToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body).retrieve().body(Map.class);
+        if (response == null || !(response.get("records") instanceof List<?>))
+            throw new IllegalStateException("分析服务返回空日线响应");
+        return response;
+    }
+
+    @SuppressWarnings("unchecked")
     public Map<String, Object> dailyFx(String baseCurrency, LocalDate startDate, LocalDate endDate) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("base_currency", baseCurrency);

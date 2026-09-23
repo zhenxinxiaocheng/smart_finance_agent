@@ -6,6 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections.abc import Mapping
 
 from pydantic import (BaseModel, ConfigDict, Field, JsonValue, StrictBool,
@@ -134,6 +135,8 @@ class QualityProviderSettings(StrictContract):
 class DataQualityConfig(StrictContract):
     version: NonBlank
     rule_set: NonBlank = Field(alias="ruleSet")
+    evidence_aware_rules: StrictBool = Field(default=False, alias="evidenceAwareRules")
+    market_time_zones: Mapping[str, str] = Field(default_factory=dict, alias="marketTimeZones")
     schema_version: NonBlank = Field(alias="schemaVersion")
     enforcement_mode: EnforcementMode = Field(alias="enforcementMode")
     storage_root_env: NonBlank = Field(alias="storageRootEnv")
@@ -143,6 +146,18 @@ class DataQualityConfig(StrictContract):
     providers: QualityProviderSettings | None = None
     stock: StockQualityThresholds
     fund: FundQualityThresholds
+
+    @field_validator("market_time_zones", mode="after")
+    @classmethod
+    def validate_market_time_zones(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        for market, zone in value.items():
+            if not market.strip() or not zone.strip():
+                raise ValueError("market time zones must have non-blank market and zone names")
+            try:
+                ZoneInfo(zone)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError(f"unknown market time zone for {market}") from exc
+        return dict(value)
 
 
 class DataQualityManifest(StrictContract):

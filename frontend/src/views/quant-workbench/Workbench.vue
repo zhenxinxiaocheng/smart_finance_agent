@@ -1,6 +1,6 @@
 <script setup>
 import { RouterLink, RouterView } from 'vue-router'
-const links = [['/quant', '策略'], ['/quant/universes', '资产池'], ['/quant/factors', '因子研究'], ['/quant/tasks', '任务中心'], ['/quant/deployments', '模拟交易']]
+const links = [['/quant', '策略'], ['/quant/data', '数据中心'], ['/quant/universes', '资产池'], ['/quant/factors', '因子研究'], ['/quant/tasks', '任务中心'], ['/quant/deployments', '模拟交易']]
 </script>
 
 <template>

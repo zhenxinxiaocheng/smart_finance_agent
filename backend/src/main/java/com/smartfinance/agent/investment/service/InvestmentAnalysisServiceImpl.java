@@ -102,7 +102,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentDetailCacheService.Entry cached = detailCache.get(userId, assetId);
         if (cached != null && Objects.equals(cached.contextKey(), context.key())) {
             boolean fresh = cached.fresh(Instant.now());
-            if (!fresh) queueDetailRefresh(userId, assetId, context.asset());
             log.debug("Investment detail cache {}", fresh ? "HIT" : "STALE");
             return detailStatus(userId, assetId, cached.data(), fresh ? "FRESH" : "STALE");
         }
@@ -236,9 +235,13 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 || Boolean.TRUE.equals(snapshot.getHistoricalCache())) {
             return false;
         }
+        if (!Objects.equals(snapshot.getQualityRuleSetVersion(),
+                text(latestQuality.get("qualityRuleSetVersion")))) {
+            return false;
+        }
         String currentKey = analysisCacheKey(
-                text(latestQuality.get("datasetVersion")),
-                text(latestQuality.get("qualityRuleSetVersion")),
+                snapshot.getDatasetVersion(),
+                snapshot.getQualityRuleSetVersion(),
                 horizonConfigJson(horizonProfile),
                 runtimeProperties.getAnalysis().getStrategyVersion(),
                 horizonProperties.getAnalysisRuleVersion(),
@@ -355,7 +358,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         sourceStatus.put("historicalCache", historicalCache);
         sourceStatus.put("quoteDate", quotes.isEmpty() ? null : quotes.get(quotes.size() - 1).getTradeDate());
         sourceStatus.put("analyzedAt", snapshot == null ? null : snapshot.getAnalyzedAt());
-        String datasetVersion = text(quality.get("datasetVersion"));
+        String datasetVersion = snapshot == null
+                ? text(quality.get("datasetVersion")) : snapshot.getDatasetVersion();
         String analysisVersion = snapshot == null
                 ? text(technical.get("strategyVersion"))
                 : snapshot.getStrategyVersion();
@@ -436,7 +440,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         try {
             quality = dataQualityService.resolve(
                     product, qualityStartDate, qualityEndDate, refreshQuotes);
-            if (!quality.records().isEmpty()) {
+            if (!quality.blocked() && !quality.records().isEmpty()) {
                 try {
                     syncWorker.persistDailyQuotes(product, quality.response());
                     quotes = loadQuotes(product);

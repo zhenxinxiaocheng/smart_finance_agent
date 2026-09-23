@@ -95,6 +95,20 @@ class InvestmentDataJobServiceIntegrationTest {
         assertThat(mapper.selectById(job.getId()).getLeaseToken()).isEqualTo("worker-2");
     }
 
+    @Test
+    void completedJobCanBeQueuedForIncrementalRefreshOnlyOnce() {
+        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "worker-1")).isTrue();
+        assertThat(service.markSucceeded(job.getId(), "worker-1", 30, now)).isTrue();
+
+        assertThat(mapper.requeueTerminalIncremental(job.getId())).isEqualTo(1);
+        assertThat(mapper.requeueTerminalIncremental(job.getId())).isZero();
+        InvestmentDataJob queued = mapper.selectById(job.getId());
+        assertThat(queued.getStatus()).isEqualTo("QUEUED");
+        assertThat(queued.getForceRefresh()).isFalse();
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @MapperScan("com.smartfinance.agent.investment.mapper")

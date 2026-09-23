@@ -71,6 +71,10 @@ class IndexWatchlistRegistry:
             })
         return tuple(fallbacks)
 
+    def instruments(self) -> tuple[dict[str, str], ...]:
+        return tuple({"indexCode": code, "name": item["displayName"],
+                      "market": item["market"]} for code, item in self._items.items())
+
 
 def load_index_watchlist_registry(path: str | Path | None = None) -> IndexWatchlistRegistry:
     configured_path = path or os.getenv("ANALYSIS_INDEX_WATCHLIST_REGISTRY")

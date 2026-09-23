@@ -141,9 +141,6 @@
             <h2 class="text-balance text-4xl font-semibold leading-tight tracking-normal">
               让每一笔消费都能被记录、理解和追踪。
             </h2>
-            <p class="mt-6 text-balance text-base leading-7 text-muted-foreground">
-              注册后即可导入账单、记录消费、查看报表，并向智能助手提问。
-            </p>
           </div>
 
           <div class="auth-feature-list text-sm">

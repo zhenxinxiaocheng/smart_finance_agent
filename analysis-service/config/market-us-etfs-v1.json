@@ -1,0 +1,4 @@
+{
+  "version": "market-us-etfs-v1",
+  "symbols": ["SPY", "QQQ", "VTI", "EEM", "TLT"]
+}

@@ -48,6 +48,23 @@ class WorkbenchServiceTest {
     }
 
     @Test
+    void marketProductUniverseDoesNotRequirePersonalAssetAndKeepsDatedMembership() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
+                + "VALUES(3,'未持有股票','600001','STOCK','SSE',FALSE)");
+        var pool = service.save(1L, "universes", null,
+                Map.of("name", "研究池", "assetClass", "STOCK", "productIds", List.of(3)));
+        var market = new com.smartfinance.agent.investment.service.MarketDataService(
+                db, org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class));
+        String id = String.valueOf(pool.get("id"));
+        assertThat(market.getUniverseMembers(1L, id, LocalDate.now()).get("productIds"))
+                .isEqualTo(List.of(3L));
+        assertThat(market.getUniverseMembers(1L, id, LocalDate.now().minusDays(1)))
+                .containsEntry("capability", "UNAVAILABLE");
+        assertThat(market.getUniverseMembers(2L, id, LocalDate.now()))
+                .containsEntry("capability", "UNAVAILABLE");
+    }
+
+    @Test
     void backtestFreezesResolvedTrackingHistoryInWorkerPayload() {
         var index = Map.<String,Object>of("status","READY","code","NASDAQ100","name","纳斯达克100",
                 "records",List.of(Map.of("data_date","2023-01-01","close",100)),"sourceVersion","snapshot-v1");

@@ -17,9 +17,14 @@ import java.time.ZoneId;
 @Service
 public class InvestmentHistoryPreparationService {
 
-    static final LocalDate EARLIEST_PROVIDER_DATE = LocalDate.of(1990, 1, 1);
     private static final ZoneId RUNTIME_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int INCEPTION_TOLERANCE_DAYS = 14;
+
+    static final class QualityBlockedException extends IllegalStateException {
+        QualityBlockedException() {
+            super("全量历史数据完整性校验未通过");
+        }
+    }
 
     public record PreparationResult(
             int recordCount,
@@ -35,6 +40,7 @@ public class InvestmentHistoryPreparationService {
     private final InvestmentDataQualityService dataQualityService;
     private final InvestmentSyncWorker syncWorker;
     private final FundClassificationService classificationService;
+    private final AnalysisServiceClient analysisClient;
     private final Clock clock;
 
     @Autowired
@@ -43,8 +49,9 @@ public class InvestmentHistoryPreparationService {
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
             InvestmentSyncWorker syncWorker,
-            FundClassificationService classificationService) {
-        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService,
+            FundClassificationService classificationService,
+            AnalysisServiceClient analysisClient) {
+        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService, analysisClient,
                 Clock.system(RUNTIME_ZONE));
     }
 
@@ -54,16 +61,18 @@ public class InvestmentHistoryPreparationService {
             InvestmentDataQualityService dataQualityService,
             InvestmentSyncWorker syncWorker,
             FundClassificationService classificationService,
+            AnalysisServiceClient analysisClient,
             Clock clock) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.dataQualityService = dataQualityService;
         this.syncWorker = syncWorker;
         this.classificationService = classificationService;
+        this.analysisClient = analysisClient;
         this.clock = clock;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = QualityBlockedException.class)
     public PreparationResult prepare(InvestmentDataJob job) {
         if (!isAssetHistoryJob(job)) {
             throw new IllegalArgumentException("仅支持股票或基金历史任务");
@@ -79,6 +88,13 @@ public class InvestmentHistoryPreparationService {
                 || product.getHistoryEndDate() == null
                 || ("FUND_NAV_HISTORY".equals(job.getJobType())
                     && quoteMapper.hasMissingFundReturns(product.getId()));
+        if (initialLoad && knownStartDate(product) == null) {
+            AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
+                    product.getProductType(), product.getCode());
+            if (resolved != null && resolved.inceptionDate() != null) {
+                product.setInceptionDate(resolved.inceptionDate());
+            }
+        }
         LocalDate requestedStart = initialLoad
                 ? initialStart(product)
                 : product.getHistoryEndDate();
@@ -92,7 +108,7 @@ public class InvestmentHistoryPreparationService {
         if (evaluation.blocked()) {
             product.setHistoryCoverageComplete(false);
             productMapper.updateById(product);
-            throw new IllegalStateException("全量历史数据完整性校验未通过");
+            throw new QualityBlockedException();
         }
 
         dataQualityService.claim(evaluation);
@@ -102,6 +118,15 @@ public class InvestmentHistoryPreparationService {
         LocalDate sampleEnd = evaluation.snapshot().getSampleEndDate();
         boolean coverageComplete = coverageComplete(
                 product, initialLoad, sampleStart, sampleEnd);
+        if (evaluation.failedRule("STOCK_UNEXPLAINED_TRADING_GAPS")
+                || evaluation.failedRule("FUND_UNEXPLAINED_NAV_GAPS")) {
+            coverageComplete = false;
+        }
+        LocalDate latestKnownDate = quoteMapper.latestTradeDate(product.getId());
+        if (latestKnownDate != null && sampleEnd != null && latestKnownDate.isAfter(sampleEnd)
+                && !latestKnownDate.equals(LocalDate.now(clock))) {
+            coverageComplete = false;
+        }
         if ("FUND_NAV_HISTORY".equals(job.getJobType())
                 && quoteMapper.hasMissingFundReturns(product.getId())) {
             coverageComplete = false;
@@ -131,9 +156,18 @@ public class InvestmentHistoryPreparationService {
     }
 
     private static LocalDate initialStart(InvestmentProduct product) {
-        return product.getInceptionDate() == null
-                ? EARLIEST_PROVIDER_DATE
-                : product.getInceptionDate();
+        LocalDate start = knownStartDate(product);
+        if (start == null) {
+            throw new IllegalStateException("产品历史起始日期缺失，无法校验完整历史数据");
+        }
+        return start;
+    }
+
+    private static LocalDate knownStartDate(InvestmentProduct product) {
+        if ("STOCK".equals(product.getProductType()) && product.getListingDate() != null) {
+            return product.getListingDate();
+        }
+        return product.getInceptionDate();
     }
 
     private static boolean coverageComplete(
@@ -147,9 +181,8 @@ public class InvestmentHistoryPreparationService {
         if (!initialLoad) {
             return true;
         }
-        LocalDate inceptionDate = product.getInceptionDate();
-        return inceptionDate == null
-                || !sampleStart.isAfter(inceptionDate.plusDays(INCEPTION_TOLERANCE_DAYS));
+        LocalDate start = knownStartDate(product);
+        return start != null && !sampleStart.isAfter(start.plusDays(INCEPTION_TOLERANCE_DAYS));
     }
 
     private static LocalDate earlier(LocalDate first, LocalDate second) {

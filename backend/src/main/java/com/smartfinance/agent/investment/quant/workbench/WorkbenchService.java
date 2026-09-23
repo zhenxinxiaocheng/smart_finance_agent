@@ -6,6 +6,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import java.time.*;
@@ -17,12 +19,20 @@ public class WorkbenchService {
     final ObjectMapper json;
     final TransactionTemplate tx;
     final WorkbenchTrackingIndex trackingIndex;
+    final AnalysisServiceClient marketProvider;
     static final Set<String> OBJECTS = Set.of("universes", "factors", "strategies");
     static final Set<String> TASKS = Set.of("training-runs", "backtests", "factor-runs");
     static final int MINIMUM_EVALUATION_DAYS = 60;
-    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager, WorkbenchTrackingIndex trackingIndex) {
+    @Autowired
+    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
+                            WorkbenchTrackingIndex trackingIndex, AnalysisServiceClient marketProvider) {
         this.db=db; this.json=json; this.tx=new TransactionTemplate(manager);
         this.trackingIndex=trackingIndex;
+        this.marketProvider=marketProvider;
+    }
+    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
+                            WorkbenchTrackingIndex trackingIndex) {
+        this(db,json,manager,trackingIndex,null);
     }
     static String now() { return Instant.now().toString(); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -80,18 +90,38 @@ public class WorkbenchService {
         return tx.execute(status->{
             String name=str(body.get("name")).trim(); require(!name.isEmpty()&&name.length()<=160,"名称必填且不超过160字");
             Map<String,Object> payload=new LinkedHashMap<>(body); for(String k:List.of("id","status","revision","createdAt","updatedAt","name","kind","latestBacktest","latestVersion","deployments","runningStatus"))payload.remove(k);
+            if("universes".equals(kind) && (payload.containsKey("productIds") || payload.containsKey("presetKey"))) {
+                String preset=str(payload.get("presetKey"));
+                if(!preset.isBlank()) payload.put("productIds",presetProducts(preset));
+                payload.remove("assetIds");
+                payload.put("membershipCapability",preset.isBlank()?"STATIC":"CURRENT_SNAPSHOT");
+                payload.put("membershipAsOfDate",LocalDate.now().toString());
+            }
             validateObject(u,kind,payload);
             String key=identity==null?id():identity;
             if(identity==null) db.update("INSERT INTO quant_v2_object(id,user_id,kind,name,status,revision,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",key,u,kind,name,"DRAFT",1,encode(payload),now(),now());
             else {var existing=lockObject(u,kind,key); require(!"ARCHIVED".equals(existing.get("status")),"已归档记录不可编辑"); int revision=((Number)existing.get("revision")).intValue(); if(body.containsKey("revision"))require(((Number)body.get("revision")).intValue()==revision,"记录已被修改，请刷新"); require(db.update("UPDATE quant_v2_object SET name=?,payload=?,revision=revision+1,updated_at=? WHERE id=? AND user_id=? AND revision=?",name,encode(payload),now(),key,u,revision)==1,"并发修改，请刷新"); }
-            return get(u,kind,key);
+            Map<String,Object> saved=get(u,kind,key);
+            if("universes".equals(kind) && payload.containsKey("productIds")) persistMembership(u,key,
+                    ((Number)saved.get("revision")).intValue(),payload);
+            return saved;
         });
     }
     void validateObject(Long u,String kind,Map<String,Object> p) {
         if("universes".equals(kind)) {
             String assetClass=str(p.get("assetClass")); require(Set.of("STOCK","ETF","FUND").contains(assetClass),"请选择股票、ETF或场外基金");
+            if(p.containsKey("productIds")) {
+                List<Long> ids=productIds(p);
+                require(!ids.isEmpty() && ids.size()<=10000,"资产池需包含1至10000个标的");
+                require(new HashSet<>(ids).size()==ids.size(),"资产不能重复");
+                var products=productsById(ids);
+                for(var product:products.values()) require(assetClass.equals(assetClass(product)),"资产池不能混合资产类别");
+                require(products.size()==ids.size(),"市场证券不存在");
+                return;
+            }
             require(p.get("assetIds") instanceof List<?> && !((List<?>)p.get("assetIds")).isEmpty() && ((List<?>)p.get("assetIds")).size()<=100,"资产池需包含1至100个标的");
-            Set<String> ids=new HashSet<>(); for(Object id:(List<?>)p.get("assetIds")) { require(ids.add(str(id)),"资产不能重复"); var a=asset(u,id); require(assetClass.equals(a.get("assetClass")),"资产池不能混合资产类别"); }
+            Set<String> ids=new HashSet<>(); for(Object id:(List<?>)p.get("assetIds")) require(ids.add(str(id)),"资产不能重复");
+            for(var member:members(u,p)) require(assetClass.equals(member.get("assetClass")),"资产池不能混合资产类别");
         } else if("strategies".equals(kind)) {
             var pool=object(u,"universes",str(p.get("universeId"))); require(!"ARCHIVED".equals(pool.get("status")),"资产池已归档");
             var c=map(p.get("config")); if(c.containsKey("factors"))validateFactors(c.get("factors"),str(decode(pool.get("payload")).get("assetClass"))); require(Set.of("TREND","MULTI_FACTOR","ML_ELASTIC_NET","ML_XGBOOST").contains(str(c.get("strategyType"))),"请选择有效策略模板");
@@ -171,6 +201,69 @@ public class WorkbenchService {
         // ETF feeder funds remain OTC funds; a name containing ETF is not an exchange listing.
         return Set.of("FUND", "MUTUAL_FUND").contains(type) ? "FUND" : type;
     }
+    List<Long> productIds(Map<String,Object> pool) {
+        require(pool.get("productIds") instanceof List<?>,"请选择市场证券");
+        List<Long> ids=new ArrayList<>();
+        for(Object value:(List<?>)pool.get("productIds")) {
+            require(value instanceof Number && ((Number)value).longValue()>0,"市场证券编号无效");
+            ids.add(((Number)value).longValue());
+        }
+        return ids;
+    }
+    Map<Long,Map<String,Object>> productsById(List<Long> ids) {
+        Map<Long,Map<String,Object>> result=new LinkedHashMap<>();
+        for(int from=0;from<ids.size();from+=500) {
+            List<Long> part=ids.subList(from,Math.min(from+500,ids.size()));
+            String marks=String.join(",",Collections.nCopies(part.size(),"?"));
+            for(var product:db.queryForList("SELECT id AS product_id,product_type,market,name,code FROM investment_product WHERE id IN ("+marks+")",part.toArray()))
+                result.put(((Number)product.get("product_id")).longValue(),product);
+        }
+        return result;
+    }
+    List<Long> presetProducts(String preset) {
+        require(Set.of("ALL_A","CSI300","CSI500","CSI1000","SP500","NASDAQ100").contains(preset),"未知预定义资产池");
+        if("ALL_A".equals(preset)) return db.queryForList("SELECT id FROM investment_product WHERE product_type='STOCK' AND market IN ('SSE','SZSE','BSE') AND status='ACTIVE' ORDER BY id",Long.class);
+        require(!Set.of("SP500","NASDAQ100").contains(preset),"该指数成分数据源尚不可用，不能伪造资产池");
+        require(marketProvider!=null,"指数成分数据源不可用");
+        List<String> codes=marketProvider.marketUniverseMembers(preset);
+        require(!codes.isEmpty(),"指数成分为空");
+        Set<String> requested=new HashSet<>(codes);
+        List<Long> result=new ArrayList<>();
+        for(var row:db.queryForList("SELECT id,code FROM investment_product WHERE product_type='STOCK' AND market IN ('SSE','SZSE','BSE') AND status='ACTIVE'"))
+            if(requested.remove(str(row.get("code")))) result.add(((Number)row.get("id")).longValue());
+        require(requested.isEmpty(),"市场目录缺少指数成分，请先完成目录同步");
+        return result;
+    }
+    void persistMembership(Long user,String universeId,int revision,Map<String,Object> payload) {
+        List<Long> ids=productIds(payload);
+        String snapshotId=id();
+        db.update("INSERT INTO quant_universe_snapshot(id,user_id,universe_id,revision,as_of_date,capability,source,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                snapshotId,user,universeId,revision,LocalDate.parse(str(payload.get("membershipAsOfDate"))),
+                payload.get("membershipCapability"),payload.get("presetKey")==null?"MANUAL":payload.get("presetKey"),LocalDateTime.now());
+        List<Object[]> members=ids.stream().map(productId->new Object[]{snapshotId,productId}).toList();
+        db.batchUpdate("INSERT INTO quant_universe_member(snapshot_id,product_id) VALUES(?,?)",members);
+    }
+    List<Map<String,Object>> members(Long user,Map<String,Object> pool) {
+        if(pool.containsKey("productIds")) {
+            List<Long> ids=productIds(pool);
+            Map<Long,Map<String,Object>> byId=productsById(ids);
+            require(byId.size()==ids.size(),"资产池中有市场证券已不存在");
+            return ids.stream().map(byId::get).map(row->{Map<String,Object> result=new LinkedHashMap<>(row);
+                result.put("assetClass",assetClass(row));return result;}).toList();
+        }
+        List<?> assetIds=(List<?>)pool.get("assetIds");
+        String marks=String.join(",",Collections.nCopies(assetIds.size(),"?"));
+        List<Object> args=new ArrayList<>(assetIds); args.add(user);
+        Map<String,Map<String,Object>> found=new HashMap<>();
+        for(var row:db.queryForList("SELECT a.id,a.product_id,p.product_type,p.market,p.name,p.code "
+                +"FROM investment_asset a JOIN investment_product p ON p.id=a.product_id "
+                +"WHERE a.id IN ("+marks+") AND a.user_id=? AND a.deleted=0",args.toArray())) {
+            require(DOMESTIC_MARKETS.contains(str(row.get("market")).toUpperCase(Locale.ROOT)),"首版仅支持国内市场标的");
+            row.put("assetClass",assetClass(row));found.put(str(row.get("id")),row);
+        }
+        require(found.size()==assetIds.size(),"资产池中有标的已不存在或不属于当前用户");
+        return assetIds.stream().map(identity->found.get(str(identity))).toList();
+    }
     Map<String,Object> asset(Long u,Object identity) {
         var rows=db.queryForList("SELECT a.id,a.product_id,p.product_type,p.market,p.name,p.code FROM investment_asset a "
                 + "JOIN investment_product p ON a.product_id=p.id WHERE a.id=? AND a.user_id=? AND a.deleted=0",identity,u);
@@ -181,10 +274,17 @@ public class WorkbenchService {
     }
     List<Map<String,Object>> snapshot(Long u,Map<String,Object> pool,String end) {
         List<Map<String,Object>> result=new ArrayList<>();
-        for(Object identity:(List<?>)pool.get("assetIds")) {
-            var a=asset(u,identity);
-            var quotes=db.queryForList("SELECT trade_date,open_price,high_price,low_price,close_price,previous_close,total_return_index,volume,amount,adjust_type,source "
-                    + "FROM product_daily_quote WHERE product_id=? AND trade_date<=? ORDER BY trade_date,adjust_type",a.get("product_id"),end);
+        List<Map<String,Object>> selected=members(u,pool);
+        require(selected.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
+        List<Object> ids=selected.stream().map(member->member.get("product_id")).distinct().toList();
+        String marks=String.join(",",Collections.nCopies(ids.size(),"?"));
+        List<Object> arguments=new ArrayList<>(ids); arguments.add(end);
+        Map<Object,List<Map<String,Object>>> quoteGroups=new HashMap<>();
+        for(var quote:db.queryForList("SELECT product_id,trade_date,open_price,high_price,low_price,close_price,previous_close,total_return_index,volume,amount,adjust_type,source "
+                +"FROM product_daily_quote WHERE product_id IN ("+marks+") AND trade_date<=? ORDER BY product_id,trade_date,adjust_type",arguments.toArray()))
+            quoteGroups.computeIfAbsent(quote.get("product_id"),ignored->new ArrayList<>()).add(quote);
+        for(var a:selected) {
+            var quotes=quoteGroups.getOrDefault(a.get("product_id"),List.of());
             Map<String,Map<String,Object>> adjusted=new HashMap<>();
             for(var q:quotes) if("QFQ".equals(str(q.get("adjust_type")))) adjusted.put(str(q.get("trade_date")),q);
             List<Map<String,Object>> bars=new ArrayList<>();
@@ -200,7 +300,7 @@ public class WorkbenchService {
                 b.put("volume",q.get("volume")); b.put("amount",q.get("amount"));
                 b.put("adjustType","NONE"); b.put("source",q.get("source")); bars.add(b);
             }
-            Map<String,Object> item=new LinkedHashMap<>(); item.put("id",str(identity));
+            Map<String,Object> item=new LinkedHashMap<>(); item.put("id",str(a.get("id") == null ? a.get("product_id") : a.get("id")));
             item.put("name",a.get("name")); item.put("code",a.get("code")); item.put("assetClass",a.get("assetClass"));
             item.put("corporateActionsVerified",false); item.put("bars",bars); result.add(item);
         }
@@ -237,7 +337,8 @@ public class WorkbenchService {
     }
     private List<LocalDate> commonObservedDates(Long userId, Map<String,Object> pool, LocalDate end) {
         Set<Object> distinctProductIds = new LinkedHashSet<>();
-        for (Object assetId : (List<?>) pool.get("assetIds")) distinctProductIds.add(asset(userId, assetId).get("product_id"));
+        for (Map<String,Object> member : members(userId,pool)) distinctProductIds.add(member.get("product_id"));
+        require(distinctProductIds.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
         List<Object> productIds = new ArrayList<>(distinctProductIds);
         require(!productIds.isEmpty(), "资产池至少包含一个标的");
         String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
@@ -265,8 +366,7 @@ public class WorkbenchService {
         var universe=lockObject(u,"universes",universeId);require(!"ARCHIVED".equals(universe.get("status")),"资产池已归档");var pool=decode(universe.get("payload"));if("backtests".equals(kind)){var window=evaluationWindow(u,universeId,start,end);int available=((Number)window.get("selectedEvaluationDays")).intValue();require(available>=MINIMUM_EVALUATION_DAYS,"有效评估日期不足：当前区间只有"+available+"个共同有效交易日，至少需要"+MINIMUM_EVALUATION_DAYS+"日；可使用最近"+MINIMUM_EVALUATION_DAYS+"个有效交易日。");}req.put("universeId",universeId);req.put("universeVersionId",freeze(u,universe));req.put("universeVersion",req.get("universeVersionId"));config.put("assetClass",pool.get("assetClass"));config.put("corporateActionsVerified",false);if(b.get("initialCash")!=null)config.put("initialCash",b.get("initialCash"));
         req.put("kind",switch(kind){case "training-runs"->"TRAINING";case "backtests"->"BACKTEST";default->"FACTOR_RESEARCH";});req.put("config",config);req.put("assets",snapshot(u,pool,end));req.put("startDate",start);req.put("endDate",end);req.put("strategyVersionId",sv);req.put("universe",pool);
         if ("backtests".equals(kind)) {
-            var members = ((List<?>)pool.get("assetIds")).stream().map(identity -> asset(u,identity)).toList();
-            var comparison = trackingIndex.resolve(members,LocalDate.parse(start),LocalDate.parse(end));
+            var comparison = trackingIndex.resolve(members(u,pool),LocalDate.parse(start),LocalDate.parse(end));
             if (!comparison.isEmpty()) req.put("trackingIndex",comparison);
         }
         String modelTask=str(b.getOrDefault("modelTaskId",b.get("trainingRunId")));if(!modelTask.isBlank()){var trained=row("quant_v2_task",u,modelTask);require("training-runs".equals(trained.get("kind"))&&"SUCCEEDED".equals(trained.get("status")),"请选择成功的训练结果");var trainingRequest=decode(trained.get("request_json"));var tc=map(trainingRequest.get("config"));for(String key:List.of("strategyType","assetClass","predictionHorizon","factors","lookback","slowWindow"))require(Objects.equals(tc.get(key),config.get(key)),"模型配置不兼容："+key);var response=decode(trained.get("result_json"));require(response.get("modelRef")!=null,"训练没有有效模型产物");req.put("modelRef",response.get("modelRef"));req.put("modelTaskId",modelTask);}

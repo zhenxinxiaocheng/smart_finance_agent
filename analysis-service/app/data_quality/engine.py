@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .models import (
     AdjustType,
@@ -78,8 +79,15 @@ class DataQualityEngine:
         warning_failures = sum(
             issue.outcome is IssueOutcome.FAIL and issue.severity.value == "WARNING" for issue in issues
         )
+        blocking_warning_groups = {
+            RULE_BY_CODE[issue.rule_code].blocking_group or issue.rule_code
+            for issue in issues
+            if issue.outcome is IssueOutcome.FAIL and issue.severity.value == "WARNING"
+        }
+        blocking_warning_count = (len(blocking_warning_groups) if self._config.evidence_aware_rules
+                                  else warning_failures)
         failure_count = critical_failures + warning_failures
-        if critical_failures or warning_failures >= self._config.warning_failures_to_block:
+        if critical_failures or blocking_warning_count >= self._config.warning_failures_to_block:
             status = DataQualityStatus.BLOCKED
         elif failure_count:
             status = DataQualityStatus.WARN
@@ -95,6 +103,16 @@ class DataQualityEngine:
             if status is DataQualityStatus.BLOCKED and self._config.enforcement_mode is EnforcementMode.OBSERVE
             else None
         )
+        summary = {
+            "totalRules": len(issues),
+            "passedRules": sum(issue.outcome is IssueOutcome.PASS for issue in issues),
+            "failedRules": failure_count,
+            "notApplicableRules": sum(issue.outcome is IssueOutcome.NOT_APPLICABLE for issue in issues),
+            "criticalFailures": critical_failures,
+            "warningFailures": warning_failures,
+        }
+        if self._config.evidence_aware_rules:
+            summary["blockingWarningGroups"] = blocking_warning_count
         return DataQualityReport(
             dataset_version=manifest.dataset_version,
             quality_rule_set_version=self._config.rule_set,
@@ -103,14 +121,7 @@ class DataQualityEngine:
             enforcement_mode=self._config.enforcement_mode,
             evaluated_at=evaluated_at,
             issues=tuple(issues),
-            summary={
-                "totalRules": len(issues),
-                "passedRules": sum(issue.outcome is IssueOutcome.PASS for issue in issues),
-                "failedRules": failure_count,
-                "notApplicableRules": sum(issue.outcome is IssueOutcome.NOT_APPLICABLE for issue in issues),
-                "criticalFailures": critical_failures,
-                "warningFailures": warning_failures,
-            },
+            summary=summary,
             evidence_eligibility=eligibility,
         )
 
@@ -133,11 +144,11 @@ class DataQualityEngine:
             "STOCK_STALENESS": lambda: self._stock_staleness(records, calendar, evaluated_at),
             "STOCK_UNEXPLAINED_TRADING_GAPS": lambda: self._missing_dates(
                 "STOCK_UNEXPLAINED_TRADING_GAPS", manifest, records, calendar,
-                self._config.stock.max_missing_ratio,
+                self._config.stock.max_missing_ratio, evaluated_at,
             ),
-            "STOCK_EXTREME_RETURN": lambda: self._stock_extreme_returns(records),
+            "STOCK_EXTREME_RETURN": lambda: self._stock_extreme_returns(manifest, records),
             "STOCK_EXTREME_VOLUME": lambda: self._stock_extreme_volumes(records),
-            "STOCK_CORPORATE_ACTION_EVIDENCE": lambda: self._corporate_action_evidence(records),
+            "STOCK_CORPORATE_ACTION_EVIDENCE": lambda: self._corporate_action_evidence(manifest, records),
             "STOCK_SECONDARY_SOURCE_AVAILABILITY": lambda: self._secondary_source_availability(
                 manifest, records, secondary,
             ),
@@ -147,7 +158,7 @@ class DataQualityEngine:
             "FUND_STALENESS": lambda: self._fund_staleness(records, evaluated_at),
             "FUND_UNEXPLAINED_NAV_GAPS": lambda: self._missing_dates(
                 "FUND_UNEXPLAINED_NAV_GAPS", manifest, records, calendar,
-                self._config.fund.max_missing_nav_ratio,
+                self._config.fund.max_missing_nav_ratio, evaluated_at,
             ),
         }
 
@@ -291,11 +302,15 @@ class DataQualityEngine:
 
     def _missing_dates(
         self, code: str, manifest: DataQualityManifest, records: tuple[Record, ...], calendar: tuple[date, ...],
-        maximum_ratio: Decimal,
+        maximum_ratio: Decimal, evaluated_at: datetime,
     ) -> DataQualityIssue:
         window_start = manifest.requested_start_date
         window_end = manifest.requested_end_date
-        expected = tuple(day for day in calendar if window_start <= day <= window_end)
+        # The current session's daily bar/NAV may not have been published yet.
+        market_date = evaluated_at.astimezone(ZoneInfo(
+            self._config.market_time_zones.get(manifest.market, "UTC"))).date()
+        expected = tuple(day for day in calendar if window_start <= day <= window_end
+                         and (not self._config.evidence_aware_rules or day < market_date))
         if not expected:
             return self._issue(code, IssueOutcome.NOT_APPLICABLE, "no expected dates fall in the requested range",
                                observed={"expectedDateCount": 0}, expected={"maximumMissingRatio": str(maximum_ratio)})
@@ -309,7 +324,16 @@ class DataQualityEngine:
                                      "missingRatio": str(ratio)},
                            expected={"maximumMissingRatio": str(maximum_ratio)}, affected_dates=missing)
 
-    def _stock_extreme_returns(self, records: tuple[Record, ...]) -> DataQualityIssue:
+    def _stock_extreme_returns(self, manifest: DataQualityManifest, records: tuple[Record, ...]) -> DataQualityIssue:
+        if self._config.evidence_aware_rules and manifest.adjust_type is not AdjustType.NONE and any(
+            not _is_positive(row.get("adjustment_factor")) for row in records
+        ):
+            return self._issue("STOCK_EXTREME_RETURN", IssueOutcome.NOT_APPLICABLE,
+                               "adjusted prices lack factors needed to verify historical returns",
+                               observed={"adjustType": manifest.adjust_type.value,
+                                         "missingFactorCount": sum(not _is_positive(row.get("adjustment_factor"))
+                                                                   for row in records)},
+                               expected={"positiveAdjustmentFactors": True})
         affected = _ratio_change_dates(records, "close", self._config.stock.extreme_return_ratio)
         return self._issue("STOCK_EXTREME_RETURN", IssueOutcome.FAIL if affected else IssueOutcome.PASS,
                            "extreme stock returns detected" if affected else "stock returns are within the configured ratio",
@@ -332,7 +356,16 @@ class DataQualityEngine:
                            expected={"maximumMultiplier": self._config.stock.extreme_volume_multiplier},
                            affected_dates=affected)
 
-    def _corporate_action_evidence(self, records: tuple[Record, ...]) -> DataQualityIssue:
+    def _corporate_action_evidence(self, manifest: DataQualityManifest,
+                                   records: tuple[Record, ...]) -> DataQualityIssue:
+        if self._config.evidence_aware_rules and manifest.adjust_type is not AdjustType.NONE and any(
+            not _is_positive(row.get("adjustment_factor")) for row in records
+        ) and not any(_nonblank(row.get("corporate_action_reference")) for row in records):
+            return self._issue("STOCK_CORPORATE_ACTION_EVIDENCE", IssueOutcome.NOT_APPLICABLE,
+                               "provider supplied neither adjustment factors nor corporate-action evidence",
+                               observed={"adjustType": manifest.adjust_type.value,
+                                         "evidenceAvailable": False},
+                               expected={"evidenceAvailable": True})
         extreme_dates = set(_ratio_change_dates(
             records, "close", self._config.stock.corporate_action_evidence_return_ratio,
         ))
@@ -416,6 +449,13 @@ class DataQualityEngine:
         if any(row.get("adjust_type") != manifest.adjust_type.value for row in records + secondary):
             return self._issue(code, IssueOutcome.NOT_APPLICABLE, "mixed adjustment data is never compared",
                                observed={"adjustmentMatched": False}, expected={"adjustType": manifest.adjust_type.value})
+        if self._config.evidence_aware_rules and manifest.adjust_type is not AdjustType.NONE and any(
+            not _is_positive(row.get("adjustment_factor")) for row in records + secondary
+        ):
+            return self._issue(code, IssueOutcome.NOT_APPLICABLE,
+                               "adjusted prices cannot be compared without matching adjustment evidence",
+                               observed={"adjustmentEvidenceAvailable": False},
+                               expected={"adjustmentEvidenceAvailable": True})
 
         window_start = manifest.requested_start_date
         window_end = manifest.requested_end_date

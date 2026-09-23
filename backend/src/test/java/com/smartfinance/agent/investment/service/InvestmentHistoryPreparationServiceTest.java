@@ -16,10 +16,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class InvestmentHistoryPreparationServiceTest {
@@ -32,6 +33,7 @@ class InvestmentHistoryPreparationServiceTest {
     private InvestmentDataQualityService dataQualityService;
     private InvestmentSyncWorker syncWorker;
     private FundClassificationService classificationService;
+    private AnalysisServiceClient analysisClient;
     private InvestmentHistoryPreparationService service;
 
     @BeforeEach
@@ -41,12 +43,13 @@ class InvestmentHistoryPreparationServiceTest {
         dataQualityService = mock(InvestmentDataQualityService.class);
         syncWorker = mock(InvestmentSyncWorker.class);
         classificationService = mock(FundClassificationService.class);
+        analysisClient = mock(AnalysisServiceClient.class);
         when(classificationService.enrichIfMissing(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         Clock clock = Clock.fixed(Instant.parse("2026-07-30T02:00:00Z"), SHANGHAI);
         service = new InvestmentHistoryPreparationService(
                 productMapper, quoteMapper, dataQualityService, syncWorker,
-                classificationService, clock);
+                classificationService, analysisClient, clock);
     }
 
     @Test
@@ -101,22 +104,151 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
-    void missingInceptionFallsBackToEarliestProviderRange() {
-        InvestmentProduct product = product(false);
+    void intradayQuoteDoesNotMakeYesterdayDailyHistoryIncomplete() {
+        InvestmentProduct product = product(true);
+        product.setHistoryEndDate(LocalDate.of(2026, 7, 28));
         when(productMapper.selectById(21L)).thenReturn(product);
-        InvestmentDataQualityService.Evaluation evaluation = evaluation(
-                LocalDate.of(1998, 3, 23), LocalDate.of(2026, 7, 29));
-        when(dataQualityService.resolve(
-                product, InvestmentHistoryPreparationService.EARLIEST_PROVIDER_DATE, TODAY, true))
-                .thenReturn(evaluation);
-        when(quoteMapper.selectCount(any())).thenReturn(6_400L);
+        when(dataQualityService.resolve(product, LocalDate.of(2026, 7, 28), TODAY, true))
+                .thenReturn(evaluation(LocalDate.of(2026, 7, 28), LocalDate.of(2026, 7, 29)));
+        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 30));
 
         InvestmentHistoryPreparationService.PreparationResult result = service.prepare(job());
 
-        assertThat(result.requestedStartDate())
-                .isEqualTo(InvestmentHistoryPreparationService.EARLIEST_PROVIDER_DATE);
         assertThat(result.coverageComplete()).isTrue();
-        assertThat(product.getHistoryStartDate()).isEqualTo(LocalDate.of(1998, 3, 23));
+        assertThat(product.getHistoryCoverageComplete()).isTrue();
+    }
+
+    @Test
+    void previouslyPublishedQuoteStillExposesLaggingHistoryProvider() {
+        InvestmentProduct product = product(true);
+        product.setHistoryEndDate(LocalDate.of(2026, 7, 27));
+        when(productMapper.selectById(21L)).thenReturn(product);
+        when(dataQualityService.resolve(product, LocalDate.of(2026, 7, 27), TODAY, true))
+                .thenReturn(evaluation(LocalDate.of(2026, 7, 27), LocalDate.of(2026, 7, 28)));
+        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 29));
+
+        InvestmentHistoryPreparationService.PreparationResult result = service.prepare(job());
+
+        assertThat(result.coverageComplete()).isFalse();
+    }
+
+    @Test
+    void unresolvedHistoricalGapPublishesBarsButDoesNotClaimCompleteHistory() {
+        InvestmentProduct product = product(false);
+        product.setInceptionDate(LocalDate.of(2011, 11, 22));
+        when(productMapper.selectById(21L)).thenReturn(product);
+        InvestmentDataQualityService.Evaluation base = evaluation(
+                LocalDate.of(2011, 11, 22), LocalDate.of(2026, 7, 29));
+        base.snapshot().setQualityStatus("WARN");
+        var response = new java.util.LinkedHashMap<>(base.response());
+        response.put("qualityReport", Map.of("issues", List.of(Map.of(
+                "ruleCode", "STOCK_UNEXPLAINED_TRADING_GAPS", "outcome", "FAIL"))));
+        when(dataQualityService.resolve(product, LocalDate.of(2011, 11, 22), TODAY, true))
+                .thenReturn(new InvestmentDataQualityService.Evaluation(
+                        base.snapshot(), response, base.records(), base.secondaryDatasetVersions()));
+
+        InvestmentHistoryPreparationService.PreparationResult result = service.prepare(job());
+
+        assertThat(result.coverageComplete()).isFalse();
+        verify(syncWorker).persistDailyQuotes(product, response);
+    }
+
+    @Test
+    void missingListingDateDoesNotInventHistoryStart() {
+        InvestmentProduct product = product(false);
+        when(productMapper.selectById(21L)).thenReturn(product);
+
+        assertThatThrownBy(() -> service.prepare(job()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("起始日期缺失");
+        verify(analysisClient).resolveProduct("STOCK", "600000");
+        verifyNoInteractions(dataQualityService, syncWorker);
+    }
+
+    @Test
+    void resolvesMissingStockListingDateBeforeQualityValidation() {
+        InvestmentProduct product = product(false);
+        when(productMapper.selectById(21L)).thenReturn(product);
+        AnalysisServiceClient.ResolvedProduct resolved = mock(AnalysisServiceClient.ResolvedProduct.class);
+        when(resolved.inceptionDate()).thenReturn(LocalDate.of(2011, 11, 22));
+        when(analysisClient.resolveProduct("STOCK", "600000")).thenReturn(resolved);
+        when(dataQualityService.resolve(product, LocalDate.of(2011, 11, 22), TODAY, true))
+                .thenReturn(evaluation(LocalDate.of(2011, 11, 22), LocalDate.of(2026, 7, 29)));
+
+        InvestmentHistoryPreparationService.PreparationResult result = service.prepare(job());
+
+        assertThat(result.requestedStartDate()).isEqualTo(LocalDate.of(2011, 11, 22));
+        assertThat(product.getInceptionDate()).isEqualTo(LocalDate.of(2011, 11, 22));
+        assertThat(result.coverageComplete()).isTrue();
+    }
+
+    @Test
+    void resolvesMissingFundInceptionBeforeQualityValidation() {
+        InvestmentProduct product = product(false);
+        product.setProductType("MUTUAL_FUND");
+        product.setMarket("FUND_CN");
+        product.setCode("000001");
+        InvestmentDataJob fundJob = job();
+        fundJob.setJobType("FUND_NAV_HISTORY");
+        when(productMapper.selectById(21L)).thenReturn(product);
+        AnalysisServiceClient.ResolvedProduct resolved = mock(AnalysisServiceClient.ResolvedProduct.class);
+        when(resolved.inceptionDate()).thenReturn(LocalDate.of(2012, 8, 15));
+        when(analysisClient.resolveProduct("MUTUAL_FUND", "000001")).thenReturn(resolved);
+        when(dataQualityService.resolve(product, LocalDate.of(2012, 8, 15), TODAY, true))
+                .thenReturn(evaluation(LocalDate.of(2012, 8, 15), LocalDate.of(2026, 7, 29)));
+
+        InvestmentHistoryPreparationService.PreparationResult result = service.prepare(fundJob);
+
+        assertThat(result.requestedStartDate()).isEqualTo(LocalDate.of(2012, 8, 15));
+        assertThat(product.getInceptionDate()).isEqualTo(LocalDate.of(2012, 8, 15));
+    }
+
+    @Test
+    void fundWithoutIndependentInceptionDateDoesNotClaimCompleteHistory() {
+        InvestmentProduct product = product(false);
+        product.setProductType("MUTUAL_FUND");
+        product.setMarket("FUND_CN");
+        product.setCode("000001");
+        InvestmentDataJob fundJob = job();
+        fundJob.setJobType("FUND_NAV_HISTORY");
+        when(productMapper.selectById(21L)).thenReturn(product);
+
+        assertThatThrownBy(() -> service.prepare(fundJob))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("起始日期缺失");
+        verifyNoInteractions(dataQualityService, syncWorker);
+    }
+
+    @Test
+    void blockedQualityNeverPersistsQuotes() {
+        InvestmentProduct product = product(false);
+        product.setInceptionDate(LocalDate.of(2011, 11, 22));
+        when(productMapper.selectById(21L)).thenReturn(product);
+        InvestmentDataQualityService.Evaluation blocked = evaluation(
+                LocalDate.of(2011, 11, 22), LocalDate.of(2026, 7, 29));
+        blocked.snapshot().setDecision("BLOCK");
+        when(dataQualityService.resolve(product, LocalDate.of(2011, 11, 22), TODAY, true))
+                .thenReturn(blocked);
+
+        assertThatThrownBy(() -> service.prepare(job()))
+                .isInstanceOf(InvestmentHistoryPreparationService.QualityBlockedException.class);
+        assertThat(product.getHistoryCoverageComplete()).isFalse();
+        verify(productMapper).updateById(product);
+        verifyNoInteractions(syncWorker);
+    }
+
+    @Test
+    void stockListingDateDefinesHistoryStartAndRequiredCoverage() {
+        InvestmentProduct product = product(false);
+        product.setListingDate(LocalDate.of(2011, 11, 22));
+        when(productMapper.selectById(21L)).thenReturn(product);
+        when(dataQualityService.resolve(product, LocalDate.of(2011, 11, 22), TODAY, true))
+                .thenReturn(evaluation(LocalDate.of(2011, 12, 20), LocalDate.of(2026, 7, 29)));
+
+        InvestmentHistoryPreparationService.PreparationResult result = service.prepare(job());
+
+        assertThat(result.requestedStartDate()).isEqualTo(LocalDate.of(2011, 11, 22));
+        assertThat(result.coverageComplete()).isFalse();
     }
 
     private static InvestmentDataJob job() {

@@ -51,7 +51,7 @@
         <ShieldAlert class="size-4" />
         <AlertTitle>数据完整性校验未通过</AlertTitle>
         <AlertDescription class="mt-2">
-          当前不展示任何分析结论。系统正在自动重新获取并校验数据，通过后会生成全新的结果。
+          当前不展示分析结论。数据问题修复后可重新拉取并校验。
           <Button variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">立即重试</Button>
         </AlertDescription>
       </Alert>
@@ -60,7 +60,7 @@
         <Clock3 class="size-4" />
         <AlertTitle>数据校验暂不可用</AlertTitle>
         <AlertDescription class="mt-2">
-          当前不展示分析结论。系统会自动重试，校验恢复后再生成新的结果。
+          当前不展示分析结论。请稍后点击“重新拉取数据”。
         </AlertDescription>
       </Alert>
 
@@ -75,7 +75,7 @@
         </AlertTitle>
         <AlertDescription class="mt-2">
           {{ historyJobNotice }}
-          <Button v-if="historyJobStatus === 'FAILED'" variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">重新拉取数据</Button>
+          <Button v-if="['FAILED', 'PARTIAL'].includes(historyJobStatus)" variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">重新拉取数据</Button>
         </AlertDescription>
       </Alert>
 
@@ -190,11 +190,6 @@
                 label="观测净值点"
                 :value="`${activeFundPeriod.observationCount} 个`"
               />
-              <ActionPriceRow
-                v-if="activeFundPeriod.startDate && activeFundPeriod.endDate"
-                label="周期数据区间"
-                :value="`${activeFundPeriod.startDate} → ${activeFundPeriod.endDate}`"
-              />
               <details class="group rounded-lg border bg-muted/10 px-3 py-2.5">
                 <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium">
                   <span class="flex items-center gap-2">
@@ -204,19 +199,6 @@
                   <ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
                 </summary>
                 <div class="mt-3 space-y-2.5 border-t pt-3">
-                  <div class="rounded-md border bg-background/60 px-3 py-2 text-xs">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-muted-foreground">对比基准</span>
-                      <strong class="text-right">{{ fundBenchmarkLabel }}</strong>
-                    </div>
-                    <div v-if="fundBenchmarkSampleLabel" class="mt-1.5 flex items-center justify-between gap-3">
-                      <span class="text-muted-foreground">指标样本</span>
-                      <strong :class="fundBenchmarkSampleTone">{{ fundBenchmarkSampleLabel }}</strong>
-                    </div>
-                    <p v-if="fundBenchmarkReason && !hasFundBenchmarkMetrics" class="mt-2 leading-5 text-muted-foreground">
-                      {{ fundBenchmarkReason }}
-                    </p>
-                  </div>
                   <ActionPriceRow
                     v-if="hasMetric(activeFundPeriod.benchmarkReturn)"
                     label="基准收益"
@@ -492,8 +474,8 @@ const historyJobNotice = computed(() => ({
   QUEUED: '最新价格已可使用，历史行情和分析会在后台继续准备。',
   RUNNING: '历史行情和分析正在后台准备，完成后页面会自动更新。',
   RETRY_WAIT: '服务正在稍后重试，当前已保存的数据仍可继续查看。',
-  PARTIAL: '部分历史数据暂不可用，页面已更新可用结果。',
-  FAILED: '数据源暂未完成同步，系统会自动重试并补齐历史数据。',
+  PARTIAL: '已抓取的历史行情可查看，完整历史用途暂不可用。',
+  FAILED: '历史数据未通过校验或同步失败，请查看当前数据状态。',
 }[historyJobStatus.value] || ''))
 const qualityBlocked = computed(() => sourceStatus.value.dataState === 'BLOCKED')
 const qualityWaiting = computed(() => sourceStatus.value.dataState === 'WAITING')
@@ -509,24 +491,12 @@ const hasFundBenchmarkMetrics = computed(() => [
   'informationRatio',
 ].some(key => hasMetric(activeFundPeriod.value?.[key])))
 const fundBenchmark = computed(() => technical.value.benchmark || {})
-const fundBenchmarkLabel = computed(() => fundBenchmark.value.name || fundBenchmark.value.code || '尚未准备')
 const fundBenchmarkReason = computed(() => fundBenchmark.value.reason || sourceStatus.value.benchmarkReason || '')
 const fundBenchmarkStateLabel = computed(() => {
   if (fundBenchmark.value.status === 'READY') return '样本待准备'
   if (fundBenchmarkReason.value) return '基准未就绪'
   return '数据待准备'
 })
-const fundBenchmarkSampleLabel = computed(() => {
-  const count = activeFundPeriod.value?.benchmarkMetricObservationCount
-  const recommended = activeFundPeriod.value?.benchmarkMetricRecommendedObservationCount
-  if (count == null) return ''
-  if (activeFundPeriod.value?.benchmarkMetricStatus === 'ADEQUATE_SAMPLE') return `${count} 个收益率样本，样本充足`
-  if (activeFundPeriod.value?.benchmarkMetricStatus === 'LOW_SAMPLE') return `${count} / ${recommended}，样本偏少`
-  return `${count} / ${recommended}，暂不足以计算`
-})
-const fundBenchmarkSampleTone = computed(() => activeFundPeriod.value?.benchmarkMetricStatus === 'ADEQUATE_SAMPLE'
-  ? 'text-emerald-600 dark:text-emerald-400'
-  : 'text-amber-600 dark:text-amber-400')
 const fundMetricHelp = {
   benchmarkReturn: '同一周期内，基金所跟踪基准的涨跌幅，用来判断市场本身的表现。',
   trackingDifference: '基金周期收益减去基准周期收益。正数表示跑赢基准，负数表示跑输基准。',
@@ -596,11 +566,12 @@ const fundamentalVerdict = computed(() => {
   return ({ ATTRACTIVE: '长期较有吸引力', FAIR: '长期中性', CAUTIOUS: '长期需谨慎', INSUFFICIENT: '数据不足' }[fundamental.value.verdict] || '数据不足')
 })
 const sourceLabel = computed(() => ({
-  READY: '数据正常',
+  READY: sourceStatus.value.qualityStatus === 'WARN' || historyJobStatus.value === 'PARTIAL'
+    ? '数据待核实' : '数据正常',
   STABLE_CACHE: '分析服务重试中',
   BLOCKED: '数据已阻断',
   WAITING: '等待数据校验',
-  PREPARING: '数据准备中',
+  PREPARING: ['FAILED', 'PARTIAL'].includes(historyJobStatus.value) ? '数据暂不可用' : '数据准备中',
 }[sourceStatus.value.dataState] || '数据准备中'))
 const dataTime = computed(() => sourceStatus.value.quoteDate || asset.value.dataDate || '暂无日期')
 const topMetrics = computed(() => [

@@ -1,20 +1,7 @@
 <template>
   <div class="space-y-3">
-    <div class="rounded-lg border bg-muted/20 p-2.5">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <Badge variant="outline" class="bg-background font-medium">
-            {{ productType === 'MUTUAL_FUND' ? '单位净值' : '日 K · 前复权' }}
-          </Badge>
-          <span class="text-xs text-muted-foreground">{{ series.length }} 个交易日</span>
-        </div>
-        <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs text-muted-foreground" @click="restore">
-          <RotateCcw class="size-3.5" />
-          恢复视图
-        </Button>
-      </div>
-
-      <div v-if="productType !== 'MUTUAL_FUND'" class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-2">
+    <div v-if="productType !== 'MUTUAL_FUND'" class="rounded-lg border bg-muted/20 p-2.5">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div class="flex flex-wrap items-center gap-1">
           <span class="mr-1 text-[11px] font-medium text-muted-foreground">均线</span>
           <Button
@@ -80,8 +67,7 @@ import {
   TooltipComponent
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { Info, RotateCcw } from '@lucide/vue'
-import { Badge } from '@/components/ui/badge'
+import { Info } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useAppearance } from '@/composables/useAppearance'
 import { getChartTheme } from '@/lib/chartTheme'

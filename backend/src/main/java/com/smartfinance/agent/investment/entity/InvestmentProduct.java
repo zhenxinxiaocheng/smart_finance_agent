@@ -22,10 +22,14 @@ public class InvestmentProduct {
     private String classificationVersion;
     private LocalDateTime classifiedAt;
     private String market;
+    private String exchangeCode;
     private String code;
     private String name;
     private String currency;
     private String status;
+    private LocalDate listingDate;
+    private LocalDate delistingDate;
+    private String sourceMetadata;
     private LocalDate inceptionDate;
     private LocalDate historyStartDate;
     private LocalDate historyEndDate;

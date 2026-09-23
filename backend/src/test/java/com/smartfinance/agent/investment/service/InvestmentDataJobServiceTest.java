@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
+import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,21 +26,23 @@ class InvestmentDataJobServiceTest {
     private InvestmentDataJobMapper mapper;
     private InvestmentProductMapper productMapper;
     private InvestmentAssetMapper assetMapper;
+    private ProductDailyQuoteMapper quoteMapper;
     private InvestmentDataJobService service;
 
     @BeforeEach
     void setUp() {
         mapper = mock(InvestmentDataJobMapper.class);
         when(mapper.requeueTerminal(any())).thenReturn(1);
+        when(mapper.requeueTerminalIncremental(any())).thenReturn(1);
         productMapper = mock(InvestmentProductMapper.class);
         assetMapper = mock(InvestmentAssetMapper.class);
+        quoteMapper = mock(ProductDailyQuoteMapper.class);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
         product.setProductType("STOCK");
         product.setHistoryCoverageComplete(true);
         when(productMapper.selectById(21L)).thenReturn(product);
-        service = new InvestmentDataJobService(mapper, productMapper, assetMapper,
-                mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
+        service = new InvestmentDataJobService(mapper, productMapper, assetMapper, quoteMapper);
     }
 
     @Test
@@ -193,7 +196,7 @@ class InvestmentDataJobServiceTest {
     @Test
     void automaticRecoveryDoesNotLoopAFailedJob() {
         InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
-        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")));
+        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(1));
         existing.setAttemptCount(3);
         existing.setErrorMessage("quality remains blocked");
         when(mapper.selectOne(any())).thenReturn(existing);
@@ -202,25 +205,63 @@ class InvestmentDataJobServiceTest {
 
         assertThat(job.getStatus()).isEqualTo("FAILED");
         assertThat(job.getAttemptCount()).isEqualTo(3);
-        verify(mapper, never()).updateById(any());
+        verify(mapper, never()).requeueTerminal(any());
     }
 
     @Test
-    void automaticRecoveryRequeuesACompletedJobWithFreshDataEnabled() {
+    void automaticRecoveryDoesNotLoopPartialJob() {
+        InvestmentDataJob existing = job("PARTIAL", "STOCK_HISTORY");
+        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(1));
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        assertThat(service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK").getStatus())
+                .isEqualTo("PARTIAL");
+        verify(mapper, never()).requeueTerminal(any());
+    }
+
+    @Test
+    void scannerDoesNotRequeueTerminalIncompleteJob() {
+        InvestmentAsset asset = asset(7L, 11L, 21L);
+        when(assetMapper.selectList(null)).thenReturn(List.of(asset));
+        when(productMapper.selectById(21L)).thenReturn(product(21L, "STOCK", false));
+        InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
+        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(1));
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        assertThat(service.requeueIncompleteHistoryJobs()).isZero();
+        verify(mapper, never()).requeueTerminal(any());
+    }
+
+    @Test
+    void automaticRecoveryRequeuesACompletedJobIncrementally() {
         InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
         existing.setRecordCount(526);
+        existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
+        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 22));
         when(mapper.selectOne(any())).thenReturn(existing);
 
         InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
 
         assertThat(job.getStatus()).isEqualTo("QUEUED");
-        assertThat(job.getForceRefresh()).isTrue();
+        assertThat(job.getForceRefresh()).isFalse();
         assertThat(job.getRecordCount()).isZero();
-        verify(mapper).requeueTerminal(existing.getId());
+        verify(mapper).requeueTerminalIncremental(existing.getId());
     }
 
     @Test
-    void incompleteCoverageResetsTerminalJobForFullBackfillEvenWithoutManualForce() {
+    void completedJobIsNotRequeuedWithoutNewQuotes() {
+        InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
+        existing.setSampleEndDate(LocalDate.of(2026, 7, 22));
+        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 22));
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        assertThat(service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK").getStatus())
+                .isEqualTo("SUCCEEDED");
+        verify(mapper, never()).requeueTerminalIncremental(any());
+    }
+
+    @Test
+    void incompleteCoverageDoesNotResetCompletedJobWithoutManualForce() {
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
         product.setProductType("STOCK");
@@ -233,10 +274,10 @@ class InvestmentDataJobServiceTest {
 
         InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
 
-        assertThat(job.getStatus()).isEqualTo("QUEUED");
-        assertThat(job.getForceRefresh()).isTrue();
+        assertThat(job.getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(job.getForceRefresh()).isFalse();
         assertThat(job.getAttemptCount()).isZero();
-        verify(mapper).requeueTerminal(existing.getId());
+        verify(mapper, never()).requeueTerminal(any());
     }
 
     @Test

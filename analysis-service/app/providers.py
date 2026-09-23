@@ -652,16 +652,40 @@ def _provider_date(value: Any) -> date | None:
 
 def _stock_inception_date(ak_module: Any, code: str) -> date | None:
     provider = getattr(ak_module, "stock_individual_info_em", None)
-    if provider is None:
-        return None
-    try:
-        records = provider(symbol=code).to_dict("records")
-    except Exception:
-        return None
-    for record in records:
-        key = str(record.get("item", record.get("项目", ""))).strip()
-        if key in {"上市时间", "上市日期", "list_date", "listing_date"}:
-            return _provider_date(record.get("value", record.get("值")))
+    if provider is not None:
+        try:
+            records = provider(symbol=code).to_dict("records")
+            for record in records:
+                key = str(record.get("item", record.get("项目", ""))).strip()
+                if key in {"上市时间", "上市日期", "list_date", "listing_date"}:
+                    listing_date = _provider_date(record.get("value", record.get("值")))
+                    if listing_date is not None:
+                        return listing_date
+        except Exception:
+            pass
+
+    exchange_sources = {
+        "SZSE": (("stock_info_sz_name_code", "A股列表", "A股代码", "A股上市日期"),),
+        "SSE": (
+            ("stock_info_sh_name_code", "主板A股", "证券代码", "上市日期"),
+            ("stock_info_sh_name_code", "科创板", "证券代码", "上市日期"),
+        ),
+        "BSE": (("stock_info_bj_name_code", None, "证券代码", "上市日期"),),
+    }
+    for provider_name, symbol, code_key, date_key in exchange_sources.get(infer_a_share_market(code), ()):
+        provider = getattr(ak_module, provider_name, None)
+        if provider is None:
+            continue
+        try:
+            frame = provider() if symbol is None else provider(symbol=symbol)
+            records = frame.to_dict("records")
+        except Exception:
+            continue
+        for record in records:
+            if str(record.get(code_key, "")).strip().zfill(6) == code:
+                listing_date = _provider_date(record.get(date_key))
+                if listing_date is not None:
+                    return listing_date
     return None
 
 
@@ -853,8 +877,6 @@ def resolve_product_metadata(
             frame = ak_module.fund_open_fund_info_em(symbol=normalized_code, indicator="单位净值走势")
             fund_records = frame.to_dict("records")
             quotes = _frame_to_quotes(frame, normalized_code, market, "AKSHARE")
-            if quotes:
-                inception_date = min(item.data_date for item in quotes)
         except Exception as exc:
             quotes = []
             warnings.append(f"AKSHARE 净值获取失败: {exc}")

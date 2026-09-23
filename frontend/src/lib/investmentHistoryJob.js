@@ -1,5 +1,4 @@
-const RECOVERY_STATUSES = new Set(['FAILED', 'PARTIAL'])
-const POLLING_STATUSES = new Set(['QUEUED', 'RUNNING', 'RETRY_WAIT', ...RECOVERY_STATUSES])
+const POLLING_STATUSES = new Set(['QUEUED', 'RUNNING', 'RETRY_WAIT'])
 
 export function shouldPollHistoryJob(status) {
   return POLLING_STATUSES.has(status)
@@ -10,7 +9,6 @@ export function createHistoryJobPollingController({
   onJob,
   onTerminal,
   intervalMs = 3000,
-  recoveryIntervalMs = 60000,
   scheduler = globalThis,
   visibilitySource = globalThis.document
 }) {
@@ -39,7 +37,7 @@ export function createHistoryJobPollingController({
     timer = scheduler.setTimeout(() => {
       timer = null
       void execute()
-    }, RECOVERY_STATUSES.has(status) ? recoveryIntervalMs : intervalMs)
+    }, intervalMs)
   }
   const execute = async () => {
     if (disposed || inFlight || !shouldPollHistoryJob(status)) return

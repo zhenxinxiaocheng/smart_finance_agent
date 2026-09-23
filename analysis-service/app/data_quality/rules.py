@@ -10,6 +10,7 @@ class DataQualityRule:
     code: str
     severity: IssueSeverity
     product_type: ProductType | None = None
+    blocking_group: str | None = None
 
 
 RULES: tuple[DataQualityRule, ...] = (
@@ -21,9 +22,10 @@ RULES: tuple[DataQualityRule, ...] = (
     DataQualityRule("STOCK_ADJUSTMENT_CONSISTENCY", IssueSeverity.CRITICAL, ProductType.STOCK),
     DataQualityRule("STOCK_STALENESS", IssueSeverity.WARNING, ProductType.STOCK),
     DataQualityRule("STOCK_UNEXPLAINED_TRADING_GAPS", IssueSeverity.WARNING, ProductType.STOCK),
-    DataQualityRule("STOCK_EXTREME_RETURN", IssueSeverity.WARNING, ProductType.STOCK),
+    DataQualityRule("STOCK_EXTREME_RETURN", IssueSeverity.WARNING, ProductType.STOCK, "STOCK_PRICE_EVENT"),
     DataQualityRule("STOCK_EXTREME_VOLUME", IssueSeverity.WARNING, ProductType.STOCK),
-    DataQualityRule("STOCK_CORPORATE_ACTION_EVIDENCE", IssueSeverity.WARNING, ProductType.STOCK),
+    DataQualityRule("STOCK_CORPORATE_ACTION_EVIDENCE", IssueSeverity.WARNING, ProductType.STOCK,
+                    "STOCK_PRICE_EVENT"),
     DataQualityRule("STOCK_SECONDARY_SOURCE_AVAILABILITY", IssueSeverity.INFO, ProductType.STOCK),
     DataQualityRule("STOCK_CROSS_SOURCE_RECONCILIATION", IssueSeverity.CRITICAL, ProductType.STOCK),
     DataQualityRule("FUND_NAV_TYPE_CONSISTENCY", IssueSeverity.CRITICAL, ProductType.MUTUAL_FUND),

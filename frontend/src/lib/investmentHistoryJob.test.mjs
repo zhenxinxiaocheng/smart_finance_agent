@@ -36,12 +36,12 @@ async function flush() {
   await Promise.resolve()
 }
 
-test('polls active jobs and jobs awaiting automatic recovery', () => {
-  for (const status of ['QUEUED', 'RUNNING', 'RETRY_WAIT', 'PARTIAL', 'FAILED']) {
+test('polls active jobs only', () => {
+  for (const status of ['QUEUED', 'RUNNING', 'RETRY_WAIT']) {
     assert.equal(shouldPollHistoryJob(status), true)
   }
 
-  for (const status of ['SUCCEEDED', undefined, null]) {
+  for (const status of ['SUCCEEDED', 'PARTIAL', 'FAILED', undefined, null]) {
     assert.equal(shouldPollHistoryJob(status), false)
   }
 })
@@ -72,7 +72,7 @@ test('polls every 3 seconds without overlapping requests', async () => {
   controller.dispose()
 })
 
-test('stops on success and checks partial or failed jobs at the recovery interval', async () => {
+test('stops on success, partial completion and failure', async () => {
   const scheduler = createScheduler()
   const terminals = []
   const jobs = [{ status: 'SUCCEEDED' }, { status: 'PARTIAL' }, { status: 'FAILED' }]
@@ -88,8 +88,7 @@ test('stops on success and checks partial or failed jobs at the recovery interva
     const [timerId] = scheduler.firstTimer()
     scheduler.run(timerId)
     await flush()
-    assert.equal(scheduler.timers.size, assetId === 'asset-success' ? 0 : 1)
-    if (assetId !== 'asset-success') assert.equal(scheduler.firstTimer()[1].delay, 60000)
+    assert.equal(scheduler.timers.size, 0)
   }
 
   assert.deepEqual(terminals, [

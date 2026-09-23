@@ -47,6 +47,8 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         return DataQualityConfig(
             version="data-quality-v1",
             rule_set="data-quality-v1",
+            evidence_aware_rules=True,
+            market_time_zones={"CN": "UTC"},
             schema_version="market-data-schema-v1",
             enforcement_mode=enforcement,
             storage_root_env="ANALYSIS_DATA_ROOT",
@@ -308,8 +310,28 @@ class DataQualityRuleEngineTest(unittest.TestCase):
 
         issue = self._issue(report, "STOCK_UNEXPLAINED_TRADING_GAPS")
         self.assertEqual(IssueOutcome.FAIL, issue.outcome)
-        self.assertEqual(3, issue.observed["expectedDateCount"])
+        self.assertEqual(2, issue.observed["expectedDateCount"])
         self.assertEqual((date(2026, 1, 2), date(2026, 1, 5)), issue.affected_dates)
+
+    def test_current_trading_day_is_not_required_before_daily_history_is_published(self):
+        records = [self._stock_row(date(2026, 1, 5))]
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 5), date(2026, 1, 6)),
+                                start=date(2026, 1, 5), end=date(2026, 1, 6))
+        issue = self._issue(report, "STOCK_UNEXPLAINED_TRADING_GAPS")
+        self.assertEqual(IssueOutcome.PASS, issue.outcome)
+        self.assertEqual(1, issue.observed["expectedDateCount"])
+
+    def test_daily_publication_date_uses_the_market_time_zone(self):
+        records = [self._stock_row(date(2026, 1, 5))]
+        config = self.config.model_copy(update={"market_time_zones": {"CN": "Asia/Shanghai"}})
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 5), date(2026, 1, 6)),
+                                start=date(2026, 1, 5), end=date(2026, 1, 6),
+                                now=datetime(2026, 1, 5, 17, tzinfo=timezone.utc), config=config)
+        issue = self._issue(report, "STOCK_UNEXPLAINED_TRADING_GAPS")
+        self.assertEqual(IssueOutcome.PASS, issue.outcome)
+        self.assertEqual(1, issue.observed["expectedDateCount"])
 
     def test_fund_missing_ratio_uses_full_requested_window_when_only_last_day_is_returned(self):
         records = [self._fund_row(date(2026, 1, 6))]
@@ -320,7 +342,7 @@ class DataQualityRuleEngineTest(unittest.TestCase):
 
         issue = self._issue(report, "FUND_UNEXPLAINED_NAV_GAPS")
         self.assertEqual(IssueOutcome.FAIL, issue.outcome)
-        self.assertEqual(3, issue.observed["expectedDateCount"])
+        self.assertEqual(2, issue.observed["expectedDateCount"])
         self.assertEqual((date(2026, 1, 2), date(2026, 1, 5)), issue.affected_dates)
 
     def test_cross_source_overlap_uses_requested_range_not_sample_range(self):
@@ -374,6 +396,34 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         self.assertEqual(IssueOutcome.FAIL, self._issue(report, "STOCK_EXTREME_VOLUME").outcome)
         self.assertEqual(IssueOutcome.PASS, self._issue(report, "STOCK_CORPORATE_ACTION_EVIDENCE").outcome)
 
+    def test_adjusted_prices_without_factors_or_event_data_do_not_become_failed_checks(self):
+        records = [
+            self._stock_row(date(2026, 1, 2), "0.50", "100", adjustment_factor=None),
+            self._stock_row(date(2026, 1, 5), "0.20", "2500", adjustment_factor=None),
+        ]
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 2), date(2026, 1, 5)),
+                                config=self._config(enforcement="ENFORCE"))
+        self.assertEqual(IssueOutcome.NOT_APPLICABLE,
+                         self._issue(report, "STOCK_EXTREME_RETURN").outcome)
+        self.assertEqual(IssueOutcome.NOT_APPLICABLE,
+                         self._issue(report, "STOCK_CORPORATE_ACTION_EVIDENCE").outcome)
+        self.assertEqual(IssueOutcome.FAIL, self._issue(report, "STOCK_EXTREME_VOLUME").outcome)
+        self.assertEqual(DataQualityDecision.ALLOW, report.decision)
+
+    def test_historical_gap_and_one_volume_spike_remain_visible_warnings(self):
+        records = [self._stock_row(date(2026, 1, 2), "0.50", "100", adjustment_factor=None),
+                   self._stock_row(date(2026, 1, 6), "0.20", "2500", adjustment_factor=None)]
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6)),
+                                now=datetime(2026, 1, 7, 8, tzinfo=timezone.utc),
+                                config=self._config(enforcement="ENFORCE"))
+        self.assertEqual(IssueOutcome.FAIL,
+                         self._issue(report, "STOCK_UNEXPLAINED_TRADING_GAPS").outcome)
+        self.assertEqual(2, report.summary["blockingWarningGroups"])
+        self.assertEqual(DataQualityStatus.WARN, report.status)
+        self.assertEqual(DataQualityDecision.ALLOW, report.decision)
+
     def test_cross_source_reconciliation_compares_same_adjustment_and_fails_on_price_deviation(self):
         primary = [
             self._stock_row(date(2026, 1, 2), "10"),
@@ -391,6 +441,19 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         self.assertEqual(IssueOutcome.FAIL, issue.outcome)
         self.assertEqual("CRITICAL", issue.severity.value)
         self.assertEqual((date(2026, 1, 5),), issue.affected_dates)
+
+    def test_cross_source_adjusted_prices_without_factors_are_not_compared_as_absolute_prices(self):
+        primary = [self._stock_row(date(2026, 1, 2), "10", adjustment_factor=None),
+                   self._stock_row(date(2026, 1, 5), "10.5", adjustment_factor=None)]
+        secondary = [self._stock_row(date(2026, 1, 2), "9", provider="secondary",
+                                     adjustment_factor=None),
+                     self._stock_row(date(2026, 1, 5), "9.5", provider="secondary",
+                                     adjustment_factor=None)]
+        report = self._evaluate(primary, ProductType.STOCK,
+                                (date(2026, 1, 2), date(2026, 1, 5)),
+                                secondary_records=secondary)
+        self.assertEqual(IssueOutcome.NOT_APPLICABLE,
+                         self._issue(report, "STOCK_CROSS_SOURCE_RECONCILIATION").outcome)
 
     def test_mixed_adjustment_is_critical_and_never_cross_source_compared(self):
         primary = [self._stock_row(date(2026, 1, 5))]
@@ -506,26 +569,48 @@ class DataQualityRuleEngineTest(unittest.TestCase):
     def test_aggregate_observe_and_enforce_at_exact_warning_threshold(self):
         records = [
             self._stock_row(date(2026, 1, 2), "10", "100"),
-            self._stock_row(date(2026, 1, 5), "15", "2500"),
+            self._stock_row(date(2026, 1, 6), "15", "2500"),
         ]
-        expected = (date(2026, 1, 2), date(2026, 1, 5))
+        expected = (date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6))
+        evaluated_at = datetime(2026, 1, 7, 8, tzinfo=timezone.utc)
         observe = self._evaluate(records, ProductType.STOCK, expected,
-                                 config=self._config(enforcement="OBSERVE", warning_threshold=3))
+                                 config=self._config(enforcement="OBSERVE", warning_threshold=3),
+                                 now=evaluated_at)
         self.assertEqual(DataQualityStatus.BLOCKED, observe.status)
         self.assertEqual(DataQualityDecision.ALLOW, observe.decision)
         self.assertEqual("QUALITY_OBSERVE_ONLY", observe.evidence_eligibility)
 
         enforce = self._evaluate(records, ProductType.STOCK, expected,
-                                 config=self._config(enforcement="ENFORCE", warning_threshold=3))
+                                 config=self._config(enforcement="ENFORCE", warning_threshold=3),
+                                 now=evaluated_at)
         self.assertEqual(DataQualityStatus.BLOCKED, enforce.status)
         self.assertEqual(DataQualityDecision.BLOCK, enforce.decision)
         self.assertIsNone(enforce.evidence_eligibility)
 
         below_threshold = self._evaluate(records, ProductType.STOCK, expected,
-                                         config=self._config(warning_threshold=4))
+                                         config=self._config(warning_threshold=4), now=evaluated_at)
         self.assertEqual(DataQualityStatus.WARN, below_threshold.status)
         self.assertEqual(DataQualityDecision.ALLOW, below_threshold.decision)
         self.assertIsNone(below_threshold.evidence_eligibility)
+
+    def test_price_jump_and_missing_action_evidence_count_as_one_blocking_signal(self):
+        records = [self._stock_row(date(2026, 1, 2), "10", "100"),
+                   self._stock_row(date(2026, 1, 5), "15", "2500")]
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 2), date(2026, 1, 5)),
+                                config=self._config(enforcement="ENFORCE"))
+        self.assertEqual(3, report.summary["warningFailures"])
+        self.assertEqual(2, report.summary["blockingWarningGroups"])
+        self.assertEqual(DataQualityStatus.WARN, report.status)
+
+    def test_legacy_rule_sets_keep_their_original_decision_on_replay(self):
+        records = [self._stock_row(date(2026, 1, 2), "10", "100"),
+                   self._stock_row(date(2026, 1, 5), "15", "2500")]
+        legacy = self.config.model_copy(update={"evidence_aware_rules": False})
+        report = self._evaluate(records, ProductType.STOCK,
+                                (date(2026, 1, 2), date(2026, 1, 5)), config=legacy)
+        self.assertEqual(DataQualityStatus.BLOCKED, report.status)
+        self.assertNotIn("blockingWarningGroups", report.summary)
 
     def test_fixed_clock_is_repeatable_requires_timezone_and_does_not_mutate_inputs(self):
         records = [self._stock_row(date(2026, 1, 2)), self._stock_row(date(2026, 1, 5), "10.5")]

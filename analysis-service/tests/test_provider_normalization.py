@@ -380,6 +380,62 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("2001-08-27", result["inceptionDate"])
         self.assertEqual("qfq", provider.last_hist_kwargs["adjust"])
 
+    def test_stock_listing_date_falls_back_to_exchange_catalog(self):
+        class ExchangeCatalogProvider:
+            def stock_info_a_code_name(self):
+                return FakeFrame([{"code": "002632", "name": "道明光学"}])
+
+            def stock_individual_info_em(self, symbol):
+                raise ConnectionError("metadata unavailable")
+
+            def stock_info_sz_name_code(self, symbol):
+                self.assert_symbol = symbol
+                return FakeFrame([{"A股代码": "002632", "A股上市日期": "2011-11-22"}])
+
+            def stock_zh_a_hist(self, **_kwargs):
+                return FakeFrame([])
+
+        provider = ExchangeCatalogProvider()
+        result = resolve_product_metadata("STOCK", "002632", ak_module=provider)
+
+        self.assertEqual("A股列表", provider.assert_symbol)
+        self.assertEqual("2011-11-22", result["inceptionDate"])
+
+    def test_exchange_listing_date_fallback_covers_shanghai_and_beijing(self):
+        class ExchangeCatalogProvider:
+            def stock_info_a_code_name(self):
+                return FakeFrame([
+                    {"code": "600519", "name": "股票甲"},
+                    {"code": "688001", "name": "股票乙"},
+                    {"code": "920001", "name": "股票丙"},
+                ])
+
+            def stock_individual_info_em(self, symbol):
+                raise ConnectionError("metadata unavailable")
+
+            def stock_info_sh_name_code(self, symbol):
+                rows = {
+                    "主板A股": [{"证券代码": "600519", "上市日期": "2001-08-27"}],
+                    "科创板": [{"证券代码": "688001", "上市日期": "2019-07-22"}],
+                }
+                return FakeFrame(rows[symbol])
+
+            def stock_info_bj_name_code(self):
+                return FakeFrame([{"证券代码": "920001", "上市日期": "2024-01-02"}])
+
+            def stock_zh_a_hist(self, **_kwargs):
+                return FakeFrame([])
+
+        provider = ExchangeCatalogProvider()
+        for code, expected in (
+            ("600519", "2001-08-27"),
+            ("688001", "2019-07-22"),
+            ("920001", "2024-01-02"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(expected, resolve_product_metadata(
+                    "STOCK", code, ak_module=provider)["inceptionDate"])
+
     def test_resolve_domestic_fund_uses_fund_name_and_nav(self):
         result = resolve_product_metadata("MUTUAL_FUND", "000001", ak_module=FakeAkshare())
 
@@ -388,7 +444,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         self.assertEqual("1.527", result["latestPrice"])
         self.assertEqual("0.027", result["changeAmount"])
         self.assertEqual("1.80", result["changePercent"])
-        self.assertEqual("2026-07-09", result["inceptionDate"])
+        self.assertIsNone(result["inceptionDate"])
         self.assertEqual("混合型-偏股", result["fundTypeRaw"])
         self.assertEqual("HYBRID_FUND", result["fundCategory"])
         self.assertEqual("AKSHARE_FUND_NAME_EM", result["classificationSource"])
@@ -400,6 +456,7 @@ class ProviderNormalizationTest(unittest.TestCase):
         )
 
         self.assertEqual("SGE_SPOT:AU99.99", result["benchmarkCode"])
+        self.assertEqual("2016-04-13", result["inceptionDate"])
         self.assertEqual({"SGE_SPOT:AU99.99": 1.0}, result["benchmarkComponents"])
         self.assertEqual("READY", result["benchmarkResolutionStatus"])
         self.assertIsNone(result["benchmarkResolutionReason"])

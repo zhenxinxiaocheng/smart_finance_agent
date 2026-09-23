@@ -32,6 +32,154 @@ function formatVolume(value) {
   return parsed.toLocaleString('zh-CN')
 }
 
+// 纵轴刻度统一小数位，避免 1.2 和 1.23 混排导致对不齐
+function axisValueFormatter(decimals) {
+  return value => {
+    const parsed = number(value)
+    if (parsed == null || !Number.isFinite(parsed)) return ''
+    return parsed.toFixed(decimals)
+  }
+}
+
+// 净值区间越窄，需要的小数位越多
+function navAxisDecimals(rows) {
+  const values = rows
+    .map(row => number(row.nav ?? row.close))
+    .filter(value => value != null && Number.isFinite(value))
+  if (!values.length) return 2
+  const span = Math.max(...values) - Math.min(...values)
+  if (span >= 0.1) return 2
+  if (span >= 0.01) return 3
+  return 4
+}
+
+const rgbCache = new Map()
+
+// 主题色可能是 hex / rgb / oklch，直接拼 alpha 不可行。
+// 借 canvas 把任意合法 CSS 颜色换算成 RGB，失败时返回 null 由调用方回退原色。
+function parseRgb(color) {
+  const key = String(color ?? '').trim()
+  if (!key) return null
+  if (rgbCache.has(key)) return rgbCache.get(key)
+  let result = null
+  if (typeof document !== 'undefined') {
+    try {
+      const ctx = document.createElement('canvas').getContext('2d')
+      if (ctx) {
+        ctx.fillStyle = '#000'
+        ctx.fillStyle = key
+        ctx.fillRect(0, 0, 1, 1)
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
+        result = { r, g, b }
+      }
+    } catch {
+      result = null
+    }
+  }
+  rgbCache.set(key, result)
+  return result
+}
+
+function withAlpha(color, alpha) {
+  const rgb = parseRgb(color)
+  return rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})` : color
+}
+
+function hueOf(color) {
+  const rgb = parseRgb(color)
+  if (!rgb) return null
+  const r = rgb.r / 255
+  const g = rgb.g / 255
+  const b = rgb.b / 255
+  const max = Math.max(r, g, b)
+  const delta = max - Math.min(r, g, b)
+  if (delta === 0) return 0
+  let hue
+  if (max === r) hue = ((g - b) / delta) % 6
+  else if (max === g) hue = (b - r) / delta + 2
+  else hue = (r - g) / delta + 4
+  hue *= 60
+  return hue < 0 ? hue + 360 : hue
+}
+
+// 均线配色：按与主色的色相距离从远到近排序。
+// 净值线用主色，所以离主色最远的颜色给 MA5，最接近主色的排到最后，避免撞色
+// （比如玫红主题下洋红和主色几乎分不开）。
+function movingAveragePalette(theme, count) {
+  const candidates = (theme.palette || []).slice(1)
+  if (!candidates.length) return (theme.palette || []).slice(0, count)
+  const primaryHue = hueOf(theme.primary)
+  if (primaryHue == null) return candidates
+  const distance = color => {
+    const hue = hueOf(color)
+    if (hue == null) return 180
+    const raw = Math.abs(hue - primaryHue)
+    return Math.min(raw, 360 - raw)
+  }
+  return [...candidates].sort((left, right) => distance(right) - distance(left))
+}
+
+function fundTooltipFormatter(rows, theme) {
+  const row = (name, value, color, strong) => `
+    <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
+      <span style="width:8px;height:8px;border-radius:999px;background:${escapeHtml(color)}"></span>
+      <span style="flex:1;color:${escapeHtml(theme.mutedForeground)}">${escapeHtml(name)}</span>
+      <strong style="font-weight:${strong ? 600 : 500};font-variant-numeric:tabular-nums">${formatPrice(value)}</strong>
+    </div>`
+
+  return params => {
+    const items = Array.isArray(params) ? params : [params]
+    const index = items[0]?.dataIndex
+    const current = rows[index]
+    if (!current) return ''
+    const nav = number(current.nav ?? current.close)
+    const previous = index > 0 ? number(rows[index - 1]?.nav ?? rows[index - 1]?.close) : null
+    const delta = nav != null && previous ? nav / previous - 1 : null
+    const accent = delta == null ? theme.mutedForeground : delta >= 0 ? (theme.positive || '#10b981') : theme.destructive
+
+    return `
+      <div style="min-width:190px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px">
+          <strong>${escapeHtml(current.date || current.dataDate || current.data_date)}</strong>
+          ${delta == null ? '' : `<span style="color:${escapeHtml(accent)};font-weight:600">${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(2)}%</span>`}
+        </div>
+        ${row('单位净值', nav, theme.primary, true)}
+        ${items
+          .filter(item => item.seriesName !== '单位净值' && item.value != null)
+          .map(item => row(item.seriesName, item.value, item.color, false))
+          .join('')}
+      </div>`
+  }
+}
+
+// 缩放滑块统一样式，避免默认那套灰底大方块
+function zoomSlider(theme, overrides = {}) {
+  return {
+    type: 'slider',
+    height: 18,
+    bottom: 10,
+    borderColor: 'transparent',
+    backgroundColor: withAlpha(theme.border, 0.28),
+    fillerColor: withAlpha(theme.primary, 0.12),
+    dataBackground: {
+      lineStyle: { color: theme.border, width: 1, opacity: 0.9 },
+      areaStyle: { color: theme.border, opacity: 0.35 }
+    },
+    selectedDataBackground: {
+      lineStyle: { color: theme.primary, width: 1 },
+      areaStyle: { color: withAlpha(theme.primary, 0.16) }
+    },
+    handleStyle: { color: theme.card, borderColor: theme.border, borderWidth: 1 },
+    moveHandleStyle: { color: theme.border, opacity: 0.55 },
+    handleSize: '78%',
+    moveHandleSize: 4,
+    showDetail: false,
+    brushSelect: false,
+    textStyle: { color: theme.mutedForeground, fontSize: 9 },
+    ...overrides
+  }
+}
+
 function stockTooltipFormatter(rows, theme) {
   return params => {
     const items = Array.isArray(params) ? params : [params]
@@ -74,7 +222,7 @@ function lineSeries(name, data, color, xAxisIndex = 0, yAxisIndex = 0, extra = {
     animation: false,
     lineStyle: { width: 1.35, color },
     itemStyle: { color },
-    emphasis: { focus: 'series' },
+    emphasis: { disabled: true },
     ...extra
   }
 }
@@ -143,6 +291,17 @@ export function buildInvestmentChartOption({
   const activeMAPeriods = Array.isArray(visibleMAs)
     ? availableMAPeriods.filter(period => visibleMAs.includes(period))
     : availableMAPeriods
+  // 十字光标上的数值气泡：默认是硬邦邦的黑色直角块，这里改成圆角小胶囊
+  const axisPointerLabel = {
+    backgroundColor: theme.foreground,
+    color: theme.card,
+    borderRadius: 4,
+    padding: [4, 7],
+    fontSize: 11,
+    shadowBlur: 8,
+    shadowColor: 'rgba(15,23,42,.16)',
+    shadowOffsetY: 1
+  }
   const common = {
     animation: false,
     backgroundColor: 'transparent',
@@ -150,29 +309,79 @@ export function buildInvestmentChartOption({
     tooltip: {
       ...theme.tooltip,
       trigger: 'axis',
-      axisPointer: { type: 'cross', crossStyle: { color: theme.mutedForeground, opacity: 0.55 } },
+      axisPointer: {
+        type: 'cross',
+        crossStyle: { color: theme.mutedForeground, opacity: 0.45, type: 'dashed', width: 1 },
+        label: axisPointerLabel
+      },
       confine: true,
-      formatter: productType === 'MUTUAL_FUND' ? undefined : stockTooltipFormatter(rows, theme)
+      formatter: productType === 'MUTUAL_FUND' ? fundTooltipFormatter(rows, theme) : stockTooltipFormatter(rows, theme)
     },
-    axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: theme.foreground } },
+    axisPointer: { link: [{ xAxisIndex: 'all' }], label: axisPointerLabel },
     toolbox: { show: false }
   }
 
   if (productType === 'MUTUAL_FUND') {
+    const maColors = movingAveragePalette(theme, activeMAPeriods.length)
     const chartSeries = [
       lineSeries('单位净值', rows.map(row => number(row.nav ?? row.close)), theme.primary, 0, 0, {
-        lineStyle: { width: 2, color: theme.primary }, areaStyle: { color: theme.primary, opacity: 0.08 }
+        // 净值线是主角：加粗、渐变面积、轻微投影，其余均线全部退到后面
+        lineStyle: { width: 2.2, color: theme.primary, shadowColor: withAlpha(theme.primary, 0.18), shadowBlur: 8, shadowOffsetY: 3 },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: withAlpha(theme.primary, 0.26) },
+              { offset: 1, color: withAlpha(theme.primary, 0.01) }
+            ]
+          }
+        },
+        z: 3
       }),
       ...activeMAPeriods.map((period, index) =>
-        lineSeries(`MA${period}`, rows.map(row => number(row[`ma${period}`])), palette[(index + 1) % palette.length]))
+        lineSeries(`MA${period}`, rows.map(row => number(row[`ma${period}`])), maColors[index % maColors.length], 0, 0, {
+          lineStyle: { width: 1.1, color: maColors[index % maColors.length], opacity: 0.75 },
+          z: 2
+        }))
     ]
     return {
       ...common,
-      legend: { top: 0, left: 8, itemWidth: 16, itemHeight: 3, textStyle: { color: theme.mutedForeground, fontSize: 10 } },
-      grid: [{ left: 58, right: 24, top: 42, bottom: 54 }],
-      xAxis: [{ type: 'category', data: dates, boundaryGap: false, axisLine: theme.axisLine, axisLabel: theme.axisLabel, axisTick: { show: false } }],
-      yAxis: [{ type: 'value', scale: true, position: 'right', splitLine: theme.splitLine, axisLabel: theme.axisLabel }],
-      dataZoom: [{ type: 'inside', xAxisIndex: [0], start: Math.max(0, 100 - 12000 / Math.max(rows.length, 1)) }, { type: 'slider', xAxisIndex: [0], height: 18, bottom: 12, borderColor: theme.border, textStyle: { color: theme.mutedForeground } }],
+      legend: {
+        top: 0,
+        left: 4,
+        itemWidth: 14,
+        itemHeight: 2,
+        itemGap: 16,
+        textStyle: { color: theme.mutedForeground, fontSize: 11 },
+        inactiveColor: withAlpha(theme.mutedForeground, 0.4)
+      },
+      // 纵轴在右侧，所以左边只留一点余量，把空间让给右侧刻度
+      grid: [{ left: 18, right: 58, top: 38, bottom: 56 }],
+      xAxis: [{
+        type: 'category',
+        data: dates,
+        boundaryGap: false,
+        axisLine: theme.axisLine,
+        axisTick: { show: false },
+        // 日期已经显示在提示框里，这里不再重复画一个压在日期标签上的气泡
+        axisPointer: { label: { show: false } },
+        axisLabel: { ...theme.axisLabel, margin: 10, hideOverlap: true }
+      }],
+      yAxis: [{
+        type: 'value',
+        scale: true,
+        position: 'right',
+        splitNumber: 5,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        splitLine: { ...theme.splitLine, lineStyle: { ...(theme.splitLine?.lineStyle || {}), opacity: 0.5 } },
+        axisLabel: { ...theme.axisLabel, margin: 12, formatter: axisValueFormatter(navAxisDecimals(rows)) }
+      }],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0], start: Math.max(0, 100 - 12000 / Math.max(rows.length, 1)) },
+        zoomSlider(theme, { xAxisIndex: [0] })
+      ],
       series: chartSeries
     }
   }
@@ -243,6 +452,11 @@ export function buildInvestmentChartOption({
     yAxis.push({ type: 'value', gridIndex: 2, scale: true, position: 'right', splitNumber: 2, splitLine: theme.splitLine, axisLabel: { ...theme.axisLabel, fontSize: 9 } })
   }
   const axisIndexes = showIndicator ? [0, 1, 2] : [0, 1]
+  // 日期已经显示在提示框里，只在最底部那条轴上保留十字光标气泡，
+  // 否则多个 grid 会各画一个日期气泡，中间那个还会被裁切
+  xAxis.forEach((axis, index) => {
+    axis.axisPointer = { label: { show: index === xAxis.length - 1 } }
+  })
   return {
     ...common,
     legend: { show: false },
@@ -251,7 +465,7 @@ export function buildInvestmentChartOption({
     yAxis,
     dataZoom: [
       { type: 'inside', xAxisIndex: axisIndexes, start: Math.max(0, 100 - 12000 / Math.max(rows.length, 1)), end: 100 },
-      { type: 'slider', show: rows.length > 1, xAxisIndex: axisIndexes, height: 16, bottom: 8, borderColor: theme.border, textStyle: { color: theme.mutedForeground, fontSize: 9 } }
+      zoomSlider(theme, { show: rows.length > 1, xAxisIndex: axisIndexes, height: 16, bottom: 8 })
     ],
     series: chartSeries
   }

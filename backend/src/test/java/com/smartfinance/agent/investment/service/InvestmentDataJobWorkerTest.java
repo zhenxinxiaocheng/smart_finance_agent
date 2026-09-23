@@ -627,7 +627,7 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void staleCacheReturnsStoredDetailAndQueuesOneExistingDatabaseJob() {
+    void staleCacheReturnsStoredDetailWithoutQueuingHistoryReload() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
@@ -639,7 +639,7 @@ class InvestmentDataJobWorkerTest {
 
         var result = fixture.service().detail(7L, 11L);
         assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "STALE").containsEntry("backgroundRefresh", true);
-        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+        verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
         verifyNoInteractions(fixture.analysisClient());
     }
 
@@ -660,6 +660,57 @@ class InvestmentDataJobWorkerTest {
         var result = fixture.service().detail(7L, 11L);
         assertThat(result.getSourceStatus()).containsEntry("dataState", "READY");
         assertThat(result.getTechnicalAnalysis()).containsEntry("score", 60);
+        verifyNoInteractions(fixture.analysisClient());
+        verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void blockedQualityRowsAreNotPublishedToTheQuoteTable() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        InvestmentDataQualityService.Evaluation blocked = blockedEvaluation();
+        var rows = List.<Map<String, Object>>of(Map.of("data_date", "2026-07-21", "close", "1"));
+        when(fixture.dataQualityService().resolve(any(), any(), any(), anyBoolean()))
+                .thenReturn(new InvestmentDataQualityService.Evaluation(
+                        blocked.snapshot(), blocked.response(), rows, List.of()));
+
+        fixture.service().refresh(7L, 11L);
+
+        verify(fixture.syncWorker(), never()).persistDailyQuotes(any(), any());
+    }
+
+    @Test
+    void deterministicQualityBlockDoesNotRetryTheSameHistory() {
+        InvestmentDataJob job = job(false, 0, "QUEUED");
+        when(jobService.pendingJobs(2)).thenReturn(List.of(job));
+        when(jobService.claim(any(), any(), any(), anyString())).thenReturn(true);
+        when(jobService.claimedSnapshot(eq(91L), anyString())).thenReturn(job);
+        when(historyPreparationService.prepare(job)).thenThrow(
+                new InvestmentHistoryPreparationService.QualityBlockedException());
+
+        worker.scan();
+
+        verify(jobService).markFailed(eq(91L), anyString(), eq(1),
+                contains("完整性校验未通过"), eq(NOW));
+        verify(jobService, never()).markRetryWait(any(), anyString(), anyInt(), any(), anyString(), any());
+    }
+
+    @Test
+    void fullHistoryQualitySnapshotDoesNotInvalidateReadyAnalysisForSameQuotes() {
+        ReadOnlyFixture fixture = readOnlyFixture(20);
+        fixture.service().refresh(7L, 11L);
+        ArgumentCaptor<InvestmentAnalysisSnapshot> saved = ArgumentCaptor.forClass(InvestmentAnalysisSnapshot.class);
+        verify(fixture.snapshotMapper()).insert(saved.capture());
+        when(fixture.snapshotMapper().selectOne(any())).thenReturn(saved.getValue());
+        when(fixture.dataQualityService().latestStatus(any())).thenReturn(Map.of(
+                "datasetVersion", "full-history-dataset",
+                "qualityRuleSetVersion", saved.getValue().getQualityRuleSetVersion(),
+                "decision", "ALLOW", "status", "PASS"));
+        clearInvocations(fixture.analysisClient(), fixture.jobService());
+
+        var detail = fixture.service().detail(7L, 11L);
+
+        assertThat(detail.getSourceStatus()).containsEntry("dataState", "READY");
+        assertThat(detail.getSourceStatus().get("analyzedAt")).isNotNull();
         verifyNoInteractions(fixture.analysisClient());
         verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
     }

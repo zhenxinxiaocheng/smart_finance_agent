@@ -26,6 +26,12 @@
       "aliases": ["中证500", "CSI500", "000905"]
     },
     {
+      "indexCode": "CN_INDEX:000852",
+      "displayName": "中证1000",
+      "market": "CN",
+      "aliases": ["中证1000", "CSI1000", "000852"]
+    },
+    {
       "indexCode": "CN_INDEX:399006",
       "displayName": "创业板指",
       "market": "CN",
@@ -39,6 +45,16 @@
       "fallback": {
         "provider": "SINA_US_INDEX_HISTORY",
         "symbol": ".NDX"
+      }
+    },
+    {
+      "indexCode": "GLOBAL_INDEX:SPX",
+      "displayName": "标普500",
+      "market": "US",
+      "aliases": ["标普500", "S&P500", "S&P 500", "SP500", "SPX"],
+      "fallback": {
+        "provider": "SINA_US_INDEX_HISTORY",
+        "symbol": ".INX"
       }
     }
   ]

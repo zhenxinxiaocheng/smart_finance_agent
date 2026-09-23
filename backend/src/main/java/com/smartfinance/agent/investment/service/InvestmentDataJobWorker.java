@@ -144,8 +144,15 @@ public class InvestmentDataJobWorker {
             }
         } catch (RuntimeException exception) {
             String message = exception.getMessage();
-            retryOrFail(claimedJob, leaseToken, LocalDateTime.now(clock),
-                    message == null || message.isBlank() ? exception.getClass().getSimpleName() : message);
+            String error = message == null || message.isBlank()
+                    ? exception.getClass().getSimpleName() : message;
+            LocalDateTime failureTime = LocalDateTime.now(clock);
+            if (exception instanceof InvestmentHistoryPreparationService.QualityBlockedException) {
+                int attempts = (claimedJob.getAttemptCount() == null ? 0 : claimedJob.getAttemptCount()) + 1;
+                jobService.markFailed(claimedJob.getId(), leaseToken, attempts, truncate(error), failureTime);
+            } else {
+                retryOrFail(claimedJob, leaseToken, failureTime, error);
+            }
         }
     }
 

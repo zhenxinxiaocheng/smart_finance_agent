@@ -23,9 +23,6 @@
             <h2 class="text-balance text-4xl font-semibold leading-tight tracking-normal">
               把记账、分析和投资研究，交给一个会动手的 Agent。
             </h2>
-            <p class="mt-6 text-balance text-base leading-7 text-muted-foreground">
-              截图识别账单，对话完成操作，重要改动都由你确认。
-            </p>
           </div>
 
           <div class="auth-feature-list text-sm">
