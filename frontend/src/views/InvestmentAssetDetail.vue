@@ -327,11 +327,10 @@
             </div>
           </CardContent>
         </Card>
-
       </section>
 
-      <section class="detail-fade-in detail-delay-5 grid gap-4 xl:grid-cols-12">
-        <Card class="shadow-sm xl:col-span-5">
+      <section class="detail-fade-in detail-delay-5">
+        <Card class="shadow-sm">
           <CardHeader><CardTitle class="flex items-center gap-2"><ShieldAlert class="size-4" />财务警告</CardTitle><CardDescription>根据账户与市场风险规则实时生成</CardDescription></CardHeader>
           <CardContent class="space-y-2.5">
             <Alert v-for="warning in detail.financialWarnings || []" :key="warning.code" :variant="warning.severity === 'ERROR' ? 'destructive' : 'default'" class="py-2.5">
@@ -347,54 +346,6 @@
             </p>
           </CardContent>
         </Card>
-
-        <details class="group overflow-hidden rounded-xl border bg-card shadow-sm xl:col-span-7">
-          <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 marker:hidden hover:bg-muted/30">
-            <div><p class="font-semibold">查看详细分析</p><p class="mt-1 text-sm text-muted-foreground">历史回测与 AI 解读</p></div>
-            <ChevronDown class="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-          </summary>
-          <div class="grid gap-4 border-t p-4 md:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
-            <div class="rounded-lg border bg-muted/10 p-4">
-              <div class="flex items-center gap-1"><h3 class="font-semibold">历史回测</h3><InfoTooltip :content="helpText.backtest" label="了解历史回测" /></div>
-              <p class="mt-1 text-xs leading-5 text-muted-foreground">只用当时可见数据，不使用未来信息生成信号</p>
-              <div class="mt-4 space-y-3">
-                <MetricLine label="同方向历史出现" :value="`${activeBacktest.occurrences || 0} 次`" />
-                <MetricLine label="之后上涨占比" :value="percent(activeBacktest.positiveRate, false)" />
-                <MetricLine label="之后下跌占比" :value="percent(activeBacktest.negativeRate, false)" />
-                <MetricLine label="中位前瞻收益" :value="percent(activeBacktest.medianForwardReturn)" :tone="tone(activeBacktest.medianForwardReturn)" />
-                <MetricLine label="最大不利波动" :value="percent(activeBacktest.maximumAdverseExcursion, false)" tone="text-destructive" />
-                <MetricLine label="走势失效占比" :value="percent(activeBacktest.invalidationRate, false)" />
-              </div>
-            </div>
-            <div class="rounded-lg border bg-muted/10 p-4">
-              <h3 class="flex items-center gap-2 font-semibold"><Sparkles class="size-4 text-primary" />AI 解读</h3>
-              <p class="mt-1 text-xs leading-5 text-muted-foreground">只解释已保存的计算结果，不会改写交易结论</p>
-              <div class="mt-4 rounded-lg border bg-background p-4">
-                <p class="text-base font-semibold leading-7">{{ ai.summary || '正在生成简短解读…' }}</p>
-                <div v-if="ai.reasons.length" class="mt-4">
-                  <p class="text-xs font-medium text-muted-foreground">为什么</p>
-                  <ul class="mt-2 space-y-1.5 text-sm leading-6">
-                    <li v-for="reason in ai.reasons" :key="reason">• {{ reason }}</li>
-                  </ul>
-                </div>
-                <div v-if="ai.risks.length" class="mt-4">
-                  <p class="text-xs font-medium text-muted-foreground">需要留意</p>
-                  <ul class="mt-2 space-y-1.5 text-sm leading-6 text-amber-700 dark:text-amber-300">
-                    <li v-for="risk in ai.risks" :key="risk">• {{ risk }}</li>
-                  </ul>
-                </div>
-                <details v-if="ai.technicalDetails" class="mt-4 rounded-md border bg-muted/20">
-                  <summary class="cursor-pointer px-3 py-2 text-xs font-medium">查看技术详情</summary>
-                  <p class="border-t px-3 py-3 text-xs leading-6 text-muted-foreground whitespace-pre-line">{{ ai.technicalDetails }}</p>
-                </details>
-              </div>
-              <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{{ ai.status === 'READY' ? '已保存解读' : '后台生成中' }}</span>
-                <span>最短刷新 {{ ai.cooldownMinutes }} 分钟</span>
-              </div>
-            </div>
-          </div>
-        </details>
       </section>
 
       <InvestmentAssetDrawer v-model:open="editOpen" :asset="asset" @saved="reloadAfterHoldingSaved" />
@@ -418,7 +369,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { returnToSource } from './quant-workbench/navigation'
 import {
   ArrowLeft, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
-  FlaskConical, SlidersHorizontal, Sparkles, TriangleAlert
+  FlaskConical, SlidersHorizontal, TriangleAlert
 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -429,7 +380,6 @@ import { InfoTooltip } from '@/components/ui/tooltip'
 import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
-import { normalizeAiExplanation } from '@/lib/investmentExplanation'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
 import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
@@ -463,8 +413,6 @@ const preferenceOpen = ref(false)
 const asset = computed(() => detail.value?.asset || {})
 const technical = computed(() => detail.value?.technicalAnalysis || {})
 const fundamental = computed(() => detail.value?.fundamentalAnalysis || {})
-const backtest = computed(() => detail.value?.backtestSummary || {})
-const ai = computed(() => normalizeAiExplanation(detail.value?.aiExplanation))
 const disclaimer = computed(() => detail.value?.disclaimer || {})
 const sourceStatus = computed(() => detail.value?.sourceStatus || {})
 const historyJob = computed(() => sourceStatus.value.historyJob || {})
@@ -537,7 +485,6 @@ const fundAdviceMessage = computed(() => ({
 const activeAnalysis = computed(() => technical.value.horizons?.[activeHorizon.value] || technical.value)
 const activeOutlook = computed(() => activeAnalysis.value.outlook || technical.value.outlook || {})
 const activeDirection = computed(() => directionMeta(activeOutlook.value.direction))
-const activeBacktest = computed(() => backtest.value.horizons?.[activeHorizon.value] || backtest.value)
 const activeLevels = computed(() => activeAnalysis.value.levels || technical.value.levels || {})
 const priceZones = computed(() => isFund.value
   ? technical.value.actionZones || {}
@@ -585,7 +532,6 @@ const topMetrics = computed(() => [
 
 const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String, help: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'flex min-w-0 items-center gap-1 text-muted-foreground' }, [h('span', props.label), props.help ? h(InfoTooltip, { content: props.help, label: `了解${props.label}` }) : null]), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
 const MetricMini = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'rounded-lg border bg-muted/20 p-3' }, [h('div', { class: 'text-xs text-muted-foreground' }, props.label), h('div', { class: ['mt-1.5 font-semibold tabular-nums', props.tone] }, props.value)]) })
-const MetricLine = defineComponent({ props: { label: String, value: String, tone: String }, setup: props => () => h('div', { class: 'flex items-center justify-between border-b border-border/60 pb-2 text-sm last:border-0' }, [h('span', { class: 'text-muted-foreground' }, props.label), h('strong', { class: ['tabular-nums', props.tone] }, props.value)]) })
 
 let componentDisposed = false
 let detailRequestToken = 0

@@ -79,17 +79,43 @@ public class InvestmentDataJobService {
     @Transactional
     public InvestmentDataJob ensureRecoveryQueued(Long userId, Long assetId, Long productId,
                                                    String productType) {
+        return ensureRecoveryQueued(userId, assetId, productId, productType, false);
+    }
+
+    @Transactional
+    public InvestmentDataJob ensureRecoveryQueued(Long userId, Long assetId, Long productId,
+                                                   String productType, boolean analysisStale) {
         String jobType = jobTypeFor(productType);
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing == null) {
             return ensureQueued(userId, assetId, productId, productType, false);
         }
-        if (isActive(existing) || !"SUCCEEDED".equals(existing.getStatus())) {
+        if (isActive(existing)) {
             return existing;
         }
-        LocalDate latestQuoteDate = quoteMapper.latestTradeDate(productId);
-        if (latestQuoteDate == null || (existing.getSampleEndDate() != null
-                && !latestQuoteDate.isAfter(existing.getSampleEndDate()))) {
+        LocalDate latestQuoteDate = "FUND_NAV_HISTORY".equals(jobType)
+                ? quoteMapper.latestCompleteFundTradeDate(productId)
+                : quoteMapper.latestTradeDate(productId);
+        if ("PARTIAL".equals(existing.getStatus()) && latestQuoteDate != null
+                && existing.getSampleEndDate() != null
+                && latestQuoteDate.isAfter(existing.getSampleEndDate())) {
+            return requeueTerminal(existing, true);
+        }
+        if (analysisStale && "FUND_NAV_HISTORY".equals(jobType)
+                && "PARTIAL".equals(existing.getStatus())
+                && existing.getSampleEndDate() != null
+                && quoteMapper.hasMissingFundReturns(productId)
+                && !quoteMapper.hasMissingFundReturns(productId, existing.getSampleEndDate())) {
+            // One full retry repairs jobs that counted a newer display-only NAV as incomplete history.
+            if (mapper.requeuePartialRecoveryOnce(existing.getId()) == 1) {
+                return findByAssetAndType(assetId, jobType);
+            }
+        }
+        if (!"SUCCEEDED".equals(existing.getStatus())) {
+            return existing;
+        }
+        if (!analysisStale && (latestQuoteDate == null || (existing.getSampleEndDate() != null
+                && !latestQuoteDate.isAfter(existing.getSampleEndDate())))) {
             return existing;
         }
         return requeueTerminal(existing, false);
@@ -294,7 +320,7 @@ public class InvestmentDataJobService {
             return false;
         }
         return !"FUND_NAV_HISTORY".equals(jobTypeFor(product.getProductType()))
-                || !quoteMapper.hasMissingFundReturns(productId);
+                || !quoteMapper.hasMissingFundReturns(productId, product.getHistoryEndDate());
     }
 
     private static boolean isAssetHistoryJob(String jobType) {

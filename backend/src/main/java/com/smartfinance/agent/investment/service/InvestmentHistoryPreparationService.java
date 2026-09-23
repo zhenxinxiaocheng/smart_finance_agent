@@ -87,7 +87,7 @@ public class InvestmentHistoryPreparationService {
                 || !Boolean.TRUE.equals(product.getHistoryCoverageComplete())
                 || product.getHistoryEndDate() == null
                 || ("FUND_NAV_HISTORY".equals(job.getJobType())
-                    && quoteMapper.hasMissingFundReturns(product.getId()));
+                    && quoteMapper.hasMissingFundReturns(product.getId(), product.getHistoryEndDate()));
         if (initialLoad && knownStartDate(product) == null) {
             AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
                     product.getProductType(), product.getCode());
@@ -122,13 +122,15 @@ public class InvestmentHistoryPreparationService {
                 || evaluation.failedRule("FUND_UNEXPLAINED_NAV_GAPS")) {
             coverageComplete = false;
         }
-        LocalDate latestKnownDate = quoteMapper.latestTradeDate(product.getId());
+        LocalDate latestKnownDate = "FUND_NAV_HISTORY".equals(job.getJobType())
+                ? quoteMapper.latestCompleteFundTradeDate(product.getId())
+                : quoteMapper.latestTradeDate(product.getId());
         if (latestKnownDate != null && sampleEnd != null && latestKnownDate.isAfter(sampleEnd)
                 && !latestKnownDate.equals(LocalDate.now(clock))) {
             coverageComplete = false;
         }
         if ("FUND_NAV_HISTORY".equals(job.getJobType())
-                && quoteMapper.hasMissingFundReturns(product.getId())) {
+                && quoteMapper.hasMissingFundReturns(product.getId(), sampleEnd)) {
             coverageComplete = false;
         }
         product.setHistoryStartDate(earlier(product.getHistoryStartDate(), sampleStart));

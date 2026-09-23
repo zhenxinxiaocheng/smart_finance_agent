@@ -10,14 +10,14 @@ const tooltipSource = readFileSync(new URL('../src/components/ui/tooltip/InfoToo
 const horizonDialogSource = readFileSync(new URL('../src/components/investment/HorizonProfileDialog.vue', import.meta.url), 'utf8')
 const investmentApiSource = readFileSync(new URL('../src/api/investment.js', import.meta.url), 'utf8')
 
-test('投资详情页使用动态路由和完整分析分区', () => {
+test('投资详情页使用动态路由和主要分析分区', () => {
   assert.match(routerSource, /path:\s*'stocks\/:assetId'/)
   assert.match(routerSource, /name:\s*'InvestmentAssetDetail'/)
   assert.match(pageSource, /InvestmentKlineChart/)
   assert.match(pageSource, /专业走势研判/)
   assert.match(pageSource, /多周期分析/)
   assert.match(pageSource, /财务警告/)
-  assert.match(pageSource, /AI 解读/)
+  assert.doesNotMatch(pageSource, /查看详细分析|历史回测与 AI 解读/)
 })
 
 test('分析周期来自后端画像且单资产设置可恢复为全局配置', () => {
@@ -64,7 +64,6 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', ()
 test('复杂模块提供可悬停和键盘访问的问号说明', () => {
   assert.match(pageSource, /InfoTooltip/)
   assert.match(pageSource, /helpText\.technicalOutlook/)
-  assert.match(pageSource, /helpText\.backtest/)
   assert.match(tooltipSource, /TooltipTrigger/)
   assert.match(tooltipSource, /aria-label/)
   assert.match(tooltipSource, /CircleHelp/)
@@ -75,7 +74,6 @@ test('只解释专业指标且说明用户如何阅读结果', () => {
   assert.doesNotMatch(pageSource, /helpText\.financialWarnings/)
   assert.match(investmentHelpText.technicalOutlook, /趋势、动量、量价、波动和价格结构/)
   assert.match(investmentHelpText.priceZones, /买入\/加仓/)
-  assert.match(investmentHelpText.backtest, /样本次数/)
   assert.doesNotMatch(JSON.stringify(investmentHelpText), /方便理解|用通俗中文解释|不保证未来一定上涨/)
 })
 
@@ -90,11 +88,9 @@ test('基金收益窗口由策略结果动态渲染', () => {
   assert.doesNotMatch(pageSource, /fundReturnMetrics|oneMonthReturn|threeMonthReturn|oneYearReturn/)
 })
 
-test('基本面数据要求与 AI 冷却时间由后端结果动态展示', () => {
+test('基本面数据要求由后端结果动态展示', () => {
   assert.match(pageSource, /fundamental\.reason/)
   assert.doesNotMatch(pageSource, /至少需要三期数据和四个有效维度/)
-  assert.match(pageSource, /ai\.cooldownMinutes/)
-  assert.doesNotMatch(pageSource, /最短刷新间隔 30 分钟/)
 })
 
 test('页面和帮助文案不向用户展示分析过程', () => {
@@ -111,8 +107,7 @@ test('技术走势是主结论且旧伪数量模块已删除', () => {
   assert.match(pageSource, /outlookDirectionLabel/)
   assert.match(pageSource, /走势失效条件/)
   assert.doesNotMatch(pageSource, /数量参考|personalized|quantityState|buildQuantityReferenceState/)
-  assert.match(pageSource, /<details/)
-  assert.match(pageSource, /查看详细分析/)
+  assert.doesNotMatch(pageSource, /查看详细分析/)
 })
 
 test('当前周期的关键价位和主要结论来自同一技术走势规则', () => {

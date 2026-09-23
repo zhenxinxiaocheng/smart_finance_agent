@@ -106,7 +106,7 @@ public class QuantBenchmarkProfileService {
                     contractIssue
             );
         }
-        QuantBenchmarkSnapshot cached = cachedSnapshot(profile, startDate, endDate);
+        QuantBenchmarkSnapshot cached = cachedSnapshotForFundAnalysis(profile, endDate);
         if (cached == null) {
             return ResolvedBenchmark.unavailable(
                     profile,
@@ -193,8 +193,8 @@ public class QuantBenchmarkProfileService {
     }
 
     private QuantBenchmarkSnapshot cachedSnapshot(BenchmarkProfile profile,
-                                                   LocalDate startDate,
-                                                   LocalDate endDate) {
+                                                    LocalDate startDate,
+                                                    LocalDate endDate) {
         return snapshotMapper.selectOne(
                 new LambdaQueryWrapper<QuantBenchmarkSnapshot>()
                         .eq(QuantBenchmarkSnapshot::getBenchmarkProfileId, profile.getId())
@@ -204,6 +204,17 @@ public class QuantBenchmarkProfileService {
                         .orderByDesc(QuantBenchmarkSnapshot::getFetchedAt)
                         .last("LIMIT 1")
         );
+    }
+
+    private QuantBenchmarkSnapshot cachedSnapshotForFundAnalysis(BenchmarkProfile profile,
+                                                                  LocalDate endDate) {
+        return snapshotMapper.selectOne(new LambdaQueryWrapper<QuantBenchmarkSnapshot>()
+                .eq(QuantBenchmarkSnapshot::getBenchmarkProfileId, profile.getId())
+                .eq(QuantBenchmarkSnapshot::getBenchmarkCode, profile.getBenchmarkCode())
+                .le(QuantBenchmarkSnapshot::getSampleStartDate, endDate)
+                .ge(QuantBenchmarkSnapshot::getSampleEndDate, endDate)
+                .orderByDesc(QuantBenchmarkSnapshot::getFetchedAt)
+                .last("LIMIT 1"));
     }
 
     private QuantBenchmarkSnapshot persistSnapshot(BenchmarkProfile profile,

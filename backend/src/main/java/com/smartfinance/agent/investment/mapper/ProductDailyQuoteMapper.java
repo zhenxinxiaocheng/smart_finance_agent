@@ -19,9 +19,27 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
     }
 
     default boolean hasMissingFundReturns(Long productId) {
-        return selectCount(new LambdaQueryWrapper<ProductDailyQuote>()
+        return hasMissingFundReturns(productId, null);
+    }
+
+    default boolean hasMissingFundReturns(Long productId, LocalDate throughDate) {
+        LambdaQueryWrapper<ProductDailyQuote> query = new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, productId)
-                .and(query -> query.isNull(ProductDailyQuote::getTotalReturnIndex)
-                        .or().le(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO))) > 0;
+                .and(nested -> nested.isNull(ProductDailyQuote::getTotalReturnIndex)
+                        .or().le(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO));
+        if (throughDate != null) {
+            query.le(ProductDailyQuote::getTradeDate, throughDate);
+        }
+        return selectCount(query) > 0;
+    }
+
+    default LocalDate latestCompleteFundTradeDate(Long productId) {
+        ProductDailyQuote latest = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
+                .select(ProductDailyQuote::getTradeDate)
+                .eq(ProductDailyQuote::getProductId, productId)
+                .gt(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO)
+                .orderByDesc(ProductDailyQuote::getTradeDate)
+                .last("LIMIT 1"));
+        return latest == null ? null : latest.getTradeDate();
     }
 }

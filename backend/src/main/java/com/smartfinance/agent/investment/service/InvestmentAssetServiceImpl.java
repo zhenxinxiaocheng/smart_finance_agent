@@ -484,6 +484,11 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 .eq(ProductDailyQuote::getProductId, product.getId())
                 .eq(ProductDailyQuote::getTradeDate, resolved.dataDate())
                 .eq(ProductDailyQuote::getAdjustType, runtimeProperties.getDataQuality().getRealtimeAdjustType()));
+        if (quote != null && "MUTUAL_FUND".equals(product.getProductType())
+                && quote.getTotalReturnIndex() != null
+                && quote.getTotalReturnIndex().signum() > 0) {
+            return;
+        }
         if (quote == null) {
             quote = new ProductDailyQuote();
             quote.setProductId(product.getId());
