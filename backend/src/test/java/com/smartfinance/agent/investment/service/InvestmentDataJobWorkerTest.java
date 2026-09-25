@@ -433,7 +433,7 @@ class InvestmentDataJobWorkerTest {
         assertThat(detail.getSourceStatus()).containsEntry("historyJob", Map.of());
         assertThat(detail.getPersonalizedAction()).isEmpty();
         verifyNoInteractions(fixture.analysisClient());
-        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+        verify(fixture.jobService()).ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
     }
 
     @Test
@@ -587,6 +587,27 @@ class InvestmentDataJobWorkerTest {
                 .containsEntry("records", benchmarkRecords);
     }
 
+    @Test
+    void navWithoutTotalReturnIndexCannotProduceFundReturns() {
+        ReadOnlyFixture fixture = readOnlyFixture(30, "MUTUAL_FUND");
+        ProductDailyQuote navOnly = new ProductDailyQuote();
+        navOnly.setProductId(21L);
+        navOnly.setTradeDate(LocalDate.of(2026, 7, 1));
+        navOnly.setAdjustType("NONE");
+        navOnly.setClosePrice(java.math.BigDecimal.TEN);
+        when(fixture.quoteMapper().selectList(any())).thenReturn(List.of(navOnly));
+
+        InvestmentAssetDetailResponse detail = fixture.service().refresh(7L, 11L);
+
+        assertThat(detail.getSourceStatus())
+                .containsEntry("dataState", "BLOCKED")
+                .containsEntry("analysisStatus", "BLOCKED")
+                .containsEntry("quoteStatus", "INSUFFICIENT");
+        assertThat(detail.getTechnicalAnalysis())
+                .containsEntry("status", "BLOCKED");
+        verify(fixture.analysisClient(), never()).fundAnalysis(any(), anyString(), any(), anyString(), any());
+    }
+
     private static InvestmentHistoryPreparationService.PreparationResult prepared(int count) {
         return new InvestmentHistoryPreparationService.PreparationResult(count,
                 LocalDate.of(2001, 8, 27), LocalDate.of(2001, 8, 27),
@@ -625,6 +646,9 @@ class InvestmentDataJobWorkerTest {
     void staleCacheReturnsStoredDetailWithoutQueuingHistoryReload() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
+        var readyStatus = new LinkedHashMap<>(response.getSourceStatus());
+        readyStatus.put("dataState", "READY");
+        response.setSourceStatus(readyStatus);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
@@ -670,7 +694,7 @@ class InvestmentDataJobWorkerTest {
 
         fixture.service().refresh(7L, 11L);
 
-        verify(fixture.syncWorker(), never()).persistDailyQuotes(any(), any());
+        verifyNoInteractions(fixture.syncWorker());
     }
 
     @Test
@@ -843,6 +867,7 @@ class InvestmentDataJobWorkerTest {
         AnalysisServiceClient analysisClient = mock(AnalysisServiceClient.class);
         InvestmentDataQualityService dataQualityService = mock(InvestmentDataQualityService.class);
         InvestmentSyncWorker syncWorker = mock(InvestmentSyncWorker.class);
+        UnifiedMarketDataIngestionService ingestion = mock(UnifiedMarketDataIngestionService.class);
         WealthService wealthService = mock(WealthService.class);
         FinancialProfileMapper financialProfileMapper = mock(FinancialProfileMapper.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
@@ -874,6 +899,7 @@ class InvestmentDataJobWorkerTest {
             quote.setTradeDate(java.time.LocalDate.of(2026, 6, 1).plusDays(index));
             quote.setAdjustType("MUTUAL_FUND".equals(productType) ? "NONE" : "QFQ");
             quote.setClosePrice(java.math.BigDecimal.TEN);
+            if ("MUTUAL_FUND".equals(productType)) quote.setTotalReturnIndex(java.math.BigDecimal.TEN);
             return quote;
         }).toList();
         when(assetService.get(7L, 11L)).thenReturn(asset);
@@ -891,6 +917,15 @@ class InvestmentDataJobWorkerTest {
         when(wealthService.overview(7L)).thenReturn(new WealthOverviewResponse());
         when(dataQualityService.resolve(eq(product), any(), any(), anyBoolean()))
                 .thenReturn(allowEvaluation(quoteCount));
+        when(ingestion.ingest(eq(product), any(), any(), anyString(), any(), anyBoolean()))
+                .thenAnswer(call -> {
+                    InvestmentDataQualityService.Evaluation evaluation = dataQualityService.resolve(
+                            product, call.getArgument(1), call.getArgument(2), call.getArgument(5));
+                    if (evaluation.blocked())
+                        throw new UnifiedMarketDataIngestionService.QualityBlockedException(evaluation);
+                    return new UnifiedMarketDataIngestionService.Result(quoteCount, null, null,
+                            true, evaluation.datasetVersion(), "COMPLETE", evaluation);
+                });
         List<Map<String, Object>> records = allowEvaluation(quoteCount).records();
         Map<String, Object> technical = new LinkedHashMap<>();
         technical.put("status", "READY");
@@ -912,7 +947,7 @@ class InvestmentDataJobWorkerTest {
 
         InvestmentAnalysisServiceImpl service = new InvestmentAnalysisServiceImpl(
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
-                runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
+                runtimeProperties, snapshotMapper, analysisClient, dataQualityService, ingestion,
                 wealthService, financialProfileMapper,
                 new ObjectMapper().findAndRegisterModules(), jobService,
                 warningEngine,
@@ -924,7 +959,7 @@ class InvestmentDataJobWorkerTest {
                 syncWorker,
                 snapshotMapper,
                 dataQualityService,
-                benchmarkProfileService, detailCache, assetService, assetMapper
+                benchmarkProfileService, detailCache, assetService, assetMapper, quoteMapper
         );
     }
 
@@ -1021,7 +1056,8 @@ class InvestmentDataJobWorkerTest {
                                    InvestmentDataQualityService dataQualityService,
                                    QuantBenchmarkProfileService benchmarkProfileService,
                                    InvestmentDetailCacheService detailCache, InvestmentAssetService assetService,
-                                   com.smartfinance.agent.investment.mapper.InvestmentAssetMapper assetMapper) {
+                                   com.smartfinance.agent.investment.mapper.InvestmentAssetMapper assetMapper,
+                                   ProductDailyQuoteMapper quoteMapper) {
     }
 
     private static final class MutableClock extends Clock {

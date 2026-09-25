@@ -27,6 +27,7 @@ class MarketDataInfrastructureTest {
     private MarketDataService market;
     private InvestmentProductMapper products;
     private AnalysisServiceClient analysis;
+    private UnifiedMarketDataIngestionService ingestion;
 
     @BeforeEach
     void setup() throws Exception {
@@ -36,11 +37,16 @@ class MarketDataInfrastructureTest {
         db = new JdbcTemplate(source);
         products = mock(InvestmentProductMapper.class);
         analysis = mock(AnalysisServiceClient.class);
-        sync = new MarketDataSyncService(db, products, analysis, mock(InvestmentDataQualityService.class),
+        ingestion = mock(UnifiedMarketDataIngestionService.class);
+        sync = new MarketDataSyncService(db, products, analysis, ingestion,
+                new QuoteSeriesCoverageService(db),
+                new QuoteSeriesPolicy(InvestmentSyncWorkerTest.runtimeProperties(14)),
                 new DataSourceTransactionManager(source), true, 10, 90);
         market = new MarketDataService(db, analysis);
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
                 + "VALUES(10,'STOCK','NASDAQ','TEST','Test Corp','USD','ACTIVE')");
+        db.update("INSERT INTO market_data_scope_product(product_id,scope_group,updated_at) "
+                + "VALUES(10,'US',CURRENT_TIMESTAMP)");
         var product = new InvestmentProduct();
         product.setId(10L); product.setProductType("STOCK"); product.setMarket("NASDAQ");
         product.setCode("TEST"); product.setStatus("ACTIVE");
@@ -52,6 +58,43 @@ class MarketDataInfrastructureTest {
 
     private Map<String, Object> quote(LocalDate day) {
         return Map.of("data_date", day.toString(), "close", "101.50", "volume", "1000");
+    }
+
+    @Test
+    void migrationKeepsExistingQuotesAndSkipsPersonalMarketJobs() throws Exception {
+        Path legacy = Files.createTempFile("market-data-legacy-", ".db");
+        try {
+            var source = new DriverManagerDataSource("jdbc:sqlite:" + legacy.toAbsolutePath(), "", "");
+            Flyway.configure().dataSource(source).locations("classpath:db/migration/sqlite")
+                    .target("3").load().migrate();
+            JdbcTemplate old = new JdbcTemplate(source);
+            old.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status,"
+                    + "inception_date) VALUES(101,'MUTUAL_FUND','FUND_CN','000001','Personal','CNY',"
+                    + "'ACTIVE','2020-01-01')");
+            old.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,"
+                    + "total_return_index,adjust_type,source) VALUES"
+                    + "(101,'2024-01-02',1.5,1.8,'NONE','TEST'),"
+                    + "(101,'2024-01-03',1.6,NULL,'NONE','TEST')");
+            old.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
+                    + "attempt_count,updated_at) VALUES(101,'BACKFILL','QUEUED','2020-01-01',"
+                    + "'2024-01-03',0,CURRENT_TIMESTAMP)");
+
+            Flyway.configure().dataSource(source).locations("classpath:db/migration/sqlite")
+                    .load().migrate();
+
+            assertThat(old.queryForObject("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=101",
+                    Integer.class)).isEqualTo(2);
+            assertThat(old.queryForObject("SELECT status FROM market_data_job WHERE product_id=101",
+                    String.class)).isEqualTo("SKIPPED");
+            assertThat(old.queryForList("SELECT dataset_type,observations,status,reason "
+                    + "FROM product_quote_coverage WHERE product_id=101 ORDER BY dataset_type"))
+                    .extracting(row -> row.get("dataset_type") + ":" + row.get("observations")
+                            + ":" + row.get("status") + ":" + row.get("reason"))
+                    .containsExactly("NAV:2:INCOMPLETE:LEGACY_UNVERIFIED",
+                            "TOTAL_RETURN_INDEX:1:INCOMPLETE:LEGACY_UNVERIFIED");
+        } finally {
+            Files.deleteIfExists(legacy);
+        }
     }
 
     @Test
@@ -69,29 +112,104 @@ class MarketDataInfrastructureTest {
     }
 
     @Test
-    void backfillPersistsCheckpointAndSkipsDuplicateQuotesOnReplay() {
+    void catalogRefreshRemovesProductsOutsideTheCurrentResearchScope() {
+        db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
+                + "attempt_count,updated_at) VALUES(10,'BACKFILL','QUEUED',"
+                + "'2024-01-01','2024-12-31',0,CURRENT_TIMESTAMP)");
+        when(analysis.marketCatalog("US")).thenReturn(List.of(Map.of(
+                "productType", "ETF", "market", "NYSE", "exchange", "NYSE",
+                "code", "SPY", "name", "SPDR S&P 500 ETF", "currency", "USD",
+                "source", "AKSHARE_US_SPOT_CURATED_ETF")));
+
+        sync.importCatalog("US");
+
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_scope_product WHERE product_id=10",
+                Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=10",
+                String.class)).isEqualTo("SKIPPED");
+    }
+
+    @Test
+    void catalogBackfillDoesNotSweepUnrelatedPersonalProducts() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(11,'MUTUAL_FUND','FUND_CN','000001','Personal Fund','CNY','ACTIVE')");
+        when(analysis.marketCatalog("INDEX")).thenReturn(List.of(Map.of(
+                "productType", "INDEX", "market", "CN_INDEX", "code", "CN_INDEX:000300",
+                "name", "CSI 300", "currency", "CNY", "source", "INDEX_WATCHLIST_REGISTRY")));
+
+        sync.importCatalog("INDEX");
+
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_job WHERE product_id=11", Integer.class))
+                .isZero();
+    }
+
+    @Test
+    void fundNavAndTotalReturnHaveIndependentCoverage() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(11,'MUTUAL_FUND','FUND_CN','000001','Personal Fund','CNY','ACTIVE')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(11,'2024-01-02',1.5,'NONE','TEST')");
+        QuoteSeriesCoverageService coverage = new QuoteSeriesCoverageService(db);
+        LocalDate day = LocalDate.of(2024, 1, 2);
+
+        coverage.record(11L, "NONE", "NAV", day, day, true, "TEST", "v1", null);
+        coverage.record(11L, "NONE", "TOTAL_RETURN_INDEX", day, day, true, "TEST", "v1", null);
+
+        assertThat(coverage.find(11L, "NONE", "NAV").status()).isEqualTo("COMPLETE");
+        assertThat(coverage.find(11L, "NONE", "TOTAL_RETURN_INDEX").status()).isEqualTo("INCOMPLETE");
+    }
+
+    @Test
+    void coverageDoesNotClaimCompleteWhenProviderStopsBeforeTarget() {
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(10,'2024-01-02',101.5,'NONE','TEST')");
+        QuoteSeriesCoverageService.Coverage state = new QuoteSeriesCoverageService(db).record(
+                10L, "NONE", "PRICE", LocalDate.of(2024, 1, 2),
+                LocalDate.of(2024, 3, 1), true, "TEST", "v1", null);
+        assertThat(state.status()).isEqualTo("INCOMPLETE");
+        assertThat(state.reason()).isEqualTo("PROVIDER_END_BEFORE_TARGET");
+        QuoteSeriesCoverageService.Coverage narrower = new QuoteSeriesCoverageService(db).record(
+                10L, "NONE", "PRICE", LocalDate.of(2024, 1, 2),
+                LocalDate.of(2024, 1, 10), true, "TEST", "v2", null);
+        assertThat(narrower.targetDate()).isEqualTo(LocalDate.of(2024, 3, 1));
+        assertThat(narrower.status()).isEqualTo("INCOMPLETE");
+    }
+
+    @Test
+    void marketWorkerDelegatesQuotesToUnifiedIngestion() {
         sync.queueBackfill(10L);
-        var job = db.queryForMap("SELECT start_date FROM market_data_job WHERE product_id=10 AND job_type='BACKFILL'");
-        LocalDate first = LocalDate.parse(job.get("start_date").toString());
-        when(analysis.marketDailyQuotes(any(), any(), any(), eq("NONE")))
-                .thenReturn(Map.of("provider", "TEST", "adapterVersion", "1",
-                        "records", List.of(quote(first.plusDays(1)))));
+        sync.processNext();
+
+        verify(ingestion).ingest(eq(products.selectById(10L)), any(), any(), eq("NONE"), any());
+        verify(ingestion).ingest(eq(products.selectById(10L)), any(), any(), eq("QFQ"), any());
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=10",
+                Integer.class)).isZero();
+    }
+
+    @Test
+    void backfillPersistsCheckpointWithoutDirectQuoteWrites() {
+        sync.queueBackfill(10L);
         sync.processNext();
         sync.processNext();
-        assertThat(db.queryForObject("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=10", Integer.class)).isEqualTo(1);
+        verify(ingestion, times(2)).ingest(any(), any(), any(), eq("NONE"), any());
+        verify(ingestion, times(2)).ingest(any(), any(), any(), eq("QFQ"), any());
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=10", Integer.class)).isZero();
         assertThat(db.queryForObject("SELECT checkpoint_date FROM market_data_job WHERE product_id=10", String.class)).isNotNull();
     }
 
     @Test
     void dailyUpdateStartsAfterLastStoredDateAndDoesNotRequeueSameTarget() {
         LocalDate target = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
-        db.update("UPDATE investment_product SET history_end_date=? WHERE id=10", target.minusDays(1));
-        when(analysis.marketDailyQuotes(any(), eq(target), eq(target), eq("NONE")))
-                .thenReturn(Map.of("provider", "TEST", "adapterVersion", "1", "records", List.of(quote(target))));
+        seedCoverage(target.minusDays(1));
+        when(ingestion.ingest(any(), eq(target), eq(target), any(), any()))
+                .thenAnswer(invocation -> {
+                    seedCoverage(target);
+                    return new UnifiedMarketDataIngestionService.Result(2, target, target, true, "v1", "COMPLETE");
+                });
         assertThat(sync.queueDaily(java.util.Set.of("NASDAQ"), target)).isEqualTo(1);
         sync.processNext();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=10", String.class)).isEqualTo("SUCCEEDED");
-        verify(analysis).marketDailyQuotes(any(), eq(target), eq(target), eq("NONE"));
+        verify(ingestion).ingest(any(), eq(target), eq(target), eq("NONE"), any());
         assertThat(sync.queueDaily(java.util.Set.of("NASDAQ"), target)).isZero();
     }
 
@@ -99,7 +217,7 @@ class MarketDataInfrastructureTest {
     void dailyUpdateWaitsForBackfillToFinish() {
         LocalDate target = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
         sync.queueBackfill(10L);
-        db.update("UPDATE investment_product SET history_end_date=? WHERE id=10", target.minusDays(2));
+        seedCoverage(target.minusDays(2));
         assertThat(sync.queueDaily(java.util.Set.of("NASDAQ"), target)).isZero();
         assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_job WHERE product_id=10 "
                 + "AND job_type='DAILY_UPDATE'", Integer.class)).isZero();
@@ -108,17 +226,28 @@ class MarketDataInfrastructureTest {
     @Test
     void providerFailureWaitsThenRetriesWithoutAdvancingCheckpoint() {
         LocalDate target = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
-        db.update("UPDATE investment_product SET history_end_date=? WHERE id=10", target.minusDays(1));
+        seedCoverage(target.minusDays(1));
         sync.queueDaily(java.util.Set.of("NASDAQ"), target);
-        when(analysis.marketDailyQuotes(any(), any(), any(), eq("NONE")))
+        when(ingestion.ingest(any(), any(), any(), eq("NONE"), any()))
                 .thenThrow(new IllegalStateException("provider unavailable"))
-                .thenReturn(Map.of("provider", "TEST", "adapterVersion", "1", "records", List.of(quote(target))));
+                .thenReturn(new UnifiedMarketDataIngestionService.Result(2, target, target,
+                        true, "v1", "COMPLETE"));
         sync.processNext();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=10", String.class)).isEqualTo("RETRY_WAIT");
         assertThat(db.queryForObject("SELECT checkpoint_date FROM market_data_job WHERE product_id=10", String.class)).isNull();
         db.update("UPDATE market_data_job SET next_retry_at=? WHERE product_id=10", "2000-01-01T00:00:00");
         sync.processNext();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=10", String.class)).isEqualTo("SUCCEEDED");
+    }
+
+    private void seedCoverage(LocalDate day) {
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(10,?,101.5,'NONE','TEST') ON CONFLICT(product_id,trade_date,adjust_type) DO NOTHING", day);
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(10,?,101.5,'QFQ','TEST') ON CONFLICT(product_id,trade_date,adjust_type) DO NOTHING", day);
+        QuoteSeriesCoverageService state = new QuoteSeriesCoverageService(db);
+        state.record(10L, "NONE", "PRICE", day, day, true, "TEST", "v1", null);
+        state.record(10L, "QFQ", "PRICE", day, day, true, "TEST", "v1", null);
     }
 
     @Test

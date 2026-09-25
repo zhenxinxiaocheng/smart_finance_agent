@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class InvestmentRuntimePropertiesTest {
 
@@ -68,5 +69,11 @@ class InvestmentRuntimePropertiesTest {
         assertThat(properties.getMarket().getStockActiveFreshnessMs()).isEqualTo(2500);
         assertThat(properties.getMarket().getFundActiveFreshnessMs()).isEqualTo(20000);
         assertThat(properties.getMarket().getActiveRefreshConcurrency()).isEqualTo(4);
+
+        properties.getDataQuality().setStockAdjustType("NONE");
+        assertThatThrownBy(properties::validate).hasMessageContaining("stock-adjust-type 必须为 QFQ");
+        properties.getDataQuality().setStockAdjustType("QFQ");
+        properties.getDataQuality().setFundAdjustType("QFQ");
+        assertThatThrownBy(properties::validate).hasMessageContaining("fund-adjust-type 必须为 NONE");
     }
 }

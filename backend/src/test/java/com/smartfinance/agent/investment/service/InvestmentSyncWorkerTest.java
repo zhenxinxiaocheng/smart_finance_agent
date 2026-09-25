@@ -24,16 +24,11 @@ class InvestmentSyncWorkerTest {
     void persistDailyQuotes_shouldSaveEveryReturnedTradingDay() {
         ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
         when(quoteMapper.selectOne(any(Wrapper.class))).thenReturn(null);
-        InvestmentSyncWorker worker = new InvestmentSyncWorker(
-                mock(InvestmentSyncBatchMapper.class), mock(InvestmentPositionMapper.class),
-                mock(InvestmentProductMapper.class), quoteMapper, mock(DailyExchangeRateMapper.class),
-                mock(AnalysisServiceClient.class), mock(InvestmentDataQualityService.class),
-                mock(InvestmentHorizonService.class),
-                horizonProperties(2500), runtimeProperties(14));
+        ProductDailyQuotePersistenceService writer = new ProductDailyQuotePersistenceService(quoteMapper);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(88L);
 
-        ProductDailyQuote latest = worker.persistDailyQuotes(product, Map.of(
+        ProductDailyQuote latest = writer.persistHistory(product, Map.of(
                 "provider", "AKSHARE",
                 "adapterVersion", "1",
                 "records", List.of(
@@ -41,7 +36,7 @@ class InvestmentSyncWorkerTest {
                         quote("2026-07-11", "10.50"),
                         quote("2026-07-14", "10.80")
                 )
-        ));
+        ), "QFQ");
 
         verify(quoteMapper, times(3)).insert(any(ProductDailyQuote.class));
         assertThat(latest.getTradeDate().toString()).isEqualTo("2026-07-14");
@@ -63,24 +58,57 @@ class InvestmentSyncWorkerTest {
     void persistDailyQuotes_shouldUseCanonicalNavForMutualFunds() {
         ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
         when(quoteMapper.selectOne(any(Wrapper.class))).thenReturn(null);
-        InvestmentSyncWorker worker = new InvestmentSyncWorker(
-                mock(InvestmentSyncBatchMapper.class), mock(InvestmentPositionMapper.class),
-                mock(InvestmentProductMapper.class), quoteMapper, mock(DailyExchangeRateMapper.class),
-                mock(AnalysisServiceClient.class), mock(InvestmentDataQualityService.class),
-                mock(InvestmentHorizonService.class),
-                horizonProperties(2500), runtimeProperties(14));
+        ProductDailyQuotePersistenceService writer = new ProductDailyQuotePersistenceService(quoteMapper);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(89L);
         product.setProductType("MUTUAL_FUND");
 
-        ProductDailyQuote latest = worker.persistDailyQuotes(product, Map.of(
+        ProductDailyQuote latest = writer.persistHistory(product, Map.of(
                 "provider", "AKSHARE",
                 "adapterVersion", "1",
                 "records", List.of(Map.of("data_date", "2026-07-17", "nav", "1.2511"))
-        ));
+        ), "NONE");
 
         assertThat(latest.getClosePrice()).isEqualByComparingTo("1.2511");
         assertThat(latest.getAdjustType()).isEqualTo("NONE");
+    }
+
+    @Test
+    void navOnlyRefreshPreservesExistingFundTotalReturnIndex() {
+        ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
+        ProductDailyQuote existing = new ProductDailyQuote();
+        existing.setId(17L);
+        existing.setTotalReturnIndex(new java.math.BigDecimal("1.4321"));
+        when(quoteMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        ProductDailyQuotePersistenceService writer = new ProductDailyQuotePersistenceService(quoteMapper);
+        InvestmentProduct product = new InvestmentProduct();
+        product.setId(89L);
+        product.setProductType("MUTUAL_FUND");
+
+        writer.persistHistory(product, Map.of("provider", "AKSHARE", "adapterVersion", "1",
+                "records", List.of(Map.of("data_date", "2026-07-17", "nav", "1.2511"))), "NONE");
+
+        assertThat(existing.getTotalReturnIndex()).isEqualByComparingTo("1.4321");
+        verify(quoteMapper).updateById(existing);
+    }
+
+    @Test
+    void incomingReturnIndexDoesNotReplaceAnExistingValidFundIndex() {
+        ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
+        ProductDailyQuote existing = new ProductDailyQuote();
+        existing.setId(17L);
+        existing.setTotalReturnIndex(new java.math.BigDecimal("1.4321"));
+        when(quoteMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        InvestmentProduct product = new InvestmentProduct();
+        product.setId(89L);
+        product.setProductType("MUTUAL_FUND");
+
+        new ProductDailyQuotePersistenceService(quoteMapper).persistHistory(product,
+                Map.of("provider", "AKSHARE", "adapterVersion", "1", "records",
+                        List.of(Map.of("data_date", "2026-07-17", "nav", "1.2511",
+                                "total_return_index", "1.9999"))), "NONE");
+
+        assertThat(existing.getTotalReturnIndex()).isEqualByComparingTo("1.4321");
     }
 
     @Test
@@ -93,8 +121,8 @@ class InvestmentSyncWorkerTest {
         InvestmentSyncWorker worker = new InvestmentSyncWorker(
                 mock(InvestmentSyncBatchMapper.class), mock(InvestmentPositionMapper.class),
                 mock(InvestmentProductMapper.class), mock(ProductDailyQuoteMapper.class),
-                mock(DailyExchangeRateMapper.class), mock(AnalysisServiceClient.class),
-                mock(InvestmentDataQualityService.class), horizonService,
+                mock(UnifiedMarketDataIngestionService.class), mock(DailyExchangeRateMapper.class),
+                mock(AnalysisServiceClient.class), horizonService,
                 horizonProperties(2500), runtimeProperties(14));
 
         int requiredHistoryDays = worker.requiredHistoryDays(7L);
@@ -108,8 +136,8 @@ class InvestmentSyncWorkerTest {
         InvestmentSyncWorker worker = new InvestmentSyncWorker(
                 mock(InvestmentSyncBatchMapper.class), mock(InvestmentPositionMapper.class),
                 mock(InvestmentProductMapper.class), mock(ProductDailyQuoteMapper.class),
-                mock(DailyExchangeRateMapper.class), mock(AnalysisServiceClient.class),
-                mock(InvestmentDataQualityService.class), mock(InvestmentHorizonService.class),
+                mock(UnifiedMarketDataIngestionService.class), mock(DailyExchangeRateMapper.class),
+                mock(AnalysisServiceClient.class), mock(InvestmentHorizonService.class),
                 horizonProperties(2500), runtimeProperties(21));
 
         assertThat(worker.fxStartDate(java.time.LocalDate.of(2026, 7, 16)))

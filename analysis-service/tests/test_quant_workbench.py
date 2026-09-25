@@ -36,6 +36,7 @@ def request(asset_class="STOCK"):
             days.append(day.isoformat())
         day += timedelta(days=1)
     bars = [{"date": day, "open": 10 + i * .025, "close": 10.01 + i * .025,
+             "researchClose": 10.01 + i * .025,
              "volume": 1000000, "adjustType": "NONE"} for i, day in enumerate(days)]
     return {"kind": "BACKTEST", "startDate": days[65], "endDate": days[-1],
             "config": {"strategyType": "TREND", "assetClass": asset_class,
@@ -224,6 +225,14 @@ def test_adjusted_execution_prices_are_rejected():
     with pytest.raises(EngineError) as error:
         execute(payload)
     assert error.value.code == "RAW_PRICE_REQUIRED"
+
+
+def test_missing_research_series_is_rejected_without_raw_price_fallback():
+    payload = request()
+    del payload["assets"][0]["bars"][0]["researchClose"]
+    with pytest.raises(EngineError) as error:
+        execute(payload)
+    assert error.value.code == "RESEARCH_PRICE_REQUIRED"
 
 
 def test_unverified_corporate_actions_do_not_get_qualified():

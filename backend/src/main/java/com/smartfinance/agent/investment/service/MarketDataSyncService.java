@@ -5,6 +5,7 @@ import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -12,7 +13,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.LocalDate;
@@ -31,28 +31,48 @@ public class MarketDataSyncService {
     private final JdbcTemplate db;
     private final InvestmentProductMapper products;
     private final AnalysisServiceClient analysis;
-    private final InvestmentDataQualityService quality;
+    private final UnifiedMarketDataIngestionService ingestion;
+    private final QuoteSeriesCoverageService coverage;
+    private final QuoteSeriesPolicy seriesPolicy;
     private final TransactionTemplate transaction;
     private final boolean enabled;
     private final int historyYears;
     private final int chunkDays;
+    private final Set<String> usStockSymbols;
 
+    @Autowired
     public MarketDataSyncService(JdbcTemplate db, InvestmentProductMapper products,
-                                 AnalysisServiceClient analysis, InvestmentDataQualityService quality,
-                                 PlatformTransactionManager manager,
-                                 @Value("${market-data.sync.enabled:true}") boolean enabled,
-                                 @Value("${market-data.history-years:10}") int historyYears,
-                                 @Value("${market-data.chunk-days:90}") int chunkDays) {
+                                  AnalysisServiceClient analysis, UnifiedMarketDataIngestionService ingestion,
+                                  QuoteSeriesCoverageService coverage, QuoteSeriesPolicy seriesPolicy,
+                                  PlatformTransactionManager manager,
+                                  @Value("${market-data.sync.enabled:true}") boolean enabled,
+                                  @Value("${market-data.history-years:50}") int historyYears,
+                                  @Value("${market-data.chunk-days:90}") int chunkDays,
+                                  @Value("${market-data.scope.us-stock-symbols:}") String usStockSymbols) {
         this.db = db;
         this.products = products;
         this.analysis = analysis;
-        this.quality = quality;
+        this.ingestion = ingestion;
+        this.coverage = coverage;
+        this.seriesPolicy = seriesPolicy;
         this.transaction = new TransactionTemplate(manager);
         this.enabled = enabled;
-        if (historyYears < 1 || historyYears > 30 || chunkDays < 7 || chunkDays > 365)
+        if (historyYears < 1 || historyYears > 100 || chunkDays < 7 || chunkDays > 365)
             throw new IllegalArgumentException("市场数据同步窗口配置无效");
         this.historyYears = historyYears;
         this.chunkDays = chunkDays;
+        this.usStockSymbols = java.util.Arrays.stream(usStockSymbols.split(","))
+                .map(String::trim).filter(symbol -> !symbol.isEmpty())
+                .map(String::toUpperCase).collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    MarketDataSyncService(JdbcTemplate db, InvestmentProductMapper products,
+                          AnalysisServiceClient analysis, UnifiedMarketDataIngestionService ingestion,
+                          QuoteSeriesCoverageService coverage, QuoteSeriesPolicy seriesPolicy,
+                          PlatformTransactionManager manager, boolean enabled,
+                          int historyYears, int chunkDays) {
+        this(db, products, analysis, ingestion, coverage, seriesPolicy, manager,
+                enabled, historyYears, chunkDays, "");
     }
 
     @Scheduled(cron = "${market-data.catalog.cron:0 15 9 * * *}", zone = "Asia/Shanghai")
@@ -101,6 +121,7 @@ public class MarketDataSyncService {
                     }
                 });
             }
+            registerScope(market, entries);
             queueMissingBackfills();
             setCatalogState(market, "SUCCEEDED", entries.size(), null);
             return missing.size();
@@ -111,19 +132,84 @@ public class MarketDataSyncService {
     }
 
     private void queueMissingBackfills() {
-        List<Long> ids = db.queryForList("SELECT p.id FROM investment_product p "
+        List<Map<String, Object>> candidates = db.queryForList("SELECT p.id,j.id AS job_id FROM investment_product p "
+                + "JOIN market_data_scope_product s ON s.product_id=p.id "
                 + "LEFT JOIN market_data_job j ON j.product_id=p.id AND j.job_type='BACKFILL' "
-                + "WHERE p.status='ACTIVE' AND p.market IN ('SSE','SZSE','BSE','NYSE','NASDAQ','AMEX','FUND_CN','CN_INDEX') "
-                + "AND j.id IS NULL", Long.class);
+                + "WHERE p.status='ACTIVE' AND (j.id IS NULL OR j.status='SKIPPED')");
         LocalDate target = LocalDate.now(CN_ZONE);
         LocalDate start = target.minusYears(historyYears);
+        List<Long> missing = new java.util.ArrayList<>();
+        for (Map<String, Object> row : candidates) {
+            long productId = ((Number) row.get("id")).longValue();
+            if (row.get("job_id") == null) missing.add(productId);
+            else enqueue(productId, "BACKFILL", start, target);
+        }
         LocalDateTime now = LocalDateTime.now(CN_ZONE);
-        for (int from = 0; from < ids.size(); from += 200) {
-            List<Long> batch = ids.subList(from, Math.min(from + 200, ids.size()));
+        for (int from = 0; from < missing.size(); from += 200) {
+            List<Long> batch = missing.subList(from, Math.min(from + 200, missing.size()));
             db.batchUpdate("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
                     + "attempt_count,updated_at) VALUES(?,'BACKFILL','QUEUED',?,?,0,?)",
                     batch.stream().map(id -> new Object[]{id, start, target, now}).toList());
         }
+    }
+
+    private void registerScope(String market, List<Map<String, Object>> entries) {
+        Map<String, Long> productIds = new HashMap<>();
+        for (Map<String, Object> row : db.queryForList(
+                "SELECT id,product_type,market,code FROM investment_product")) {
+            productIds.put(key(value(row, "product_type"), value(row, "market"), value(row, "code")),
+                    ((Number) row.get("id")).longValue());
+        }
+        Map<Long, String> registered = new HashMap<>();
+        for (Map<String, Object> row : db.queryForList(
+                "SELECT product_id,scope_group FROM market_data_scope_product")) {
+            registered.put(((Number) row.get("product_id")).longValue(), value(row, "scope_group"));
+        }
+        Set<Long> desired = new HashSet<>();
+        List<Object[]> missing = new java.util.ArrayList<>();
+        List<Object[]> reassigned = new java.util.ArrayList<>();
+        LocalDateTime now = LocalDateTime.now(CN_ZONE);
+        for (Map<String, Object> entry : entries) {
+            String type = value(entry, "productType");
+            String productMarket = value(entry, "market");
+            String code = value(entry, "code");
+            if (!eligibleForScope(market, type, productMarket, code)) continue;
+            Long id = productIds.get(key(type, productMarket, code));
+            if (id == null) continue;
+            desired.add(id);
+            String currentGroup = registered.get(id);
+            if (currentGroup == null) missing.add(new Object[]{id, market, now});
+            else if (!market.equals(currentGroup)) reassigned.add(new Object[]{market, now, id});
+        }
+        List<Object[]> removed = registered.entrySet().stream()
+                .filter(entry -> market.equals(entry.getValue()) && !desired.contains(entry.getKey()))
+                .map(entry -> new Object[]{entry.getKey(), market}).toList();
+        transaction.executeWithoutResult(status -> {
+            if (!missing.isEmpty()) db.batchUpdate(
+                    "INSERT INTO market_data_scope_product(product_id,scope_group,updated_at) VALUES(?,?,?)", missing);
+            if (!reassigned.isEmpty()) db.batchUpdate(
+                    "UPDATE market_data_scope_product SET scope_group=?,updated_at=? WHERE product_id=?", reassigned);
+            if (!removed.isEmpty()) {
+                db.batchUpdate("DELETE FROM market_data_scope_product WHERE product_id=? AND scope_group=?", removed);
+                db.batchUpdate("UPDATE market_data_job SET status='SKIPPED',last_error='OUT_OF_SCOPE',"
+                        + "lease_until=NULL,next_retry_at=NULL,updated_at=? WHERE product_id=? "
+                        + "AND status IN ('QUEUED','RUNNING','RETRY_WAIT')",
+                        removed.stream().map(row -> new Object[]{now, row[0]}).toList());
+            }
+        });
+    }
+
+    private boolean eligibleForScope(String catalog, String type, String market, String code) {
+        if (type == null || market == null || code == null) return false;
+        return switch (catalog) {
+            case "CN_A" -> "STOCK".equals(type) && Set.of("SSE", "SZSE", "BSE").contains(market);
+            case "CN_ETF" -> "ETF".equals(type) && Set.of("SSE", "SZSE", "BSE").contains(market);
+            case "US" -> Set.of("NASDAQ", "NYSE", "AMEX").contains(market)
+                    && ("ETF".equals(type) || ("STOCK".equals(type)
+                    && usStockSymbols.contains(code.toUpperCase())));
+            case "INDEX" -> "INDEX".equals(type) && "CN_INDEX".equals(market);
+            default -> false;
+        };
     }
 
     public void queueBackfill(long productId) {
@@ -155,7 +241,11 @@ public class MarketDataSyncService {
         if (markets.isEmpty()) return 0;
         String marks = String.join(",", java.util.Collections.nCopies(markets.size(), "?"));
         List<Map<String, Object>> candidates = db.queryForList(
-                "SELECT p.id,p.history_end_date FROM investment_product p "
+                "SELECT p.id,p.product_type,p.market,c.history_end_date,c.reason AS coverage_reason "
+                        + "FROM investment_product p "
+                        + "JOIN market_data_scope_product s ON s.product_id=p.id "
+                        + "LEFT JOIN product_quote_coverage c ON c.product_id=p.id "
+                        + "AND c.frequency='DAY' AND c.adjust_type='NONE' AND c.dataset_type='PRICE' "
                         + "LEFT JOIN market_data_job b ON b.product_id=p.id AND b.job_type='BACKFILL' "
                         + "WHERE p.status='ACTIVE' AND p.market IN (" + marks + ") "
                         + "AND (b.id IS NULL OR b.status='SUCCEEDED')",
@@ -163,9 +253,25 @@ public class MarketDataSyncService {
         int queued = 0;
         for (Map<String, Object> row : candidates) {
             long id = ((Number) row.get("id")).longValue();
+            if ("LEGACY_UNVERIFIED".equals(row.get("coverage_reason"))) {
+                queueBackfill(id);
+                continue;
+            }
             LocalDate last = day(row.get("history_end_date"));
+            String researchAdjust = seriesPolicy.researchAdjustType(
+                    value(row, "product_type"), value(row, "market"));
+            if (!"NONE".equals(researchAdjust)) {
+                QuoteSeriesCoverageService.Coverage research = coverage.find(id, researchAdjust, "PRICE");
+                if (research == null || research.historyEndDate() == null
+                        || "LEGACY_UNVERIFIED".equals(research.reason())) {
+                    queueBackfill(id);
+                    continue;
+                }
+                if (last == null || research.historyEndDate().isBefore(last)) last = research.historyEndDate();
+            }
             if (last == null) { queueBackfill(id); continue; }
-            LocalDate start = last.plusDays(1);
+            LocalDate start = "DISPLAY_ONLY_UNVERIFIED".equals(row.get("coverage_reason"))
+                    ? last : last.plusDays(1);
             if (start.isAfter(target)) continue;
             enqueue(id, "DAILY_UPDATE", start, target);
             queued++;
@@ -223,7 +329,15 @@ public class MarketDataSyncService {
 
     private void processChunk(Map<String, Object> job) {
         long jobId = ((Number) job.get("id")).longValue();
-        InvestmentProduct product = products.selectById(((Number) job.get("product_id")).longValue());
+        long productId = ((Number) job.get("product_id")).longValue();
+        Integer inScope = db.queryForObject(
+                "SELECT COUNT(*) FROM market_data_scope_product WHERE product_id=?", Integer.class, productId);
+        if (inScope == null || inScope == 0) {
+            db.update("UPDATE market_data_job SET status='SKIPPED',lease_until=NULL,last_error='OUT_OF_SCOPE',"
+                    + "updated_at=? WHERE id=?", LocalDateTime.now(CN_ZONE), jobId);
+            return;
+        }
+        InvestmentProduct product = products.selectById(productId);
         if (product == null) throw new IllegalStateException("同步产品不存在");
         LocalDate checkpoint = day(job.get("checkpoint_date"));
         LocalDate start = checkpoint == null ? day(job.get("start_date")) : checkpoint.plusDays(1);
@@ -234,62 +348,17 @@ public class MarketDataSyncService {
         LocalDate end = "FUND_CN".equals(product.getMarket()) ? target :
                 start.plusDays(chunkDays - 1).isBefore(target)
                         ? start.plusDays(chunkDays - 1) : target;
-        Map<String, Object> response = analysis.marketDailyQuotes(product, start, end, "NONE");
-        @SuppressWarnings("unchecked") List<Map<String, Object>> records =
-                (List<Map<String, Object>>) response.get("records");
-        if (records == null) throw new IllegalStateException("数据源未返回日线列表");
+        LocalDate knownStart = product.getListingDate() != null
+                ? product.getListingDate() : product.getInceptionDate();
+        for (String adjustType : seriesPolicy.marketAdjustments(product)) {
+            ingestion.ingest(product, start, end, adjustType, knownStart);
+        }
         LocalDate chunkEnd = end;
         transaction.executeWithoutResult(status -> {
-            if (!records.isEmpty()) insertMissingQuotes(product.getId(), records,
-                    value(response, "provider"), value(response, "adapterVersion"));
-            db.update("UPDATE investment_product SET history_start_date=(SELECT MIN(trade_date) FROM "
-                            + "product_daily_quote WHERE product_id=? AND adjust_type='NONE'),"
-                            + "history_end_date=(SELECT MAX(trade_date) FROM product_daily_quote WHERE product_id=? "
-                            + "AND adjust_type='NONE') WHERE id=?", product.getId(), product.getId(), product.getId());
             db.update("UPDATE market_data_job SET checkpoint_date=?,status=?,attempt_count=0,"
                             + "lease_until=NULL,next_retry_at=NULL,last_error=NULL,updated_at=? WHERE id=? AND status='RUNNING'",
                     chunkEnd, chunkEnd.equals(target) ? "SUCCEEDED" : "QUEUED", LocalDateTime.now(CN_ZONE), jobId);
         });
-        if (chunkEnd.equals(target) && !records.isEmpty()
-                && Set.of("STOCK", "MUTUAL_FUND", "FUND").contains(product.getProductType())) {
-            try {
-                quality.resolve(product, start, chunkEnd, true);
-            } catch (RuntimeException unavailable) {
-                log.warn("Market data quality evaluation unavailable for product {}", product.getId(), unavailable);
-            }
-        }
-    }
-
-    private int insertMissingQuotes(long productId, List<Map<String, Object>> records,
-                                    String provider, String adapterVersion) {
-        LocalDate first = records.stream().map(row -> day(row.get("data_date"))).min(LocalDate::compareTo).orElseThrow();
-        LocalDate last = records.stream().map(row -> day(row.get("data_date"))).max(LocalDate::compareTo).orElseThrow();
-        Set<LocalDate> existing = new HashSet<>(db.queryForList(
-                "SELECT trade_date FROM product_daily_quote WHERE product_id=? AND adjust_type='NONE' "
-                        + "AND trade_date>=? AND trade_date<=?", LocalDate.class, productId, first, last));
-        List<Map<String, Object>> missing = records.stream()
-                .filter(row -> !existing.contains(day(row.get("data_date"))))
-                .filter(row -> row.get("close") != null || row.get("nav") != null).toList();
-        LocalDateTime syncedAt = LocalDateTime.now(CN_ZONE);
-        db.batchUpdate("INSERT INTO product_daily_quote(product_id,trade_date,open_price,high_price,low_price,"
-                        + "close_price,previous_close,volume,amount,turnover_rate,volume_ratio,amplitude,"
-                        + "change_amount,change_percent,total_return_index,adjust_type,source,adapter_version,synced_at) "
-                        + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", new BatchPreparedStatementSetter() {
-            @Override public int getBatchSize() { return missing.size(); }
-            @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
-                Map<String, Object> row = missing.get(index);
-                Object[] values = {productId, day(row.get("data_date")), decimal(row.get("open")),
-                        decimal(row.get("high")), decimal(row.get("low")),
-                        decimal(row.get("close") == null ? row.get("nav") : row.get("close")),
-                        decimal(row.get("previous_close")),
-                        decimal(row.get("volume")), decimal(row.get("amount")), decimal(row.get("turnover_rate")),
-                        decimal(row.get("volume_ratio")), decimal(row.get("amplitude")),
-                        decimal(row.get("change_amount")), decimal(row.get("change_percent")),
-                        decimal(row.get("total_return_index")), "NONE", provider, adapterVersion, syncedAt};
-                for (int column = 0; column < values.length; column++) statement.setObject(column + 1, values[column]);
-            }
-        });
-        return missing.size();
     }
 
     private void finish(long jobId) {
@@ -315,8 +384,5 @@ public class MarketDataSyncService {
     }
     private static LocalDate day(Object value) {
         return value == null ? null : value instanceof LocalDate date ? date : LocalDate.parse(value.toString());
-    }
-    private static BigDecimal decimal(Object value) {
-        return value == null ? null : new BigDecimal(value.toString());
     }
 }

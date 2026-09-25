@@ -112,7 +112,9 @@ class InvestmentDataJobServiceIntegrationTest {
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @MapperScan("com.smartfinance.agent.investment.mapper")
-    @Import({MyBatisPlusConfig.class, InvestmentDataJobService.class})
+    @Import({MyBatisPlusConfig.class, InvestmentDataJobService.class,
+            QuoteSeriesCoverageService.class, QuoteSeriesPolicy.class,
+            com.smartfinance.agent.investment.config.InvestmentRuntimeProperties.class})
     static class Configuration {
     }
 }

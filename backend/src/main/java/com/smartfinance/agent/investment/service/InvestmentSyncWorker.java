@@ -10,7 +10,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Comparator;
@@ -24,9 +23,9 @@ public class InvestmentSyncWorker {
     private final InvestmentPositionMapper positionMapper;
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
+    private final UnifiedMarketDataIngestionService ingestion;
     private final DailyExchangeRateMapper exchangeRateMapper;
     private final AnalysisServiceClient analysisClient;
-    private final InvestmentDataQualityService dataQualityService;
     private final InvestmentHorizonService horizonService;
     private final InvestmentHorizonProperties horizonProperties;
     private final InvestmentRuntimeProperties runtimeProperties;
@@ -35,9 +34,9 @@ public class InvestmentSyncWorker {
                                 InvestmentPositionMapper positionMapper,
                                 InvestmentProductMapper productMapper,
                                 ProductDailyQuoteMapper quoteMapper,
+                                UnifiedMarketDataIngestionService ingestion,
                                 DailyExchangeRateMapper exchangeRateMapper,
                                 AnalysisServiceClient analysisClient,
-                                InvestmentDataQualityService dataQualityService,
                                 InvestmentHorizonService horizonService,
                                 InvestmentHorizonProperties horizonProperties,
                                 InvestmentRuntimeProperties runtimeProperties) {
@@ -45,9 +44,9 @@ public class InvestmentSyncWorker {
         this.positionMapper = positionMapper;
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
+        this.ingestion = ingestion;
         this.exchangeRateMapper = exchangeRateMapper;
         this.analysisClient = analysisClient;
-        this.dataQualityService = dataQualityService;
         this.horizonService = horizonService;
         this.horizonProperties = horizonProperties;
         this.runtimeProperties = runtimeProperties;
@@ -87,14 +86,14 @@ public class InvestmentSyncWorker {
                 continue;
             }
             try {
-                InvestmentDataQualityService.Evaluation quality = dataQualityService.resolve(
-                        product, startDate, endDate, true);
-                if (quality.blocked()) {
-                    throw new IllegalStateException("数据质量门禁未通过：" + quality.datasetVersion());
-                }
-                provider = quality.snapshot().getProvider();
-                dataQualityService.claim(quality);
-                ProductDailyQuote latest = persistDailyQuotes(product, quality.response());
+                String researchAdjust = "MUTUAL_FUND".equals(product.getProductType()) ? "NONE"
+                        : runtimeProperties.getDataQuality().getStockAdjustType();
+                UnifiedMarketDataIngestionService.Result result = ingestion.ingest(
+                        product, startDate, endDate, researchAdjust, startDate);
+                if (!"NONE".equals(researchAdjust))
+                    ingestion.ingest(product, startDate, endDate, "NONE", startDate);
+                provider = result.evaluation() == null ? null : result.evaluation().snapshot().getProvider();
+                ProductDailyQuote latest = latestQuote(product, "NONE");
                 BigDecimal close = latest.getClosePrice();
                 position.setLatestPrice(close);
                 position.setDataDate(latest.getTradeDate());
@@ -125,73 +124,15 @@ public class InvestmentSyncWorker {
                 horizonService.resolve(userId, null), horizonProperties);
     }
 
-    @SuppressWarnings("unchecked")
-    ProductDailyQuote persistDailyQuotes(InvestmentProduct product, Map<String, Object> response) {
-        List<Map<String, Object>> records = (List<Map<String, Object>>) response.get("records");
-        if (records == null || records.isEmpty()) {
-            throw new IllegalStateException("未返回行情记录");
-        }
-        String provider = responseMetadata(response, "provider");
-        String adapterVersion = responseMetadata(response, "adapterVersion");
-        List<Map<String, Object>> orderedRecords = records.stream()
-                .sorted(Comparator.comparing(record -> String.valueOf(record.get("data_date"))))
-                .toList();
-        ProductDailyQuote latest = null;
-        BigDecimal previousClose = null;
-        for (Map<String, Object> record : orderedRecords) {
-            latest = saveQuote(product, record, provider, adapterVersion, previousClose);
-            previousClose = latest.getClosePrice();
-        }
-        if (latest == null) throw new IllegalStateException("未返回行情记录");
-        return latest;
-    }
-
-    private ProductDailyQuote saveQuote(InvestmentProduct product, Map<String, Object> record, String provider,
-                                        String adapterVersion, BigDecimal previousClose) {
-        LocalDate tradeDate = LocalDate.parse(String.valueOf(record.get("data_date")));
+    private ProductDailyQuote latestQuote(InvestmentProduct product, String adjustType) {
         ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, product.getId())
-                .eq(ProductDailyQuote::getTradeDate, tradeDate)
-                .eq(ProductDailyQuote::getAdjustType, adjustType(product)));
-        if (quote == null) {
-            quote = new ProductDailyQuote();
-            quote.setProductId(product.getId());
-            quote.setTradeDate(tradeDate);
-            quote.setAdjustType(adjustType(product));
-        }
-        quote.setOpenPrice(decimal(record.get("open")));
-        quote.setHighPrice(decimal(record.get("high")));
-        quote.setLowPrice(decimal(record.get("low")));
-        Object closeValue = record.get("close");
-        if (closeValue == null && "MUTUAL_FUND".equals(product.getProductType())) {
-            closeValue = record.get("nav");
-        }
-        quote.setClosePrice(decimal(closeValue));
-        BigDecimal returnIndex = decimal(record.get("total_return_index"));
-        BigDecimal factor = decimal(record.get("adjustment_factor"));
-        if (returnIndex == null && "MUTUAL_FUND".equals(product.getProductType())
-                && factor != null && quote.getClosePrice() != null) {
-            returnIndex = quote.getClosePrice().multiply(factor);
-        }
-        quote.setTotalReturnIndex(returnIndex);
-        quote.setPreviousClose(previousClose);
-        if (previousClose != null && previousClose.signum() != 0 && quote.getClosePrice() != null) {
-            BigDecimal changeAmount = quote.getClosePrice().subtract(previousClose);
-            quote.setChangeAmount(changeAmount);
-            quote.setChangePercent(changeAmount.divide(previousClose, 8, RoundingMode.HALF_UP)
-                    .multiply(new BigDecimal("100")));
-        }
-        quote.setVolume(decimal(record.get("volume")));
-        quote.setSource(provider);
-        quote.setAdapterVersion(adapterVersion);
-        quote.setSyncedAt(LocalDateTime.now());
-        if (quote.getId() == null) {
-            quoteMapper.insert(quote);
-        } else {
-            quoteMapper.updateById(quote);
-        }
+                .eq(ProductDailyQuote::getAdjustType, adjustType)
+                .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
+        if (quote == null) throw new IllegalStateException("未返回行情记录");
         return quote;
     }
+
 
     private BigDecimal latestFxRate(String currency, LocalDate dataDate) {
         Map<String, Object> response = analysisClient.dailyFx(currency,
@@ -226,19 +167,4 @@ public class InvestmentSyncWorker {
         return value == null || "null".equals(String.valueOf(value)) ? null : new BigDecimal(String.valueOf(value));
     }
 
-    private String adjustType(InvestmentProduct product) {
-        return "MUTUAL_FUND".equals(product.getProductType())
-                ? runtimeProperties.getDataQuality().getFundAdjustType()
-                : runtimeProperties.getDataQuality().getStockAdjustType();
-    }
-
-    private static String responseMetadata(Map<String, Object> response, String key) {
-        Object direct = response.get(key);
-        if (direct != null) return String.valueOf(direct);
-        Object manifest = response.get("manifest");
-        if (manifest instanceof Map<?, ?> map && map.get(key) != null) {
-            return String.valueOf(map.get(key));
-        }
-        throw new IllegalStateException("行情响应缺少 " + key);
-    }
 }

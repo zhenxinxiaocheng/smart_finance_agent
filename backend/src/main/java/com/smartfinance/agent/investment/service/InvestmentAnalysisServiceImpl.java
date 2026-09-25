@@ -44,7 +44,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final InvestmentAnalysisSnapshotMapper snapshotMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentDataQualityService dataQualityService;
-    private final InvestmentSyncWorker syncWorker;
+    private final UnifiedMarketDataIngestionService ingestion;
     private final WealthService wealthService;
     private final FinancialProfileMapper financialProfileMapper;
     private final ObjectMapper objectMapper;
@@ -63,7 +63,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          InvestmentAnalysisSnapshotMapper snapshotMapper,
                                          AnalysisServiceClient analysisClient,
                                          InvestmentDataQualityService dataQualityService,
-                                         InvestmentSyncWorker syncWorker,
+                                         UnifiedMarketDataIngestionService ingestion,
                                          WealthService wealthService,
                                          FinancialProfileMapper financialProfileMapper,
                                          ObjectMapper objectMapper,
@@ -81,7 +81,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.snapshotMapper = snapshotMapper;
         this.analysisClient = analysisClient;
         this.dataQualityService = dataQualityService;
-        this.syncWorker = syncWorker;
+        this.ingestion = ingestion;
         this.wealthService = wealthService;
         this.financialProfileMapper = financialProfileMapper;
         this.objectMapper = objectMapper;
@@ -452,17 +452,21 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
         InvestmentDataQualityService.Evaluation quality = null;
         try {
-            quality = dataQualityService.resolve(
-                    product, qualityStartDate, qualityEndDate, refreshQuotes);
-            if (!quality.blocked() && !quality.records().isEmpty()) {
-                try {
-                    syncWorker.persistDailyQuotes(product, quality.response());
-                    quotes = loadQuotes(product);
-                    analysisQuotes = analysisReadyQuotes(product, quotes);
-                } catch (RuntimeException cacheException) {
-                    sourceStatus.put("quoteCacheError", cacheException.getMessage());
-                }
-            }
+            UnifiedMarketDataIngestionService.Result ingested = ingestion.ingest(
+                    product, qualityStartDate, qualityEndDate, configuredAdjustType(product),
+                    qualityStartDate, refreshQuotes);
+            quality = ingested.evaluation();
+            if (quality == null) throw new IllegalStateException("行情质量结果缺失");
+            quotes = loadQuotes(product);
+            analysisQuotes = analysisReadyQuotes(product, quotes);
+        } catch (UnifiedMarketDataIngestionService.QualityBlockedException blocked) {
+            quality = blocked.evaluation();
+        } catch (RuntimeException exception) {
+            sourceStatus.put("qualityStatus", "UNAVAILABLE");
+            sourceStatus.put("qualityDecision", "WAITING");
+            sourceStatus.put("dataQualityError", exception.getMessage());
+        }
+        if (quality != null) {
             Map<String, Object> manifest = asMap(quality.response().get("manifest"));
             Map<String, Object> report = asMap(quality.response().get("qualityReport"));
             sourceStatus.put("datasetVersion", quality.datasetVersion());
@@ -480,12 +484,12 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             sourceStatus.put("qualityWindowRecordCount", quality.records().size());
             sourceStatus.put("quoteStatus", analysisQuotes.size()
                     >= horizonProperties.getMinimumHistoryTradingDays() ? "READY" : "INSUFFICIENT");
-        } catch (RuntimeException exception) {
-            sourceStatus.put("qualityStatus", "UNAVAILABLE");
-            sourceStatus.put("qualityDecision", "WAITING");
-            sourceStatus.put("dataQualityError", exception.getMessage());
         }
-        boolean qualityBlocked = quality == null || quality.blocked();
+        boolean fundReturnsMissing = "MUTUAL_FUND".equals(product.getProductType())
+                && quotes.stream().anyMatch(quote -> quote.getTotalReturnIndex() == null
+                || quote.getTotalReturnIndex().signum() <= 0);
+        boolean qualityBlocked = quality == null || quality.blocked() || fundReturnsMissing;
+        if (fundReturnsMissing) sourceStatus.put("fundReturnStatus", "TOTAL_RETURN_MISSING");
         if (qualityBlocked) {
             sourceStatus.put("analysisGate", quality == null ? "WAITING" : "BLOCKED");
             try {
@@ -500,18 +504,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             }
         } else {
             sourceStatus.put("analysisGate", "ALLOW");
-        }
-
-        if (quotes.isEmpty() && quality == null) {
-            try {
-                Map<String, Object> response = analysisClient.dailyQuotes(
-                        product, qualityStartDate, qualityEndDate);
-                syncWorker.persistDailyQuotes(product, response);
-                quotes = loadQuotes(product);
-                analysisQuotes = analysisReadyQuotes(product, quotes);
-            } catch (RuntimeException exception) {
-                sourceStatus.put("displayQuoteError", exception.getMessage());
-            }
         }
 
         String horizonConfigJson = horizonConfigJson(horizonProfile);
@@ -567,6 +559,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
             String gateStatus = quality == null ? "UNAVAILABLE" : "BLOCKED";
             String reason = quality == null
                     ? "数据质量服务暂不可用，正在等待重新校验"
+                    : fundReturnsMissing ? "基金累计收益指数缺失，已停止生成收益分析"
                     : "数据完整性校验未通过，已停止生成分析结论";
             technical = Map.of("status", gateStatus, "reason", reason);
             fundamental = Map.of("status", gateStatus, "reason", reason);
@@ -617,7 +610,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 requireStrategyVersion(configuredStrategyVersion, technical, "分析");
                 sourceStatus.put("analysisStrategyVersion", technical.get("strategyVersion"));
                 sourceStatus.put("analysisStatus", analysisResultStatus(technical));
-                dataQualityService.claim(quality);
                 snapshot = saveSnapshot(userId, assetId, snapshot, quoteDate, preferenceHash,
                         horizonProfile.version(), horizonConfigJson,
                         quality.datasetVersion(), quality.ruleSetVersion(), configuredStrategyVersion,
@@ -742,18 +734,10 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     private List<ProductDailyQuote> loadQuotes(InvestmentProduct product) {
-        List<ProductDailyQuote> all = quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
+        return quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, product.getId())
+                .eq(ProductDailyQuote::getAdjustType, configuredAdjustType(product))
                 .orderByAsc(ProductDailyQuote::getTradeDate));
-        Map<LocalDate, ProductDailyQuote> byDate = new TreeMap<>();
-        String requiredAdjustType = configuredAdjustType(product);
-        for (ProductDailyQuote quote : all) {
-            ProductDailyQuote current = byDate.get(quote.getTradeDate());
-            if (requiredAdjustType.equals(quote.getAdjustType()) || current == null) {
-                byDate.put(quote.getTradeDate(), quote);
-            }
-        }
-        return new ArrayList<>(byDate.values());
     }
 
     private static List<ProductDailyQuote> analysisReadyQuotes(
@@ -761,15 +745,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         if (!"MUTUAL_FUND".equals(product.getProductType())) {
             return quotes;
         }
-        int end = quotes.size();
-        while (end > 0) {
-            BigDecimal index = quotes.get(end - 1).getTotalReturnIndex();
-            if (index != null && index.signum() > 0) {
-                break;
-            }
-            end--;
-        }
-        return quotes.subList(0, end);
+        return quotes.stream().anyMatch(quote -> quote.getTotalReturnIndex() == null
+                || quote.getTotalReturnIndex().signum() <= 0) ? List.of() : quotes;
     }
 
     private InvestmentAnalysisSnapshot findSnapshot(Long userId, Long assetId) {

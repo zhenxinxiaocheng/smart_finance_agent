@@ -159,27 +159,6 @@ public class AnalysisServiceClient {
     }
 
     @SuppressWarnings("unchecked")
-    public Map<String, Object> dailyQuotes(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("code", product.getCode());
-        body.put("market", product.getMarket());
-        body.put("product_type", product.getProductType());
-        body.put("start_date", startDate.toString());
-        body.put("end_date", endDate.toString());
-        Map<String, Object> response = restClient.post()
-                .uri("/internal/v1/market-data/quotes/daily")
-                .header("X-Internal-Token", internalToken)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .body(Map.class);
-        if (response == null) {
-            throw new IllegalStateException("分析服务返回空响应");
-        }
-        return response;
-    }
-
-    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> marketCatalog(String market) {
         Map<String, Object> response = benchmarkRestClient.get()
                 .uri(uriBuilder -> uriBuilder.path("/internal/v1/market-data/catalog")

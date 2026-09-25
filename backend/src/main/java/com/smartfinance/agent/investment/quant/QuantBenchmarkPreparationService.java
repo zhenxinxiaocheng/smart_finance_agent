@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+import com.smartfinance.agent.investment.service.QuoteSeriesPolicy;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -16,13 +17,16 @@ public class QuantBenchmarkPreparationService {
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final QuantBenchmarkProfileService benchmarkProfileService;
+    private final QuoteSeriesPolicy seriesPolicy;
 
     public QuantBenchmarkPreparationService(InvestmentProductMapper productMapper,
-                                             ProductDailyQuoteMapper quoteMapper,
-                                             QuantBenchmarkProfileService benchmarkProfileService) {
+                                              ProductDailyQuoteMapper quoteMapper,
+                                              QuantBenchmarkProfileService benchmarkProfileService,
+                                              QuoteSeriesPolicy seriesPolicy) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.benchmarkProfileService = benchmarkProfileService;
+        this.seriesPolicy = seriesPolicy;
     }
 
     public int prepare(InvestmentDataJob job) {
@@ -36,6 +40,7 @@ public class QuantBenchmarkPreparationService {
         List<ProductDailyQuote> quotes = quoteMapper.selectList(
                 new LambdaQueryWrapper<ProductDailyQuote>()
                         .eq(ProductDailyQuote::getProductId, product.getId())
+                        .eq(ProductDailyQuote::getAdjustType, seriesPolicy.researchAdjustType(product))
                         .orderByAsc(ProductDailyQuote::getTradeDate)
         );
         if (quotes.size() < 2) {

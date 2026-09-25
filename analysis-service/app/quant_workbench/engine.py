@@ -112,7 +112,9 @@ def prepare(payload):
                 continue
             b["date"] = day
             b["close"] = number(b["close"], "close", 1e-8)
-            b["researchClose"] = number(b.get("researchClose") or b["close"], "researchClose", 1e-8)
+            if b.get("researchClose") is None:
+                fail("RESEARCH_PRICE_REQUIRED", f"{aid}: verified research price is unavailable on {day}")
+            b["researchClose"] = number(b["researchClose"], "researchClose", 1e-8)
             research_only = payload.get("kind") in ("TRAINING", "FACTOR_RESEARCH")
             if cls != "FUND":
                 if not research_only and str(b.get("adjustType", "")).upper() not in ("RAW", "NONE", "UNADJUSTED", "NOT_ADJUSTED"):

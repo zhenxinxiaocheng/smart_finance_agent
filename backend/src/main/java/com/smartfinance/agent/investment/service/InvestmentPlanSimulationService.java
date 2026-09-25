@@ -50,6 +50,7 @@ public class InvestmentPlanSimulationService {
         LocalDate plannedDate = scheduleCalculator.normalize(plan.getNextExecutionDate());
         ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, plan.getProductId())
+                .eq(ProductDailyQuote::getAdjustType, "NONE")
                 .le(ProductDailyQuote::getTradeDate, today)
                 .orderByDesc(ProductDailyQuote::getTradeDate, ProductDailyQuote::getId)
                 .last("LIMIT 1"));

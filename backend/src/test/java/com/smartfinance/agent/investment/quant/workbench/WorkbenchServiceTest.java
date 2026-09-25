@@ -19,6 +19,11 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.*;
 
 class WorkbenchServiceTest {
+    private static com.smartfinance.agent.investment.service.QuoteSeriesPolicy seriesPolicy() {
+        var properties = new com.smartfinance.agent.investment.config.InvestmentRuntimeProperties();
+        properties.getDataQuality().setStockAdjustType("QFQ");
+        return new com.smartfinance.agent.investment.service.QuoteSeriesPolicy(properties);
+    }
     private JdbcTemplate db;
     private WorkbenchService service;
     private DriverManagerDataSource source;
@@ -39,12 +44,27 @@ class WorkbenchServiceTest {
                     BigDecimal.valueOf(1.25), BigDecimal.valueOf(1.25), "NONE", "TEST");
         }
         tracking = org.mockito.Mockito.mock(WorkbenchTrackingIndex.class);
-        service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source), tracking);
+        service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
+                tracking, null, seriesPolicy());
     }
 
     private Map<String,Object> universe() {
         return service.save(1L, "universes", null,
                 Map.of("name", "基金池", "assetClass", "FUND", "assetIds", List.of(1)));
+    }
+
+    @Test
+    void stockResearchNeverFallsBackToRawClose() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
+                + "VALUES(2,'股票测试','600000','STOCK','SSE',FALSE)");
+        db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) "
+                + "VALUES(3,1,1,2,0)");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(2,'2024-01-02',10,'NONE','TEST')");
+
+        assertThatThrownBy(() -> service.snapshot(1L, Map.of("assetIds", List.of(3)), "2024-01-02"))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("研究行情缺少 QFQ");
     }
 
     @Test
@@ -185,7 +205,8 @@ class WorkbenchServiceTest {
         String snapshot = db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id"));
         service.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
-        var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source), org.mockito.Mockito.mock(WorkbenchTrackingIndex.class));
+        var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
+                org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, seriesPolicy());
         assertThat(restarted.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id")))
                 .isEqualTo(snapshot);

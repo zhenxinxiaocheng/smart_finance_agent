@@ -49,7 +49,11 @@ import static org.mockito.Mockito.when;
 })
 @Import({com.smartfinance.agent.investment.service.InvestmentAssetServiceImpl.class,
         com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
-        com.smartfinance.agent.investment.service.FundClassificationService.class})
+        com.smartfinance.agent.investment.service.FundClassificationService.class,
+        com.smartfinance.agent.investment.service.QuoteSeriesPolicy.class,
+        com.smartfinance.agent.investment.service.QuoteSeriesCoverageService.class,
+        com.smartfinance.agent.investment.service.ProductDailyQuotePersistenceService.class,
+        com.smartfinance.agent.investment.service.UnifiedMarketDataIngestionService.class})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class InvestmentAssetServiceIntegrationTest {
 
@@ -67,6 +71,8 @@ class InvestmentAssetServiceIntegrationTest {
     private JdbcTemplate jdbc;
     @MockBean
     private AnalysisServiceClient analysisServiceClient;
+    @MockBean
+    private com.smartfinance.agent.investment.service.InvestmentDataQualityService dataQualityService;
     @MockBean
     private ChinaTradingCalendarService tradingCalendar;
     @MockBean
@@ -456,7 +462,7 @@ class InvestmentAssetServiceIntegrationTest {
         quote.setHighPrice(new BigDecimal(close));
         quote.setLowPrice(new BigDecimal(close));
         quote.setClosePrice(new BigDecimal(close));
-        quote.setAdjustType("QFQ");
+        quote.setAdjustType("NONE");
         quote.setSource("TEST");
         quote.setAdapterVersion("1");
         quote.setSyncedAt(LocalDateTime.of(2026, 7, 16, 15, 0));

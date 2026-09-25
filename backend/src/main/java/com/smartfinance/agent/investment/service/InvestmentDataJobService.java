@@ -27,15 +27,21 @@ public class InvestmentDataJobService {
     private final InvestmentProductMapper productMapper;
     private final InvestmentAssetMapper assetMapper;
     private final ProductDailyQuoteMapper quoteMapper;
+    private final QuoteSeriesCoverageService seriesCoverage;
+    private final QuoteSeriesPolicy seriesPolicy;
 
     public InvestmentDataJobService(InvestmentDataJobMapper mapper,
                                     InvestmentProductMapper productMapper,
                                     InvestmentAssetMapper assetMapper,
-                                    ProductDailyQuoteMapper quoteMapper) {
+                                    ProductDailyQuoteMapper quoteMapper,
+                                    QuoteSeriesCoverageService seriesCoverage,
+                                    QuoteSeriesPolicy seriesPolicy) {
         this.mapper = mapper;
         this.productMapper = productMapper;
         this.assetMapper = assetMapper;
         this.quoteMapper = quoteMapper;
+        this.seriesCoverage = seriesCoverage;
+        this.seriesPolicy = seriesPolicy;
     }
 
     @Transactional
@@ -93,9 +99,12 @@ public class InvestmentDataJobService {
         if (isActive(existing)) {
             return existing;
         }
+        InvestmentProduct product = productMapper.selectById(productId);
+        if (product == null) throw new IllegalArgumentException("产品不存在");
         LocalDate latestQuoteDate = "FUND_NAV_HISTORY".equals(jobType)
                 ? quoteMapper.latestCompleteFundTradeDate(productId)
-                : quoteMapper.latestTradeDate(productId);
+                : quoteMapper.latestTradeDate(productId,
+                seriesPolicy.researchAdjustType(product));
         if ("PARTIAL".equals(existing.getStatus()) && latestQuoteDate != null
                 && existing.getSampleEndDate() != null
                 && latestQuoteDate.isAfter(existing.getSampleEndDate())) {
@@ -316,11 +325,21 @@ public class InvestmentDataJobService {
 
     private Boolean historyCoverageComplete(Long productId) {
         InvestmentProduct product = productMapper.selectById(productId);
-        if (product == null || !Boolean.TRUE.equals(product.getHistoryCoverageComplete())) {
+        if (product == null) {
             return false;
         }
-        return !"FUND_NAV_HISTORY".equals(jobTypeFor(product.getProductType()))
-                || !quoteMapper.hasMissingFundReturns(productId, product.getHistoryEndDate());
+        String adjustType = seriesPolicy.researchAdjustType(product);
+        QuoteSeriesCoverageService.Coverage primary = seriesCoverage.find(productId, adjustType,
+                seriesPolicy.datasetType(product));
+        if (primary == null || !primary.complete()) return false;
+        if ("STOCK".equals(product.getProductType())) {
+            QuoteSeriesCoverageService.Coverage raw = seriesCoverage.find(productId, "NONE", "PRICE");
+            return raw != null && raw.complete();
+        }
+        if (!"FUND_NAV_HISTORY".equals(jobTypeFor(product.getProductType()))) return true;
+        QuoteSeriesCoverageService.Coverage returns =
+                seriesCoverage.find(productId, "NONE", "TOTAL_RETURN_INDEX");
+        return returns != null && returns.complete();
     }
 
     private static boolean isAssetHistoryJob(String jobType) {

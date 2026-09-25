@@ -27,6 +27,7 @@ class InvestmentDataJobServiceTest {
     private InvestmentProductMapper productMapper;
     private InvestmentAssetMapper assetMapper;
     private ProductDailyQuoteMapper quoteMapper;
+    private QuoteSeriesCoverageService seriesCoverage;
     private InvestmentDataJobService service;
 
     @BeforeEach
@@ -37,12 +38,22 @@ class InvestmentDataJobServiceTest {
         productMapper = mock(InvestmentProductMapper.class);
         assetMapper = mock(InvestmentAssetMapper.class);
         quoteMapper = mock(ProductDailyQuoteMapper.class);
+        seriesCoverage = mock(QuoteSeriesCoverageService.class);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
         product.setProductType("STOCK");
         product.setHistoryCoverageComplete(true);
         when(productMapper.selectById(21L)).thenReturn(product);
-        service = new InvestmentDataJobService(mapper, productMapper, assetMapper, quoteMapper);
+        when(seriesCoverage.find(anyLong(), anyString(), anyString())).thenAnswer(invocation -> {
+            InvestmentProduct found = productMapper.selectById(invocation.getArgument(0));
+            return new QuoteSeriesCoverageService.Coverage(null, null, null, null, 0,
+                    found != null && Boolean.TRUE.equals(found.getHistoryCoverageComplete())
+                            ? "COMPLETE" : "INCOMPLETE", null);
+        });
+        var runtime = new com.smartfinance.agent.investment.config.InvestmentRuntimeProperties();
+        runtime.getDataQuality().setStockAdjustType("QFQ");
+        service = new InvestmentDataJobService(mapper, productMapper, assetMapper, quoteMapper,
+                seriesCoverage, new QuoteSeriesPolicy(runtime));
     }
 
     @Test
@@ -237,7 +248,7 @@ class InvestmentDataJobServiceTest {
         InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
         existing.setRecordCount(526);
         existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
-        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 22));
+        when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 22));
         when(mapper.selectOne(any())).thenReturn(existing);
 
         InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
@@ -252,7 +263,7 @@ class InvestmentDataJobServiceTest {
     void completedJobIsNotRequeuedWithoutNewQuotes() {
         InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
         existing.setSampleEndDate(LocalDate.of(2026, 7, 22));
-        when(quoteMapper.latestTradeDate(21L)).thenReturn(LocalDate.of(2026, 7, 22));
+        when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 22));
         when(mapper.selectOne(any())).thenReturn(existing);
 
         assertThat(service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK").getStatus())

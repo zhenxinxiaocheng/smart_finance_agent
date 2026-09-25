@@ -38,7 +38,8 @@ public class InvestmentHistoryPreparationService {
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final InvestmentDataQualityService dataQualityService;
-    private final InvestmentSyncWorker syncWorker;
+    private final UnifiedMarketDataIngestionService ingestion;
+    private final QuoteSeriesCoverageService seriesCoverage;
     private final FundClassificationService classificationService;
     private final AnalysisServiceClient analysisClient;
     private final Clock clock;
@@ -48,25 +49,28 @@ public class InvestmentHistoryPreparationService {
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker,
+            UnifiedMarketDataIngestionService ingestion,
+            QuoteSeriesCoverageService seriesCoverage,
             FundClassificationService classificationService,
             AnalysisServiceClient analysisClient) {
-        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService, analysisClient,
-                Clock.system(RUNTIME_ZONE));
+        this(productMapper, quoteMapper, dataQualityService, ingestion, seriesCoverage,
+                classificationService, analysisClient, Clock.system(RUNTIME_ZONE));
     }
 
     InvestmentHistoryPreparationService(
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker,
+            UnifiedMarketDataIngestionService ingestion,
+            QuoteSeriesCoverageService seriesCoverage,
             FundClassificationService classificationService,
             AnalysisServiceClient analysisClient,
             Clock clock) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.dataQualityService = dataQualityService;
-        this.syncWorker = syncWorker;
+        this.ingestion = ingestion;
+        this.seriesCoverage = seriesCoverage;
         this.classificationService = classificationService;
         this.analysisClient = analysisClient;
         this.clock = clock;
@@ -83,11 +87,14 @@ public class InvestmentHistoryPreparationService {
         }
         product = classificationService.enrichIfMissing(product);
 
+        String adjustType = dataQualityService.adjustType(product);
+        String datasetType = "FUND_NAV_HISTORY".equals(job.getJobType()) ? "NAV" : "PRICE";
+        QuoteSeriesCoverageService.Coverage prior = seriesCoverage.find(product.getId(), adjustType, datasetType);
+
         boolean initialLoad = Boolean.TRUE.equals(job.getForceRefresh())
-                || !Boolean.TRUE.equals(product.getHistoryCoverageComplete())
-                || product.getHistoryEndDate() == null
+                || prior == null || !prior.complete() || prior.historyEndDate() == null
                 || ("FUND_NAV_HISTORY".equals(job.getJobType())
-                    && quoteMapper.hasMissingFundReturns(product.getId(), product.getHistoryEndDate()));
+                    && quoteMapper.hasMissingFundReturns(product.getId(), prior.historyEndDate()));
         if (initialLoad && knownStartDate(product) == null) {
             AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
                     product.getProductType(), product.getCode());
@@ -97,34 +104,40 @@ public class InvestmentHistoryPreparationService {
         }
         LocalDate requestedStart = initialLoad
                 ? initialStart(product)
-                : product.getHistoryEndDate();
+                : prior.historyEndDate();
         LocalDate requestedEnd = LocalDate.now(clock);
         if (requestedStart.isAfter(requestedEnd)) {
             requestedStart = requestedEnd;
         }
 
-        InvestmentDataQualityService.Evaluation evaluation = dataQualityService.resolve(
-                product, requestedStart, requestedEnd, true);
-        if (evaluation.blocked()) {
+        UnifiedMarketDataIngestionService.Result ingested;
+        UnifiedMarketDataIngestionService.Result rawIngested = null;
+        try {
+            ingested = ingestion.ingest(product, requestedStart, requestedEnd, adjustType,
+                    knownStartDate(product));
+            if ("STOCK_HISTORY".equals(job.getJobType()) && !"NONE".equals(adjustType)) {
+                QuoteSeriesCoverageService.Coverage rawPrior = seriesCoverage.find(
+                        product.getId(), "NONE", "PRICE");
+                LocalDate rawStart = Boolean.TRUE.equals(job.getForceRefresh()) || rawPrior == null
+                        || !rawPrior.complete() || rawPrior.historyEndDate() == null
+                        ? initialStart(product) : rawPrior.historyEndDate();
+                rawIngested = ingestion.ingest(product, rawStart, requestedEnd, "NONE",
+                        knownStartDate(product));
+            }
+        } catch (UnifiedMarketDataIngestionService.QualityBlockedException blocked) {
             product.setHistoryCoverageComplete(false);
             productMapper.updateById(product);
             throw new QualityBlockedException();
         }
 
-        dataQualityService.claim(evaluation);
-        syncWorker.persistDailyQuotes(product, evaluation.response());
-
-        LocalDate sampleStart = evaluation.snapshot().getSampleStartDate();
-        LocalDate sampleEnd = evaluation.snapshot().getSampleEndDate();
+        LocalDate sampleStart = ingested.sampleStartDate();
+        LocalDate sampleEnd = ingested.sampleEndDate();
         boolean coverageComplete = coverageComplete(
-                product, initialLoad, sampleStart, sampleEnd);
-        if (evaluation.failedRule("STOCK_UNEXPLAINED_TRADING_GAPS")
-                || evaluation.failedRule("FUND_UNEXPLAINED_NAV_GAPS")) {
-            coverageComplete = false;
-        }
+                product, initialLoad, sampleStart, sampleEnd) && ingested.coverageComplete();
+        if (rawIngested != null) coverageComplete &= rawIngested.coverageComplete();
         LocalDate latestKnownDate = "FUND_NAV_HISTORY".equals(job.getJobType())
                 ? quoteMapper.latestCompleteFundTradeDate(product.getId())
-                : quoteMapper.latestTradeDate(product.getId());
+                : quoteMapper.latestTradeDate(product.getId(), adjustType);
         if (latestKnownDate != null && sampleEnd != null && latestKnownDate.isAfter(sampleEnd)
                 && !latestKnownDate.equals(LocalDate.now(clock))) {
             coverageComplete = false;
@@ -133,14 +146,15 @@ public class InvestmentHistoryPreparationService {
                 && quoteMapper.hasMissingFundReturns(product.getId(), sampleEnd)) {
             coverageComplete = false;
         }
-        product.setHistoryStartDate(earlier(product.getHistoryStartDate(), sampleStart));
-        product.setHistoryEndDate(later(product.getHistoryEndDate(), sampleEnd));
+        product.setHistoryStartDate(earlier(prior == null ? null : prior.historyStartDate(), sampleStart));
+        product.setHistoryEndDate(later(prior == null ? null : prior.historyEndDate(), sampleEnd));
         product.setHistoryCoverageComplete(coverageComplete);
         productMapper.updateById(product);
 
         long persistedCount = quoteMapper.selectCount(
                 new LambdaQueryWrapper<ProductDailyQuote>()
-                        .eq(ProductDailyQuote::getProductId, product.getId()));
+                        .eq(ProductDailyQuote::getProductId, product.getId())
+                        .eq(ProductDailyQuote::getAdjustType, adjustType));
         int recordCount = persistedCount > Integer.MAX_VALUE
                 ? Integer.MAX_VALUE : (int) persistedCount;
         return new PreparationResult(
@@ -149,7 +163,7 @@ public class InvestmentHistoryPreparationService {
                 sampleStart,
                 sampleEnd,
                 coverageComplete,
-                evaluation.datasetVersion());
+                ingested.datasetVersion());
     }
 
     private static boolean isAssetHistoryJob(InvestmentDataJob job) {

@@ -82,7 +82,12 @@ public class InvestmentDataQualityService {
                               LocalDate startDate,
                               LocalDate endDate,
                               boolean fetchFreshData) {
-        String adjustType = adjustType(product);
+        return resolve(product, startDate, endDate, adjustType(product), fetchFreshData);
+    }
+
+    @Transactional
+    public Evaluation resolve(InvestmentProduct product, LocalDate startDate, LocalDate endDate,
+                              String adjustType, boolean fetchFreshData) {
         String configVersion = runtimeProperties.getDataQuality().getConfigVersion();
         InvestmentDataQualitySnapshot existing = findExact(
                 product, startDate, endDate, adjustType, configVersion);
@@ -123,6 +128,7 @@ public class InvestmentDataQualityService {
                         .eq(InvestmentDataQualitySnapshot::getProductType, product.getProductType())
                         .eq(InvestmentDataQualitySnapshot::getCode, product.getCode())
                         .eq(InvestmentDataQualitySnapshot::getMarket, product.getMarket())
+                        .eq(InvestmentDataQualitySnapshot::getAdjustType, adjustType(product))
                         .orderByDesc(InvestmentDataQualitySnapshot::getEvaluatedAt)
                         .last("LIMIT 1"));
         if (snapshot == null) {
@@ -264,8 +270,9 @@ public class InvestmentDataQualityService {
         return result;
     }
 
-    private String adjustType(InvestmentProduct product) {
-        return "MUTUAL_FUND".equals(product.getProductType())
+    String adjustType(InvestmentProduct product) {
+        return ("MUTUAL_FUND".equals(product.getProductType())
+                || "FUND".equals(product.getProductType()))
                 ? runtimeProperties.getDataQuality().getFundAdjustType()
                 : runtimeProperties.getDataQuality().getStockAdjustType();
     }

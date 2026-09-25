@@ -52,7 +52,7 @@ public class MarketDataService {
         pageArgs.add(size); pageArgs.add((long) (page - 1) * size);
         List<Map<String, Object>> rows = db.queryForList(
                 "SELECT p.id,p.code,p.name,p.market,p.exchange_code,p.product_type,p.currency,p.status,"
-                        + "p.history_start_date,p.history_end_date FROM investment_product p" + where
+                        + "NULL AS history_start_date,NULL AS history_end_date FROM investment_product p" + where
                         + " ORDER BY p.market,p.code,p.id LIMIT ? OFFSET ?", pageArgs.toArray());
         if (!rows.isEmpty()) {
             List<Object> ids = rows.stream().map(row -> row.get("id")).toList();
@@ -85,7 +85,7 @@ public class MarketDataService {
         result.put("coverage", coverage(productId, "NONE"));
         List<Map<String, Object>> quality = db.queryForList("SELECT quality_status,decision,provider,adapter_version,"
                 + "adjust_type,evaluated_at FROM investment_data_quality_snapshot WHERE product_type=? AND market=? "
-                + "AND code=? ORDER BY evaluated_at DESC LIMIT 1", rows.get(0).get("product_type"),
+                + "AND code=? AND adjust_type='NONE' ORDER BY evaluated_at DESC LIMIT 1", rows.get(0).get("product_type"),
                 rows.get(0).get("market"), rows.get(0).get("code"));
         result.put("quality", quality.isEmpty() ? Map.of("status", "NOT_EVALUATED") : camel(quality.get(0)));
         return result;
@@ -112,7 +112,7 @@ public class MarketDataService {
         LocalDate end = date(stats.get("history_end_date"));
         Long missing = null;
         Double ratio = null;
-        if (start != null && end != null && Set.of("SSE", "SZSE", "BSE", "FUND_CN").contains(product.get("market"))) {
+        if (start != null && end != null && Set.of("SSE", "SZSE", "BSE", "CN_INDEX").contains(product.get("market"))) {
             try {
                 long expected = 0;
                 long observed = 0;
@@ -142,8 +142,14 @@ public class MarketDataService {
         result.put("adapterVersion", latest.isEmpty() ? null : latest.get(0).get("adapter_version"));
         result.put("missingTradingDays", missing);
         result.put("coverageRatio", ratio);
-        result.put("coverageStatus", start == null ? "NO_DATA" : ratio == null ? "CALENDAR_UNAVAILABLE" :
-                missing == 0 ? "COMPLETE" : "GAPS");
+        String derivedStatus = start == null ? "NO_DATA" : ratio == null ? "CALENDAR_UNAVAILABLE" :
+                missing == 0 ? "COMPLETE" : "GAPS";
+        String datasetType = Set.of("MUTUAL_FUND", "FUND").contains(String.valueOf(product.get("product_type")))
+                ? "NAV" : "PRICE";
+        List<String> storedStatus = db.queryForList(
+                "SELECT status FROM product_quote_coverage WHERE product_id=? AND frequency='DAY' "
+                        + "AND adjust_type=? AND dataset_type=?", String.class, productId, adjust, datasetType);
+        result.put("coverageStatus", storedStatus.isEmpty() ? derivedStatus : storedStatus.get(0));
         List<String> quality = db.queryForList("SELECT quality_status FROM investment_data_quality_snapshot "
                         + "WHERE product_type=? AND market=? AND code=(SELECT code FROM investment_product WHERE id=?) "
                         + "AND adjust_type=? ORDER BY evaluated_at DESC LIMIT 1", String.class,
@@ -198,9 +204,12 @@ public class MarketDataService {
     }
 
     public List<Map<String, Object>> overview() {
-        List<Map<String, Object>> groups = db.queryForList("SELECT market,product_type,COUNT(*) AS product_count,"
-                + "MIN(history_start_date) AS history_start_date,MAX(history_end_date) AS latest_data_date "
-                + "FROM investment_product GROUP BY market,product_type ORDER BY market,product_type")
+        List<Map<String, Object>> groups = db.queryForList("SELECT p.market,p.product_type,COUNT(*) AS product_count,"
+                + "MIN(c.history_start_date) AS history_start_date,MAX(c.history_end_date) AS latest_data_date "
+                + "FROM investment_product p LEFT JOIN product_quote_coverage c ON c.product_id=p.id "
+                + "AND c.frequency='DAY' AND c.adjust_type='NONE' "
+                + "AND c.dataset_type=CASE WHEN p.product_type IN ('MUTUAL_FUND','FUND') THEN 'NAV' ELSE 'PRICE' END "
+                + "GROUP BY p.market,p.product_type ORDER BY p.market,p.product_type")
                 .stream().map(MarketDataService::camel).toList();
         Map<String, Long> today = new HashMap<>();
         LocalDate now = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));

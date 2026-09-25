@@ -18,6 +18,16 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
         return latest == null ? null : latest.getTradeDate();
     }
 
+    default LocalDate latestTradeDate(Long productId, String adjustType) {
+        ProductDailyQuote latest = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
+                .select(ProductDailyQuote::getTradeDate)
+                .eq(ProductDailyQuote::getProductId, productId)
+                .eq(ProductDailyQuote::getAdjustType, adjustType)
+                .orderByDesc(ProductDailyQuote::getTradeDate)
+                .last("LIMIT 1"));
+        return latest == null ? null : latest.getTradeDate();
+    }
+
     default boolean hasMissingFundReturns(Long productId) {
         return hasMissingFundReturns(productId, null);
     }
@@ -25,6 +35,7 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
     default boolean hasMissingFundReturns(Long productId, LocalDate throughDate) {
         LambdaQueryWrapper<ProductDailyQuote> query = new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, productId)
+                .eq(ProductDailyQuote::getAdjustType, "NONE")
                 .and(nested -> nested.isNull(ProductDailyQuote::getTotalReturnIndex)
                         .or().le(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO));
         if (throughDate != null) {
@@ -37,6 +48,7 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
         ProductDailyQuote latest = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                 .select(ProductDailyQuote::getTradeDate)
                 .eq(ProductDailyQuote::getProductId, productId)
+                .eq(ProductDailyQuote::getAdjustType, "NONE")
                 .gt(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO)
                 .orderByDesc(ProductDailyQuote::getTradeDate)
                 .last("LIMIT 1"));

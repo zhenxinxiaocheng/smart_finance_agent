@@ -48,6 +48,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final QuantBenchmarkProfileService benchmarkProfileService;
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
+    private final UnifiedMarketDataIngestionService ingestion;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -66,7 +67,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       FundClassificationService classificationService,
                                       QuantBenchmarkProfileService benchmarkProfileService,
                                       InvestmentDetailCacheService detailCache,
-                                      InvestmentQuoteCacheService quoteCache) {
+                                      InvestmentQuoteCacheService quoteCache,
+                                      UnifiedMarketDataIngestionService ingestion) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -82,6 +84,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.benchmarkProfileService = benchmarkProfileService;
         this.detailCache = detailCache;
         this.quoteCache = quoteCache;
+        this.ingestion = ingestion;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -480,21 +483,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
 
     private void saveResolvedQuote(InvestmentProduct product, AnalysisServiceClient.ResolvedProduct resolved) {
         if (resolved.latestPrice() == null || resolved.dataDate() == null) return;
-        ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
-                .eq(ProductDailyQuote::getProductId, product.getId())
-                .eq(ProductDailyQuote::getTradeDate, resolved.dataDate())
-                .eq(ProductDailyQuote::getAdjustType, runtimeProperties.getDataQuality().getRealtimeAdjustType()));
-        if (quote != null && "MUTUAL_FUND".equals(product.getProductType())
-                && quote.getTotalReturnIndex() != null
-                && quote.getTotalReturnIndex().signum() > 0) {
-            return;
-        }
-        if (quote == null) {
-            quote = new ProductDailyQuote();
-            quote.setProductId(product.getId());
-            quote.setTradeDate(resolved.dataDate());
-            quote.setAdjustType(runtimeProperties.getDataQuality().getRealtimeAdjustType());
-        }
+        ProductDailyQuote quote = new ProductDailyQuote();
+        quote.setProductId(product.getId());
+        quote.setTradeDate(resolved.dataDate());
         quote.setClosePrice(resolved.latestPrice());
         quote.setPreviousClose(resolved.previousClose());
         quote.setChangeAmount(resolved.changeAmount());
@@ -510,20 +501,13 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("resolve-v1");
         quote.setSyncedAt(LocalDateTime.now());
-        if (quote.getId() == null) quoteMapper.insert(quote); else quoteMapper.updateById(quote);
+        ingestion.ingestDisplayQuote(product, quote);
     }
 
     private void saveRealtimeQuote(InvestmentProduct product, AnalysisServiceClient.RealtimeQuote resolved) {
-        ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
-                .eq(ProductDailyQuote::getProductId, product.getId())
-                .eq(ProductDailyQuote::getTradeDate, resolved.dataDate())
-                .eq(ProductDailyQuote::getAdjustType, runtimeProperties.getDataQuality().getRealtimeAdjustType()));
-        if (quote == null) {
-            quote = new ProductDailyQuote();
-            quote.setProductId(product.getId());
-            quote.setTradeDate(resolved.dataDate());
-            quote.setAdjustType(runtimeProperties.getDataQuality().getRealtimeAdjustType());
-        }
+        ProductDailyQuote quote = new ProductDailyQuote();
+        quote.setProductId(product.getId());
+        quote.setTradeDate(resolved.dataDate());
         quote.setClosePrice(resolved.latestPrice());
         quote.setPreviousClose(resolved.previousClose());
         quote.setChangeAmount(resolved.changeAmount());
@@ -539,7 +523,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("realtime-v1");
         quote.setSyncedAt(resolved.fetchedAt());
-        if (quote.getId() == null) quoteMapper.insert(quote); else quoteMapper.updateById(quote);
+        ingestion.ingestDisplayQuote(product, quote);
     }
 
     private InvestmentAsset requireAsset(Long userId, Long assetId) {
@@ -557,6 +541,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 .eq(InvestmentPosition::getProductId, asset.getProductId()));
         ProductDailyQuote quote = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                 .eq(ProductDailyQuote::getProductId, asset.getProductId())
+                .eq(ProductDailyQuote::getAdjustType, "NONE")
                 .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
         InvestmentAssetView view = new InvestmentAssetView();
         view.setId(asset.getId());

@@ -75,6 +75,12 @@ public class InvestmentRuntimeProperties {
         requireText(dataQuality.stockAdjustType, "data-quality.stock-adjust-type");
         requireText(dataQuality.fundAdjustType, "data-quality.fund-adjust-type");
         requireText(dataQuality.realtimeAdjustType, "data-quality.realtime-adjust-type");
+        if (!"QFQ".equals(dataQuality.stockAdjustType)) {
+            throw invalid("data-quality.stock-adjust-type 必须为 QFQ");
+        }
+        if (!"NONE".equals(dataQuality.fundAdjustType)) {
+            throw invalid("data-quality.fund-adjust-type 必须为 NONE");
+        }
         requireText(analysis.strategyVersion, "analysis.strategy-version");
     }
 

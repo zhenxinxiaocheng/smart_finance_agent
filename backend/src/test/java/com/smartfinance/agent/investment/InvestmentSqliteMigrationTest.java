@@ -45,8 +45,8 @@ class InvestmentSqliteMigrationTest {
         }
         Flyway flyway = Flyway.configure().dataSource(url, user, password)
                 .locations("classpath:db/migration/" + dialect).baselineOnMigrate(false).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
         try (var connection = DriverManager.getConnection(url, user, password)) {
             String tableQuery = dialect.equals("mysql")
                     ? "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' AND table_name<>'flyway_schema_history'"
@@ -54,7 +54,9 @@ class InvestmentSqliteMigrationTest {
             try (var statement = connection.createStatement(); var rows = statement.executeQuery(tableQuery)) {
                 var names = new java.util.HashSet<String>();
                 while (rows.next()) names.add(rows.getString(1));
-                assertThat(names).hasSize(57).doesNotContain("investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
+                assertThat(names).hasSize(59)
+                        .contains("product_quote_coverage", "market_data_scope_product")
+                        .doesNotContain("investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
             }
             assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "value_hash"));
             assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "ordinal"));

@@ -6,6 +6,7 @@ DROP TABLE IF EXISTS `quant_universe_snapshot`;
 
 DROP TABLE IF EXISTS `market_catalog_state`;
 
+DROP TABLE IF EXISTS `product_quote_coverage`;
 DROP TABLE IF EXISTS `market_data_job`;
 
 DROP TABLE IF EXISTS `quant_v2_experiment_run_attempt`;
@@ -1269,3 +1270,21 @@ CREATE TABLE `quant_universe_member` (
 );
 
 CREATE INDEX quant_universe_member_idx_product ON `quant_universe_member` (product_id);
+
+CREATE TABLE `product_quote_coverage` (
+    product_id BIGINT NOT NULL,
+    frequency VARCHAR(10) NOT NULL,
+    adjust_type VARCHAR(20) NOT NULL,
+    dataset_type VARCHAR(30) NOT NULL,
+    requested_start_date DATE NULL,
+    history_start_date DATE NULL,
+    history_end_date DATE NULL,
+    target_date DATE NULL,
+    observations INT NOT NULL DEFAULT 0,
+    status VARCHAR(24) NOT NULL,
+    reason VARCHAR(300) NULL,
+    provider VARCHAR(80) NULL,
+    dataset_version VARCHAR(128) NULL,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (product_id, frequency, adjust_type, dataset_type)
+);

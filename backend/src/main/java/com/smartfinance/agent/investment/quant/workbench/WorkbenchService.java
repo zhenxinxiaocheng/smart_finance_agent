@@ -8,6 +8,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
+import com.smartfinance.agent.investment.service.QuoteSeriesPolicy;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import java.time.*;
@@ -20,19 +21,18 @@ public class WorkbenchService {
     final TransactionTemplate tx;
     final WorkbenchTrackingIndex trackingIndex;
     final AnalysisServiceClient marketProvider;
+    final QuoteSeriesPolicy seriesPolicy;
     static final Set<String> OBJECTS = Set.of("universes", "factors", "strategies");
     static final Set<String> TASKS = Set.of("training-runs", "backtests", "factor-runs");
     static final int MINIMUM_EVALUATION_DAYS = 60;
     @Autowired
     public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
-                            WorkbenchTrackingIndex trackingIndex, AnalysisServiceClient marketProvider) {
+                             WorkbenchTrackingIndex trackingIndex, AnalysisServiceClient marketProvider,
+                             QuoteSeriesPolicy seriesPolicy) {
         this.db=db; this.json=json; this.tx=new TransactionTemplate(manager);
         this.trackingIndex=trackingIndex;
         this.marketProvider=marketProvider;
-    }
-    public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
-                            WorkbenchTrackingIndex trackingIndex) {
-        this(db,json,manager,trackingIndex,null);
+        this.seriesPolicy=seriesPolicy;
     }
     static String now() { return Instant.now().toString(); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -187,11 +187,18 @@ public class WorkbenchService {
     public List<Map<String,Object>> versions(Long u,String kind,String identity) { object(u,kind,identity); return db.queryForList("SELECT * FROM quant_v2_version WHERE user_id=? AND object_id=? ORDER BY version DESC",u,identity).stream().map(this::view).toList(); }
     private static final Set<String> DOMESTIC_MARKETS = Set.of("SSE", "SZSE", "BSE", "FUND_CN");
     public List<Map<String,Object>> assets(Long u) {
-        return db.queryForList("SELECT a.id,a.product_id,p.name,p.code,p.product_type,p.market,p.history_coverage_complete,"
+        return db.queryForList("SELECT a.id,a.product_id,p.name,p.code,p.product_type,p.market,"
+                + "CASE WHEN c.status='COMPLETE' THEN 1 ELSE 0 END AS history_coverage_complete,"
                 + "(SELECT MIN(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_start_date,"
                 + "(SELECT MAX(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_end_date,"
                 + "(SELECT COUNT(*) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS observations "
-                + "FROM investment_asset a JOIN investment_product p ON p.id=a.product_id WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name", u)
+                + "FROM investment_asset a JOIN investment_product p ON p.id=a.product_id "
+                + "LEFT JOIN product_quote_coverage c ON c.product_id=p.id AND c.frequency='DAY' "
+                + "AND c.adjust_type=CASE WHEN p.product_type IN ('FUND','MUTUAL_FUND','INDEX') "
+                + "THEN 'NONE' ELSE ? END AND c.dataset_type=CASE "
+                + "WHEN p.product_type IN ('FUND','MUTUAL_FUND') THEN 'TOTAL_RETURN_INDEX' ELSE 'PRICE' END "
+                + "WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name",
+                seriesPolicy.researchAdjustType("STOCK", "SSE"), u)
                 .stream().filter(r -> DOMESTIC_MARKETS.contains(str(r.get("market")).toUpperCase(Locale.ROOT)))
                 .map(r -> { Map<String,Object> out=new LinkedHashMap<>(); r.forEach((k,v)->out.put(camel(k),v));
                     out.put("assetClass",assetClass(r)); return out; }).toList();
@@ -286,7 +293,8 @@ public class WorkbenchService {
         for(var a:selected) {
             var quotes=quoteGroups.getOrDefault(a.get("product_id"),List.of());
             Map<String,Map<String,Object>> adjusted=new HashMap<>();
-            for(var q:quotes) if("QFQ".equals(str(q.get("adjust_type")))) adjusted.put(str(q.get("trade_date")),q);
+            String requiredAdjust=seriesPolicy.researchAdjustType(str(a.get("product_type")),str(a.get("market")));
+            for(var q:quotes) if(requiredAdjust.equals(str(q.get("adjust_type")))) adjusted.put(str(q.get("trade_date")),q);
             List<Map<String,Object>> bars=new ArrayList<>();
             for(var q:quotes) {
                 if(!"NONE".equals(str(q.get("adjust_type")))) continue;
@@ -295,8 +303,10 @@ public class WorkbenchService {
                 b.put("date",day); b.put("open",q.get("open_price")); b.put("close",q.get("close_price"));
                 b.put("high",q.get("high_price")); b.put("low",q.get("low_price")); b.put("previousClose",q.get("previous_close"));
                 Object research="FUND".equals(a.get("assetClass")) ? q.get("total_return_index")
+                        : "NONE".equals(requiredAdjust) ? q.get("close_price")
                         : adjusted.getOrDefault(day,Map.of()).get("close_price");
-                b.put("researchClose",research!=null?research:q.get("close_price"));
+                require(research!=null,"研究行情缺少 "+requiredAdjust+" 序列或基金累计收益指数："+str(a.get("code"))+" "+day);
+                b.put("researchClose",research);
                 b.put("volume",q.get("volume")); b.put("amount",q.get("amount"));
                 b.put("adjustType","NONE"); b.put("source",q.get("source")); bars.add(b);
             }
@@ -345,9 +355,18 @@ public class WorkbenchService {
         List<Object> parameters = new ArrayList<>(productIds);
         parameters.add(end.toString());
         parameters.add(productIds.size());
-        String sql = "SELECT trade_date FROM product_daily_quote WHERE product_id IN (" + placeholders + ") "
-                + "AND adjust_type='NONE' AND trade_date<=? GROUP BY trade_date "
-                + "HAVING COUNT(DISTINCT product_id)=? ORDER BY trade_date DESC";
+        String sql = "SELECT raw.trade_date FROM product_daily_quote raw "
+                + "JOIN investment_product p ON p.id=raw.product_id "
+                + "JOIN product_daily_quote research ON research.product_id=raw.product_id "
+                + "AND research.trade_date=raw.trade_date AND research.adjust_type=CASE "
+                + "WHEN p.product_type IN ('FUND','MUTUAL_FUND','INDEX') THEN 'NONE' ELSE ? END "
+                + "WHERE raw.product_id IN (" + placeholders + ") AND raw.adjust_type='NONE' "
+                + "AND raw.trade_date<=? AND raw.close_price>0 "
+                + "AND CASE WHEN p.product_type IN ('FUND','MUTUAL_FUND') "
+                + "THEN research.total_return_index ELSE research.close_price END>0 "
+                + "GROUP BY raw.trade_date HAVING COUNT(DISTINCT raw.product_id)=? "
+                + "ORDER BY raw.trade_date DESC";
+        parameters.add(0, seriesPolicy.researchAdjustType("STOCK", "SSE"));
         return db.query(sql, parameters.toArray(), (row, index) -> LocalDate.parse(row.getString(1)));
     }
     private LocalDate dateOrToday(String value, String field) {
