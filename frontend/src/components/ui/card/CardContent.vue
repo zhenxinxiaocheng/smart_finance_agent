@@ -10,7 +10,7 @@ const props = defineProps<{
 <template>
   <div
     data-slot="card-content"
-    :class="cn('px-4 group-data-[size=sm]/card:px-3', props.class)"
+    :class="cn('px-[var(--app-card-padding)] group-data-[size=sm]/card:px-[calc(var(--app-card-padding)*0.75)]', props.class)"
   >
     <slot />
   </div>

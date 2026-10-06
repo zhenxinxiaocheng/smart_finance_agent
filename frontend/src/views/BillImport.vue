@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto flex max-w-[1400px] flex-col gap-5">
+  <div class="app-page flex flex-col gap-[var(--app-section-gap)]">
     <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
       <div class="min-w-0">
         <h1 class="text-2xl font-semibold tracking-normal text-foreground">账单导入</h1>

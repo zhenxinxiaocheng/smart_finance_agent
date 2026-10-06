@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto max-w-[1440px] space-y-5 pb-8">
+  <div class="app-page space-y-[var(--app-section-gap)] pb-8">
     <template v-if="loading">
       <div class="detail-fade-in flex items-center justify-between gap-4">
         <div class="flex items-center gap-3"><Skeleton class="size-8" /><div class="space-y-2"><Skeleton class="h-6 w-44" /><Skeleton class="h-4 w-64" /></div></div>
@@ -56,8 +56,8 @@
       </header>
 
       <section class="detail-fade-in detail-delay-1 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Card v-for="metric in topMetrics" :key="metric.label" class="gap-2 py-4 shadow-sm">
-          <CardContent class="px-3 sm:px-4">
+        <Card v-for="metric in topMetrics" :key="metric.label" class="gap-2 shadow-sm">
+          <CardContent>
             <div class="flex items-center gap-1 text-xs text-muted-foreground">
               <span>{{ metric.label }}</span>
               <InfoTooltip v-if="metric.help" :content="metric.help" :label="`了解${metric.label}`" />
@@ -69,8 +69,8 @@
       </section>
 
       <section class="detail-fade-in detail-delay-2 grid gap-4 xl:grid-cols-12">
-        <Card class="gap-0 py-4 shadow-sm xl:col-span-9">
-          <CardContent class="px-3 sm:px-5">
+        <Card class="gap-0 shadow-sm xl:col-span-9">
+          <CardContent>
             <InvestmentKlineChart
               :series="detail.quoteSeries"
               :product-type="asset.productType"
@@ -89,7 +89,7 @@
               <InfoTooltip :content="helpText.analysisPeriod" label="了解分析周期" />
             </div>
           </div>
-          <div class="space-y-5 p-5">
+          <div class="space-y-[var(--app-section-gap)] p-[var(--app-card-padding)]">
             <div v-if="!isFund">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-sm font-semibold">专业走势研判</span>

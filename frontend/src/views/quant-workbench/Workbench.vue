@@ -17,7 +17,7 @@ const links = [['/quant', '策略'], ['/quant/data', '数据中心'], ['/quant/u
 </template>
 
 <style>
-.quant-workspace { max-width:1600px; margin-inline:auto; min-width:0 }
+.quant-workspace { min-width:0 }
 .qw .quant-page-header { margin-bottom:20px }
 .qw .quant-back { margin-bottom:8px }
 .qw .quant-heading-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap }

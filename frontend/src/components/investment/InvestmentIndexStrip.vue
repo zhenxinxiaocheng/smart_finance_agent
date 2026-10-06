@@ -51,7 +51,7 @@
         >
           <article
             :aria-label="`${entry.item.name}，按住拖动可调整位置`"
-            class="group relative h-full cursor-grab rounded-xl border bg-card p-4 shadow-sm transition-[background-color,border-color,box-shadow] duration-200 ease-out"
+            class="group relative h-full cursor-grab rounded-xl border bg-card p-[var(--app-card-padding)] shadow-sm transition-[background-color,border-color,box-shadow] duration-200 ease-out"
             :class="{ 'cursor-grabbing border-primary/60 bg-accent/40 shadow-lg ring-2 ring-inset ring-primary/40': reorderingCode === entry.item.indexCode && reorderingCycle === entry.cycle }"
           >
             <button

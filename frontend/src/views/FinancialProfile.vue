@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto flex max-w-[1180px] flex-col gap-5">
+  <div class="app-page flex flex-col gap-[var(--app-section-gap)]">
     <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
       <div class="min-w-0">
         <h1 class="text-2xl font-semibold tracking-normal text-foreground">财务画像</h1>
@@ -19,7 +19,7 @@
       <AlertDescription>{{ auditLandingHint }}</AlertDescription>
     </Alert>
 
-    <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div class="grid gap-[var(--app-section-gap)] xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
       <Card>
         <CardHeader>
           <CardTitle class="text-base">基础信息</CardTitle>

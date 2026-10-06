@@ -33,9 +33,10 @@ html, body, #app {
 :root {
   color-scheme: light;
   --app-page-padding: 1.5rem;
+  --app-spacing: 0.25rem;
   --app-section-gap: 1.25rem;
-  --app-card-padding: 1rem;
-  --app-control-height: 2.25rem;
+  --app-card-padding: 1.25rem;
+  --app-control-height: 2.5rem;
   --app-container-max: none;
 
   --primary: oklch(0.205 0 0);
@@ -175,9 +176,22 @@ html, body, #app {
 }
 
 .page-container {
-  max-width: 1400px;
+  width: 100%;
+  min-width: 0;
   margin: 0 auto;
   padding: 0;
+}
+
+/* Scale page spacing independently of the navigation. */
+.app-content {
+  --spacing: var(--app-spacing);
+  min-width: 0;
+  padding: var(--app-page-padding);
+}
+
+.app-page {
+  width: 100%;
+  min-width: 0;
 }
 
 .stat-value { font-feature-settings: 'tnum'; }
@@ -345,6 +359,7 @@ html[data-theme-color="slate"] {
 }
 
 html[data-density="compact"] {
+  --app-spacing: 0.21875rem;
   --app-page-padding: 1rem;
   --app-section-gap: 0.875rem;
   --app-card-padding: 0.75rem;
@@ -353,18 +368,20 @@ html[data-density="compact"] {
 }
 
 html[data-density="comfortable"] {
+  --app-spacing: 0.25rem;
   --app-page-padding: 1.5rem;
   --app-section-gap: 1.25rem;
-  --app-card-padding: 1rem;
-  --app-control-height: 2.25rem;
+  --app-card-padding: 1.25rem;
+  --app-control-height: 2.5rem;
   --radius: 0.625rem;
 }
 
 html[data-density="spacious"] {
+  --app-spacing: 0.3125rem;
   --app-page-padding: 2rem;
   --app-section-gap: 1.75rem;
-  --app-card-padding: 1.25rem;
-  --app-control-height: 2.5rem;
+  --app-card-padding: 1.75rem;
+  --app-control-height: 3rem;
   --radius: 0.75rem;
 }
 
@@ -374,6 +391,12 @@ html[data-container="boxed"] {
 
 html[data-container="fluid"] {
   --app-container-max: none;
+}
+
+@media (max-width: 640px) {
+  .app-content {
+    padding: min(var(--app-page-padding), 1rem);
+  }
 }
 
 @layer base {

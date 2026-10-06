@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-3">
+  <div class="investment-chart-container space-y-3">
     <div v-if="productType !== 'MUTUAL_FUND'" class="rounded-lg border bg-muted/20 p-2.5">
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div class="flex flex-wrap items-center gap-1">
@@ -42,7 +42,7 @@
       <span>{{ historyWarning }}</span>
     </div>
 
-    <div v-if="series.length" class="investment-chart h-[360px] w-full sm:h-[420px] md:h-[500px] xl:h-[520px]">
+    <div v-if="series.length" class="investment-chart w-full">
       <VChart ref="chartRef" :option="option" autoresize class="size-full" @dblclick="restore" />
     </div>
     <div v-else class="grid h-[320px] place-items-center rounded-lg border border-dashed bg-muted/20 text-sm text-muted-foreground">
@@ -138,6 +138,14 @@ function restore() {
 </script>
 
 <style scoped>
+.investment-chart-container {
+  container-type: inline-size;
+}
+
+.investment-chart {
+  height: clamp(360px, 58cqw, 820px);
+}
+
 .investment-chart :deep(canvas) {
   cursor: crosshair;
 }

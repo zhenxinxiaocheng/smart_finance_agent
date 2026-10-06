@@ -165,8 +165,8 @@
       </header>
 
       <main class="flex-1 overflow-y-auto overflow-x-hidden">
-        <div class="mx-auto w-full" :style="{ maxWidth: isQuantWorkspace ? 'none' : 'var(--app-container-max)' }">
-          <div class="p-[var(--app-page-padding)]">
+        <div class="mx-auto w-full max-w-[var(--app-container-max)]">
+          <div class="app-content">
             <router-view v-slot="{ Component }">
               <transition name="fade" mode="out-in">
                 <component :is="Component" />
@@ -256,7 +256,6 @@ const notificationLoading = ref(false)
 const unreadAlerts = ref([])
 let notificationTimer = null
 const activeMenu = computed(() => route.path)
-const isQuantWorkspace = computed(() => route.path.startsWith('/quant'))
 const showChatConversationPanel = computed(() => !isCollapse.value && conversations.value.length > 0)
 const userInitial = computed(() => authStore.username?.charAt(0)?.toUpperCase() || 'U')
 const safeUnreadAlerts = computed(() => Array.isArray(unreadAlerts.value) ? unreadAlerts.value : [])

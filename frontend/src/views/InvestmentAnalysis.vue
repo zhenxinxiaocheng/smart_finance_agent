@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto max-w-[1440px] space-y-5">
+  <div class="app-page space-y-[var(--app-section-gap)]">
     <header class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">我的投资</h1>
