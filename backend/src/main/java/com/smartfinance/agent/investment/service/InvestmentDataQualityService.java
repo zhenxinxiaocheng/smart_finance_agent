@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 public class InvestmentDataQualityService {
@@ -94,7 +95,7 @@ public class InvestmentDataQualityService {
         if (existing != null && !fetchFreshData) {
             String secondary = firstSecondary(existing.getSecondaryDatasetVersionsJson());
             Map<String, Object> response = analysisClient.replayDataQuality(
-                    existing.getDatasetVersion(), secondary, configVersion);
+                    product, existing.getDatasetVersion(), secondary, configVersion);
             Evaluation replayed = toEvaluation(existing, response);
             if (!Objects.equals(existing.getQualityRuleSetVersion(), replayed.ruleSetVersion())) {
                 throw new IllegalStateException("数据质量规则版本发生漂移，拒绝复用旧快照");
@@ -270,11 +271,28 @@ public class InvestmentDataQualityService {
         return result;
     }
 
-    String adjustType(InvestmentProduct product) {
+    public String adjustType(InvestmentProduct product) {
+        return adjustType(product.getProductType(), product.getMarket());
+    }
+
+    /**
+     * 基金、ETF、指数及境外股票采用原始价格；A 股研究价格按配置复权。
+     */
+    public String adjustType(String productType, String market) {
+        if (Set.of("MUTUAL_FUND", "FUND", "ETF", "INDEX").contains(productType)) {
+            return runtimeProperties.getDataQuality().getFundAdjustType();
+        }
+        if (("ETF".equals(productType) || "STOCK".equals(productType)) && market != null
+                && Set.of("NASDAQ", "NYSE", "AMEX").contains(market)) {
+            return runtimeProperties.getDataQuality().getFundAdjustType();
+        }
+        return runtimeProperties.getDataQuality().getStockAdjustType();
+    }
+
+    /** 该产品的数据序列类型：基金为净值，其余为价格。 */
+    String datasetType(InvestmentProduct product) {
         return ("MUTUAL_FUND".equals(product.getProductType())
-                || "FUND".equals(product.getProductType()))
-                ? runtimeProperties.getDataQuality().getFundAdjustType()
-                : runtimeProperties.getDataQuality().getStockAdjustType();
+                || "FUND".equals(product.getProductType())) ? "NAV" : "PRICE";
     }
 
     private String firstSecondary(String json) {

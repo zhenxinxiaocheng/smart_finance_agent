@@ -7,7 +7,6 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Data
@@ -27,11 +26,6 @@ public class InvestmentDataJob {
     private LocalDateTime leaseUntil;
     private String leaseToken;
     private String errorMessage;
-    private LocalDate requestedStartDate;
-    private LocalDate sampleStartDate;
-    private LocalDate sampleEndDate;
-    private Boolean coverageComplete;
-    private String datasetVersion;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     @TableField(fill = FieldFill.INSERT)

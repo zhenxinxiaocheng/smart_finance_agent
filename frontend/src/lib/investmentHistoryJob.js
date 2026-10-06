@@ -1,95 +1,19 @@
-const POLLING_STATUSES = new Set(['QUEUED', 'RUNNING', 'RETRY_WAIT'])
+// 详情页只读后，历史数据任务状态不再驱动页面内容。
+// 这里只保留对后端任务状态的纯文本解释，供后台状态面板等只读场景使用。
 
-export function shouldPollHistoryJob(status) {
-  return POLLING_STATUSES.has(status)
+export function describeHistoryJob(status) {
+  return ({
+    QUEUED: '正在排队补齐历史数据',
+    RUNNING: '正在补齐历史数据',
+    RETRY_WAIT: '历史数据准备将自动重试',
+    PARTIAL: '历史数据已部分补齐',
+    SUCCEEDED: '历史数据已补齐',
+    SKIPPED: '本地历史数据已是最新',
+    FAILED: '历史数据准备失败',
+  }[status] || '尚未开始准备历史数据')
 }
 
-export function createHistoryJobPollingController({
-  poll,
-  onJob,
-  onTerminal,
-  intervalMs = 3000,
-  scheduler = globalThis,
-  visibilitySource = globalThis.document
-}) {
-  let timer = null
-  let inFlight = false
-  let disposed = false
-  let assetId = null
-  let status = null
-  let generation = 0
-
-  const isVisible = () => !visibilitySource?.hidden
-  const isCurrent = context => !disposed
-    && context.generation === generation
-    && String(context.assetId) === String(assetId)
-  const stopTimer = () => {
-    if (timer === null) return
-    scheduler.clearTimeout(timer)
-    timer = null
-  }
-  const schedule = () => {
-    if (disposed || !isVisible() || !shouldPollHistoryJob(status)) {
-      stopTimer()
-      return
-    }
-    if (timer !== null || inFlight) return
-    timer = scheduler.setTimeout(() => {
-      timer = null
-      void execute()
-    }, intervalMs)
-  }
-  const execute = async () => {
-    if (disposed || inFlight || !shouldPollHistoryJob(status)) return
-    const context = { assetId, generation }
-    inFlight = true
-    try {
-      const job = await poll(context)
-      if (!isCurrent(context)) return
-      const previousStatus = status
-      status = job?.status
-      onJob?.(job, context)
-      if (status === 'SUCCEEDED' || (status === 'PARTIAL' && previousStatus !== status)) {
-        stopTimer()
-        onTerminal?.(job, context)
-      } else if (status === 'FAILED') {
-        stopTimer()
-      }
-    } catch {
-      // 瞬时网络失败保持当前状态，后续轮询会继续尝试。
-    } finally {
-      inFlight = false
-      schedule()
-    }
-  }
-  const handleVisibilityChange = () => schedule()
-
-  visibilitySource?.addEventListener?.('visibilitychange', handleVisibilityChange)
-
-  return {
-    update(nextAssetId, nextStatus) {
-      if (disposed) return
-      if (String(nextAssetId) !== String(assetId)) {
-        assetId = nextAssetId
-        generation += 1
-      }
-      status = nextStatus
-      schedule()
-    },
-    restart(nextAssetId, nextStatus) {
-      if (disposed) return
-      stopTimer()
-      assetId = nextAssetId
-      generation += 1
-      status = nextStatus
-      schedule()
-    },
-    dispose() {
-      if (disposed) return
-      disposed = true
-      generation += 1
-      stopTimer()
-      visibilitySource?.removeEventListener?.('visibilitychange', handleVisibilityChange)
-    }
-  }
+// 只有从未有过有效历史的产品才需要提示“历史数据准备中”。
+export function needsHistoryPreparation(dataState, historyEndDate) {
+  return !historyEndDate && dataState !== 'READY'
 }

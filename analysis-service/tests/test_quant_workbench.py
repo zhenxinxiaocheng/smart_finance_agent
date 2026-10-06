@@ -138,6 +138,41 @@ def test_paused_holdings_are_valued_without_new_orders_or_fills():
     assert paused["state"]["equityCurve"][-1]["equity"] > original_state["equityCurve"][-1]["equity"]
 
 
+def test_paused_unheld_asset_does_not_block_held_asset_valuation():
+    payload = request()
+    payload["kind"] = "PAPER"
+    bars = payload["assets"][0]["bars"]
+    unused = deepcopy(payload["assets"][0])
+    unused.update(id="unused", code="unused", bars=deepcopy(bars[:101]))
+    payload["assets"].append(unused)
+    payload["endDate"] = bars[100]["date"]
+    state = execute(payload)["state"]
+    state["positions"] = {"asset-1": {"quantity": 100, "cost": 1000, "lastPrice": 10}}
+    state["pendingOrders"] = []
+    payload.update(state=state, action="PAUSE", endDate=bars[110]["date"])
+    paused = execute(payload)
+    assert paused["state"]["lastDate"] == payload["endDate"]
+    assert paused["result"]["fills"] == []
+    assert paused["state"]["binding"] == state["binding"]
+
+
+def test_paused_cash_settlement_does_not_need_new_market_bars():
+    payload = request("FUND")
+    payload["kind"] = "PAPER"
+    payload["endDate"] = payload["assets"][0]["bars"][100]["date"]
+    state = execute(payload)["state"]
+    state["positions"] = {}
+    state["pendingOrders"] = []
+    due = (date.fromisoformat(payload["endDate"]) + timedelta(days=3)).isoformat()
+    state["receivables"] = [{"dueDate": due, "amount": 20, "orderId": "settlement-fixture"}]
+    payload["assets"][0]["bars"] = payload["assets"][0]["bars"][:101]
+    payload.update(state=state, action="PAUSE", endDate=due)
+    settled = execute(payload)
+    assert settled["state"]["receivables"] == []
+    assert settled["state"]["cash"] == state["cash"] + 20
+    assert settled["result"]["fills"] == []
+
+
 def test_fund_redemption_remains_receivable_until_settlement():
     payload = request("FUND")
     payload["config"]["maxDrawdown"] = .95

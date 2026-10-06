@@ -26,18 +26,9 @@ public interface InvestmentDataJobMapper extends BaseMapper<InvestmentDataJob> {
             SET status = 'QUEUED', force_refresh = 0, record_count = 0, attempt_count = 0,
                 next_retry_at = NULL, lease_until = NULL, lease_token = NULL,
                 error_message = NULL, started_at = NULL, finished_at = NULL
-            WHERE id = #{id} AND status = 'SUCCEEDED'
+            WHERE id = #{id} AND status IN ('SUCCEEDED', 'PARTIAL', 'FAILED')
             """)
     int requeueTerminalIncremental(@Param("id") Long id);
-
-    @Update("""
-            UPDATE investment_data_job
-            SET status = 'QUEUED', force_refresh = 1, record_count = 0, attempt_count = 1,
-                next_retry_at = NULL, lease_until = NULL, lease_token = NULL,
-                error_message = NULL, started_at = NULL, finished_at = NULL
-            WHERE id = #{id} AND status = 'PARTIAL' AND COALESCE(attempt_count, 0) = 0
-            """)
-    int requeuePartialRecoveryOnce(@Param("id") Long id);
 
     @Update("""
             UPDATE investment_data_job
@@ -76,21 +67,4 @@ public interface InvestmentDataJobMapper extends BaseMapper<InvestmentDataJob> {
                    @Param("status") String status, @Param("attemptCount") int attemptCount,
                    @Param("nextRetryAt") LocalDateTime nextRetryAt, @Param("errorMessage") String errorMessage,
                    @Param("finishedAt") LocalDateTime finishedAt, @Param("updatedAt") LocalDateTime updatedAt);
-
-    @Update("""
-            UPDATE investment_data_job
-            SET requested_start_date = #{requestedStartDate},
-                sample_start_date = #{sampleStartDate},
-                sample_end_date = #{sampleEndDate},
-                coverage_complete = #{coverageComplete},
-                dataset_version = #{datasetVersion}
-            WHERE id = #{id} AND status = 'RUNNING' AND lease_token = #{leaseToken}
-            """)
-    int updateCoverage(@Param("id") Long id,
-                       @Param("leaseToken") String leaseToken,
-                       @Param("requestedStartDate") LocalDate requestedStartDate,
-                       @Param("sampleStartDate") LocalDate sampleStartDate,
-                       @Param("sampleEndDate") LocalDate sampleEndDate,
-                       @Param("coverageComplete") boolean coverageComplete,
-                       @Param("datasetVersion") String datasetVersion);
 }

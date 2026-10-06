@@ -26,6 +26,7 @@ from .benchmark_registry import (
 from .fund_classification import FundClassification, classify_fund_type
 from .index_registry import INDEX_WATCHLIST_REGISTRY
 from .strategy_config import load_strategy_config
+from .provider_calls import call_akshare, AkshareCallError
 
 
 STRATEGY = load_strategy_config()
@@ -43,6 +44,7 @@ class _FundSnapshotCacheEntry:
 _FUND_SNAPSHOT_CACHE: WeakKeyDictionary[Any, _FundSnapshotCacheEntry] = WeakKeyDictionary()
 _FUND_CATALOG_CACHE: WeakKeyDictionary[Any, _FundSnapshotCacheEntry] = WeakKeyDictionary()
 _FUND_SNAPSHOT_CACHE_CONDITION = threading.Condition(threading.RLock())
+_TRADING_CALENDAR_CACHE_LOCK = threading.RLock()
 
 
 def _provider_integer(name: str) -> int:
@@ -51,6 +53,17 @@ def _provider_integer(name: str) -> int:
 
 def _market_zone() -> ZoneInfo:
     return ZoneInfo(str(STRATEGY.value("providers.market_timezone")))
+
+
+def _ak_frame(ak_module, function_name: str, **kwargs):
+    try:
+        return call_akshare(function_name, kwargs, ak_module=ak_module,
+                            timeout_seconds=_provider_integer("history_call_timeout_seconds"),
+                            request_timeout_seconds=_provider_integer("history_http_timeout_seconds"),
+                            failure_threshold=_provider_integer("source_failure_threshold"),
+                            cooldown_seconds=_provider_integer("source_cooldown_seconds"))
+    except AkshareCallError as exc:
+        raise ProviderUnavailable(f"AKSHARE: {exc}") from exc
 
 
 def _clear_fund_snapshot_cache() -> None:
@@ -112,7 +125,7 @@ def _fund_snapshot_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], 
     return _cached_fund_records(
         _FUND_SNAPSHOT_CACHE,
         ak_module,
-        ak_module.fund_open_fund_daily_em,
+        lambda: _ak_frame(ak_module, "fund_open_fund_daily_em"),
         _provider_integer("fund_snapshot_cache_ttl_ms"),
         clock,
     )
@@ -122,7 +135,7 @@ def _fund_catalog_records(ak_module: Any, clock=None) -> tuple[dict[str, Any], .
     return _cached_fund_records(
         _FUND_CATALOG_CACHE,
         ak_module,
-        ak_module.fund_name_em,
+        lambda: _ak_frame(ak_module, "fund_name_em"),
         _provider_integer("fund_snapshot_cache_ttl_ms"),
         clock,
     )
@@ -747,7 +760,7 @@ def _fund_benchmark_metadata(ak_module: Any, code: str) -> dict[str, Any]:
     overview_provider = getattr(ak_module, "fund_overview_em", None)
     if overview_provider is None:
         return {}
-    records = overview_provider(symbol=code).to_dict("records")
+    records = _ak_frame(ak_module, "fund_overview_em", symbol=code).to_dict("records")
     if not records:
         return {}
     overview = records[0]
@@ -874,7 +887,7 @@ def resolve_product_metadata(
             raise ProviderUnavailable(f"AKSHARE: 未找到基金代码 {normalized_code}")
         name = str(match.get("基金简称", "")).strip()
         try:
-            frame = ak_module.fund_open_fund_info_em(symbol=normalized_code, indicator="单位净值走势")
+            frame = _ak_frame(ak_module, "fund_open_fund_info_em", symbol=normalized_code, indicator="单位净值走势")
             fund_records = frame.to_dict("records")
             quotes = _frame_to_quotes(frame, normalized_code, market, "AKSHARE")
         except Exception as exc:
@@ -1007,6 +1020,11 @@ def _snapshot_decimal(value: Any) -> Decimal | None:
 
 
 class ProviderUnavailable(RuntimeError):
+    pass
+
+
+class ProviderEmpty(ProviderUnavailable):
+    """Supported sources completed normally, but the requested window was empty."""
     pass
 
 
@@ -1202,18 +1220,18 @@ class AkshareProvider(MarketDataProvider):
         start = start_date.strftime("%Y%m%d")
         end = end_date.strftime("%Y%m%d")
         if product_type.upper() == "ETF" and market in {"SSE", "SZSE", "BSE"}:
-            frame = ak.fund_etf_hist_em(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+            frame = _ak_frame(ak, "fund_etf_hist_em", symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
         elif market in {"SSE", "SZSE", "BSE"}:
-            frame = ak.stock_zh_a_hist(
+            frame = _ak_frame(ak, "stock_zh_a_hist",
                 symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq",
                 timeout=_provider_integer("history_http_timeout_seconds"),
             )
         elif market == "HKEX":
-            frame = ak.stock_hk_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="")
+            frame = _ak_frame(ak, "stock_hk_hist", symbol=code, period="daily", start_date=start, end_date=end, adjust="")
         elif market in {"NYSE", "NASDAQ", "AMEX"}:
-            frame = ak.stock_us_hist(symbol=akshare_us_symbol(code, market), period="daily", start_date=start, end_date=end, adjust="")
+            frame = _ak_frame(ak, "stock_us_hist", symbol=akshare_us_symbol(code, market), period="daily", start_date=start, end_date=end, adjust="")
         else:
-            frame = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+            frame = _ak_frame(ak, "fund_open_fund_info_em", symbol=code, indicator="单位净值走势")
         return [item for item in _frame_to_quotes(frame, code, market, self.name)
                 if start_date <= item.data_date <= end_date]
 
@@ -1231,18 +1249,18 @@ class AkshareProvider(MarketDataProvider):
         start = start_date.strftime("%Y%m%d")
         end = end_date.strftime("%Y%m%d")
         if product is ProductType.MUTUAL_FUND:
-            frame = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+            frame = _ak_frame(ak, "fund_open_fund_info_em", symbol=code, indicator="单位净值走势")
         else:
             argument = {AdjustType.QFQ: "qfq", AdjustType.HFQ: "hfq", AdjustType.NONE: ""}[adjustment]
             if market in {"SSE", "SZSE", "BSE"}:
-                frame = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start,
+                frame = _ak_frame(ak, "stock_zh_a_hist", symbol=code, period="daily", start_date=start,
                                            end_date=end, adjust=argument,
                                            timeout=_provider_integer("history_http_timeout_seconds"))
             elif market == "HKEX":
-                frame = ak.stock_hk_hist(symbol=code, period="daily", start_date=start,
+                frame = _ak_frame(ak, "stock_hk_hist", symbol=code, period="daily", start_date=start,
                                          end_date=end, adjust=argument)
             elif market in {"NYSE", "NASDAQ", "AMEX"}:
-                frame = ak.stock_us_hist(symbol=akshare_us_symbol(code, market), period="daily",
+                frame = _ak_frame(ak, "stock_us_hist", symbol=akshare_us_symbol(code, market), period="daily",
                                          start_date=start, end_date=end, adjust=argument)
             else:
                 raise ProviderUnavailable(f"AKSHARE: unsupported market: {market}")
@@ -1409,6 +1427,8 @@ class ProviderRegistry:
         )
         warnings: list[str] = []
         batches: list[ProviderBatch] = []
+        empty_sources = 0
+        source_errors = 0
         selected_providers: set[str] = set()
         providers = self.providers
         if provider_names is not None:
@@ -1418,6 +1438,7 @@ class ProviderRegistry:
             for name in normalized_names:
                 provider = providers_by_name.get(name)
                 if provider is None:
+                    source_errors += 1
                     warnings.append(f"{name}: configured provider is not registered")
                 else:
                     providers.append(provider)
@@ -1430,15 +1451,19 @@ class ProviderRegistry:
                 )
             except Exception as exc:
                 warnings.append(f"{provider.name}: {exc}")
+                source_errors += 1
                 continue
             if value is None:
+                empty_sources += 1
                 warnings.append(f"{provider.name}: no records")
                 continue
             if not isinstance(value, ProviderBatch):
+                source_errors += 1
                 warnings.append(f"{provider.name}: invalid ProviderBatch")
                 continue
             mismatch = _batch_mismatch(value, product, normalized_code, normalized_market, adjustment)
             if mismatch is not None:
+                source_errors += 1
                 warnings.append(f"{provider.name}: {mismatch}")
                 continue
             if value.provider in selected_providers:
@@ -1450,6 +1475,8 @@ class ProviderRegistry:
             if len(batches) >= maximum_batches:
                 break
         if not batches:
+            if empty_sources and not source_errors:
+                raise ProviderEmpty("; ".join(warnings))
             raise ProviderUnavailable("; ".join(warnings) or "no provider supports this product")
         return tuple(batches), tuple(warnings)
 
@@ -1908,7 +1935,7 @@ def _normalized_benchmark_level(
 
 
 @lru_cache(maxsize=1)
-def _cached_a_share_trade_dates() -> tuple[date, ...]:
+def _cached_a_share_trade_dates(cache_epoch: int = 0) -> tuple[date, ...]:
     try:
         import akshare as ak_module
     except ImportError as exc:
@@ -1918,7 +1945,7 @@ def _cached_a_share_trade_dates() -> tuple[date, ...]:
 
 def _load_a_share_trade_dates(ak_module: Any) -> tuple[date, ...]:
     try:
-        frame = ak_module.tool_trade_date_hist_sina()
+        frame = _ak_frame(ak_module, 'tool_trade_date_hist_sina')
     except Exception as exc:
         raise ProviderUnavailable(f"AKSHARE 交易日历获取失败: {exc}") from exc
     dates: set[date] = set()
@@ -1931,7 +1958,11 @@ def _load_a_share_trade_dates(ak_module: Any) -> tuple[date, ...]:
 
 def fetch_a_share_trade_calendar(year: int, ak_module: Any = None) -> list[str]:
     if ak_module is None:
-        dates = _cached_a_share_trade_dates()
+        # functools.lru_cache does not coalesce concurrent misses. Native parser
+        # initialization must happen once, and provider failure stays isolated.
+        with _TRADING_CALENDAR_CACHE_LOCK:
+            epoch = int(monotonic() // _provider_integer('trading_calendar_cache_ttl_seconds'))
+            dates = _cached_a_share_trade_dates(epoch)
     else:
         dates = _load_a_share_trade_dates(ak_module)
     result = [trading_date.isoformat() for trading_date in dates if trading_date.year == year]

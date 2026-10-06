@@ -7,6 +7,8 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -19,6 +21,11 @@ import java.util.Map;
 
 @Component
 public class AnalysisServiceClient {
+
+    public static final class SourceEmptyException extends IllegalStateException {
+        public SourceEmptyException(String message) { super(message); }
+        public SourceEmptyException(String message, Throwable cause) { super(message, cause); }
+    }
 
     public record ResolvedProduct(String productType, String code, String name, String market,
                                   String currency, String provider, LocalDate dataDate,
@@ -132,6 +139,7 @@ public class AnalysisServiceClient {
 
     private final RestClient restClient;
     private final RestClient benchmarkRestClient;
+    private final RestClient catalogRestClient;
     private final String internalToken;
 
     @Autowired
@@ -139,7 +147,8 @@ public class AnalysisServiceClient {
                                  @Value("${analysis-service.base-url:http://127.0.0.1:8090}") String baseUrl,
                                  @Value("${analysis-service.internal-token:dev-analysis-token}") String internalToken,
                                  @Value("${analysis-service.benchmark-connect-timeout:10s}") Duration benchmarkConnectTimeout,
-                                 @Value("${analysis-service.benchmark-read-timeout:90s}") Duration benchmarkReadTimeout) {
+                                 @Value("${analysis-service.benchmark-read-timeout:90s}") Duration benchmarkReadTimeout,
+                                 @Value("${analysis-service.catalog-read-timeout}") Duration catalogReadTimeout) {
         RestClient.Builder baseBuilder = builder.clone().baseUrl(baseUrl);
         this.restClient = baseBuilder.clone().build();
         SimpleClientHttpRequestFactory benchmarkRequestFactory =
@@ -149,18 +158,28 @@ public class AnalysisServiceClient {
         this.benchmarkRestClient = baseBuilder.clone()
                 .requestFactory(benchmarkRequestFactory)
                 .build();
+        SimpleClientHttpRequestFactory catalogFactory = new SimpleClientHttpRequestFactory();
+        catalogFactory.setConnectTimeout(benchmarkConnectTimeout);
+        catalogFactory.setReadTimeout(catalogReadTimeout);
+        this.catalogRestClient = baseBuilder.clone().requestFactory(catalogFactory).build();
         this.internalToken = internalToken;
+    }
+
+    public AnalysisServiceClient(RestClient.Builder builder, String baseUrl, String internalToken,
+                                  Duration connectTimeout, Duration readTimeout) {
+        this(builder, baseUrl, internalToken, connectTimeout, readTimeout, readTimeout);
     }
 
     AnalysisServiceClient(RestClient.Builder builder, String baseUrl, String internalToken) {
         this.restClient = builder.baseUrl(baseUrl).build();
         this.benchmarkRestClient = this.restClient;
+        this.catalogRestClient = this.restClient;
         this.internalToken = internalToken;
     }
 
     @SuppressWarnings("unchecked")
     public List<Map<String, Object>> marketCatalog(String market) {
-        Map<String, Object> response = benchmarkRestClient.get()
+        Map<String, Object> response = catalogRestClient.get()
                 .uri(uriBuilder -> uriBuilder.path("/internal/v1/market-data/catalog")
                         .queryParam("market", market).build())
                 .header("X-Internal-Token", internalToken)
@@ -168,6 +187,27 @@ public class AnalysisServiceClient {
         if (response == null || !(response.get("items") instanceof List<?> items))
             throw new IllegalStateException("分析服务返回空市场目录");
         return (List<Map<String, Object>>) (List<?>) items;
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> researchCapabilities() {
+        Map<String, Object> response = catalogRestClient.get()
+                .uri("/internal/v1/market-data/research/capabilities")
+                .header("X-Internal-Token", internalToken).retrieve().body(Map.class);
+        if (response == null || !(response.get("items") instanceof List<?> items))
+            throw new IllegalStateException("研究数据集配置为空");
+        return (List<Map<String, Object>>) (List<?>) items;
+    }
+
+    public Map<String, Object> researchData(InvestmentProduct product, String dataset, LocalDate start, LocalDate end) {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("code", product.getCode());
+        request.put("market", product.getMarket());
+        request.put("product_type", product.getProductType());
+        request.put("dataset", dataset);
+        request.put("start_date", start.toString());
+        request.put("end_date", end.toString());
+        return postInternal(catalogRestClient, "/internal/v1/market-data/research/collect", request, "研究资料");
     }
 
     @SuppressWarnings("unchecked")
@@ -193,11 +233,8 @@ public class AnalysisServiceClient {
         body.put("start_date", startDate.toString());
         body.put("end_date", endDate.toString());
         body.put("adjust_type", adjustType);
-        Map<String, Object> response = benchmarkRestClient.post()
-                .uri("/internal/v1/market-data/quotes/daily")
-                .header("X-Internal-Token", internalToken)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body).retrieve().body(Map.class);
+        Map<String, Object> response = postInternal(benchmarkRestClient,
+                "/internal/v1/market-data/quotes/daily", body, "日线");
         if (response == null || !(response.get("records") instanceof List<?>))
             throw new IllegalStateException("分析服务返回空日线响应");
         return response;
@@ -377,6 +414,7 @@ public class AnalysisServiceClient {
         body.put("productType", product.getProductType());
         body.put("code", product.getCode());
         body.put("market", product.getMarket());
+        body.put("fundCategory", product.getFundCategory());
         body.put("frequency", frequency);
         body.put("adjustType", adjustType);
         body.put("startDate", startDate.toString());
@@ -395,6 +433,25 @@ public class AnalysisServiceClient {
         }
         body.put("qualityConfigVersion", qualityConfigVersion);
         return postInternal("/internal/v1/data-quality/replay", body, "数据质量重放");
+    }
+
+    public Map<String,Object> replayDataQuality(InvestmentProduct product,String datasetVersion,
+                                                String secondaryDatasetVersion,String qualityConfigVersion) {
+        Map<String,Object> body=new LinkedHashMap<>();
+        body.put("datasetVersion",datasetVersion);
+        body.put("secondaryDatasetVersion",secondaryDatasetVersion);
+        body.put("qualityConfigVersion",qualityConfigVersion);
+        body.put("fundCategory",product.getFundCategory());
+        return postInternal("/internal/v1/data-quality/replay",body,"数据质量重放");
+    }
+
+    public Map<String,Object> quoteAvailability(InvestmentProduct product,LocalDate start,LocalDate end,java.time.Instant at) {
+        Map<String,Object> body=new LinkedHashMap<>();
+        body.put("productType",product.getProductType());body.put("market",product.getMarket());
+        body.put("fundCategory",product.getFundCategory());body.put("startDate",start.toString());
+        body.put("endDate",end.toString());body.put("at",at.toString());
+        body.put("delistingDate",product.getDelistingDate()==null?null:product.getDelistingDate().toString());
+        return postInternal("/internal/v1/market-data/availability",body,"行情发布日期规则");
     }
 
     public void claimDataQuality(String datasetVersion, String qualityConfigVersion) {
@@ -519,13 +576,29 @@ public class AnalysisServiceClient {
                                              String path,
                                              Map<String, ?> body,
                                              String operation) {
-        Map<String, Object> response = client.post()
+        Map<String, Object> response;
+        try {
+            response = client.post()
                 .uri(path)
                 .header("X-Internal-Token", internalToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body)
                 .retrieve()
                 .body(Map.class);
+        } catch (RestClientResponseException exception) {
+            // Only the structured provider result is an empty window; transport failures remain failures.
+            try {
+                var document = new ObjectMapper().readTree(exception.getResponseBodyAsString());
+                var detail = document == null ? null : document.path("detail");
+                if (exception.getStatusCode().value() == 503 && detail != null
+                        && "SOURCE_EMPTY".equals(detail.path("code").asText())) {
+                    throw new SourceEmptyException(detail.path("message").asText(), exception);
+                }
+            } catch (java.io.IOException ignored) {
+                // Preserve the original HTTP error when the body is not structured JSON.
+            }
+            throw exception;
+        }
         if (response == null) {
             throw new IllegalStateException("分析服务返回空" + operation + "结果");
         }

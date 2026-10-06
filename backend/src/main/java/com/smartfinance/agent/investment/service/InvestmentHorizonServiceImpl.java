@@ -3,6 +3,7 @@ package com.smartfinance.agent.investment.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
 import com.smartfinance.agent.investment.domain.HorizonSetting;
+import com.smartfinance.agent.investment.domain.GlobalHorizonChangedEvent;
 import com.smartfinance.agent.investment.domain.ResolvedHorizonProfile;
 import com.smartfinance.agent.investment.dto.HorizonProfileRequest;
 import com.smartfinance.agent.investment.dto.HorizonProfileResponse;
@@ -12,6 +13,7 @@ import com.smartfinance.agent.investment.entity.InvestmentHorizonSetting;
 import com.smartfinance.agent.investment.mapper.InvestmentHorizonProfileMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentHorizonSettingMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -30,13 +32,16 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
     private final InvestmentHorizonProfileMapper profileMapper;
     private final InvestmentHorizonSettingMapper settingMapper;
     private final InvestmentHorizonProperties properties;
+    private final ApplicationEventPublisher events;
 
     public InvestmentHorizonServiceImpl(InvestmentHorizonProfileMapper profileMapper,
                                         InvestmentHorizonSettingMapper settingMapper,
-                                        InvestmentHorizonProperties properties) {
+                                        InvestmentHorizonProperties properties,
+                                        ApplicationEventPublisher events) {
         this.profileMapper = profileMapper;
         this.settingMapper = settingMapper;
         this.properties = properties;
+        this.events = events;
     }
 
     @Override
@@ -82,7 +87,9 @@ public class InvestmentHorizonServiceImpl implements InvestmentHorizonService {
     @Transactional
     public HorizonProfileResponse saveGlobal(Long userId, HorizonProfileRequest request) {
         saveScope(userId, USER_SCOPE, null, "USER", request);
-        return global(userId);
+        HorizonProfileResponse response = global(userId);
+        events.publishEvent(new GlobalHorizonChangedEvent(userId));
+        return response;
     }
 
     @Override

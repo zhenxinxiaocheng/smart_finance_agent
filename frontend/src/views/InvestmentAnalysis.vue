@@ -43,6 +43,7 @@
       v-model:open="watchlistDialogOpen"
       :initial-type="watchlistInitialType"
       :existing-index-codes="indexes.map(item => item.indexCode)"
+      :existing-assets="assets"
       @asset-added="refreshAfterAssetChange"
       @index-added="refreshAfterIndexChange"
     />

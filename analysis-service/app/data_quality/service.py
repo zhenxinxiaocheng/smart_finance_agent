@@ -8,6 +8,7 @@ from .config import load_data_quality_config
 from .engine import DataQualityEngine
 from .models import AdjustType, DataQualityConfig, DataQualityManifest, ProductType
 from .snapshot_store import SnapshotStore
+from ..quote_availability import quote_availability
 
 
 CalendarLoader = Callable[[int], list[str]]
@@ -39,6 +40,7 @@ class DataQualityService:
         start_date: date,
         end_date: date,
         quality_config_version: str,
+        fund_category: str | None = None,
     ) -> dict[str, Any]:
         if frequency != "DAY":
             raise ValueError("frequency must be DAY")
@@ -67,7 +69,7 @@ class DataQualityService:
 
         primary = manifests[0]
         secondary_rows = rows_by_version[manifests[1].dataset_version] if len(manifests) > 1 else None
-        expected_dates = self._calendar_dates(primary.requested_start_date, primary.requested_end_date)
+        expected_dates = self._expected_dates(config, primary, fund_category)
         report = DataQualityEngine(config, lambda: primary.fetched_at).evaluate(
             primary,
             rows_by_version[primary.dataset_version],
@@ -83,6 +85,7 @@ class DataQualityService:
         dataset_version: str,
         quality_config_version: str,
         secondary_dataset_version: str | None = None,
+        fund_category: str | None = None,
     ) -> dict[str, Any]:
         config = self._config_loader(quality_config_version)
         store = SnapshotStore(config.storage_root, config.schema_version)
@@ -95,7 +98,7 @@ class DataQualityService:
             _require_replay_compatible(primary, secondary)
             secondary_manifests.append(secondary)
             secondary_rows = store.read(secondary_dataset_version)
-        expected_dates = self._calendar_dates(primary.requested_start_date, primary.requested_end_date)
+        expected_dates = self._expected_dates(config, primary, fund_category)
         report = DataQualityEngine(config, lambda: primary.fetched_at).evaluate(
             primary,
             primary_rows,
@@ -115,6 +118,14 @@ class DataQualityService:
         for year in range(start_date.year, end_date.year + 1):
             values.update(date.fromisoformat(value) for value in self._calendar_loader(year))
         return tuple(sorted(value for value in values if start_date <= value <= end_date))
+
+    def _expected_dates(self, config, manifest, fund_category):
+        if not config.publication_aware_rules:
+            return self._calendar_dates(manifest.requested_start_date, manifest.requested_end_date)
+        result = quote_availability.resolve(product_type=manifest.product_type.value, market=manifest.market,
+                                            fund_category=fund_category, at=manifest.fetched_at,
+                                            start=manifest.requested_start_date, end=manifest.requested_end_date)
+        return tuple(date.fromisoformat(day) for day in result['expectedDates'])
 
 
 def _response(primary, secondary, report, records, warnings) -> dict[str, Any]:

@@ -43,7 +43,8 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         self.now = datetime(2026, 1, 6, 8, tzinfo=timezone.utc)
         self.config = self._config()
 
-    def _config(self, *, enforcement="OBSERVE", warning_threshold=3, minimum_overlap=2):
+    def _config(self, *, enforcement="OBSERVE", warning_threshold=3, minimum_overlap=2,
+                require_adjustment_factor=True):
         return DataQualityConfig(
             version="data-quality-v1",
             rule_set="data-quality-v1",
@@ -64,6 +65,7 @@ class DataQualityRuleEngineTest(unittest.TestCase):
                 "extremeReturnRatio": Decimal("0.20"),
                 "corporateActionEvidenceReturnRatio": Decimal("0.30"),
                 "extremeVolumeMultiplier": 20,
+                "requireAdjustmentFactor": require_adjustment_factor,
             },
             fund={"maxStaleCalendarDays": 3, "maxMissingNavRatio": Decimal("0.20")},
         )
@@ -82,8 +84,8 @@ class DataQualityRuleEngineTest(unittest.TestCase):
             "data_date": day,
             "observed_at": datetime.combine(day, datetime.min.time(), timezone.utc),
             "open": close_value,
-            "high": close_value + Decimal("0.20"),
-            "low": close_value - Decimal("0.20"),
+            "high": close_value * Decimal("1.02"),
+            "low": close_value * Decimal("0.98"),
             "close": close_value,
             "volume": Decimal(volume),
             "nav": None,
@@ -403,7 +405,7 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         ]
         report = self._evaluate(records, ProductType.STOCK,
                                 (date(2026, 1, 2), date(2026, 1, 5)),
-                                config=self._config(enforcement="ENFORCE"))
+                                config=self._config(enforcement="ENFORCE", require_adjustment_factor=False))
         self.assertEqual(IssueOutcome.NOT_APPLICABLE,
                          self._issue(report, "STOCK_EXTREME_RETURN").outcome)
         self.assertEqual(IssueOutcome.NOT_APPLICABLE,
@@ -417,7 +419,7 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         report = self._evaluate(records, ProductType.STOCK,
                                 (date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6)),
                                 now=datetime(2026, 1, 7, 8, tzinfo=timezone.utc),
-                                config=self._config(enforcement="ENFORCE"))
+                                config=self._config(enforcement="ENFORCE", require_adjustment_factor=False))
         self.assertEqual(IssueOutcome.FAIL,
                          self._issue(report, "STOCK_UNEXPLAINED_TRADING_GAPS").outcome)
         self.assertEqual(2, report.summary["blockingWarningGroups"])
@@ -515,6 +517,27 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         report = self._evaluate(stale, ProductType.MUTUAL_FUND, (date(2026, 1, 5),),
                                 now=datetime(2026, 1, 10, tzinfo=timezone.utc))
         self.assertEqual(IssueOutcome.FAIL, self._issue(report, "FUND_STALENESS").outcome)
+
+    def test_fund_staleness_counts_due_sessions_instead_of_national_holiday_days(self):
+        config = self.config.model_copy(update={'publication_aware_rules': True})
+        records = [self._fund_row(date(2026, 9, 30))]
+        report = self._evaluate(records, ProductType.MUTUAL_FUND, (date(2026, 9, 30),),
+                                config=config, now=datetime(2026, 10, 6, 8, tzinfo=timezone.utc))
+        self.assertEqual(IssueOutcome.PASS, self._issue(report, 'FUND_STALENESS').outcome)
+
+    def test_unknown_fund_calendar_cannot_prove_staleness_or_nav_gaps(self):
+        config = self.config.model_copy(update={'publication_aware_rules': True})
+        report = self._evaluate([self._fund_row(date(2026, 9, 29))], ProductType.MUTUAL_FUND, (),
+                                config=config, now=datetime(2026, 10, 6, 8, tzinfo=timezone.utc))
+        self.assertEqual(IssueOutcome.NOT_APPLICABLE, self._issue(report, 'FUND_STALENESS').outcome)
+        self.assertEqual(IssueOutcome.NOT_APPLICABLE, self._issue(report, 'FUND_UNEXPLAINED_NAV_GAPS').outcome)
+
+    def test_true_overdue_fund_sessions_still_fail(self):
+        config = self.config.model_copy(update={'publication_aware_rules': True})
+        days = tuple(date(2026, 1, day) for day in (5, 6, 7, 8, 9))
+        report = self._evaluate([self._fund_row(days[0])], ProductType.MUTUAL_FUND, days,
+                                config=config, now=datetime(2026, 1, 12, 8, tzinfo=timezone.utc), end=days[-1])
+        self.assertEqual(IssueOutcome.FAIL, self._issue(report, 'FUND_STALENESS').outcome)
 
     def test_malformed_common_contract_values_fail_closed_without_comparison_exceptions(self):
         valid = self._stock_row(date(2026, 1, 5))

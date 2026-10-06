@@ -1,11 +1,14 @@
 package com.smartfinance.agent.investment.service;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -19,6 +22,31 @@ public class MarketDataService {
     private static final Set<String> ADJUST_TYPES = Set.of("NONE", "QFQ", "HFQ");
     private final JdbcTemplate db;
     private final AnalysisServiceClient analysis;
+    private InvestmentResearchDataService research;
+    private com.smartfinance.agent.investment.config.MarketDataScopeProperties scopeProperties=new com.smartfinance.agent.investment.config.MarketDataScopeProperties();
+    @Autowired public void setScopeProperties(com.smartfinance.agent.investment.config.MarketDataScopeProperties properties){this.scopeProperties=properties;}
+    private MarketDataRequirementService.SqlScope eligibility() {
+        return MarketDataRequirementService.eligible("j","p",scopeProperties,java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")));
+    }
+
+    @Autowired
+    public void setResearch(InvestmentResearchDataService research) { this.research = research; }
+
+    public Map<String, Object> researchOverview() {
+        var eligible=eligibility();
+        return Map.of("datasets", research.capabilities(), "coverage", research.overview(),
+                "jobs", db.queryForList("SELECT catalog_market,dataset,status,COUNT(*) AS product_count FROM (SELECT p.catalog_market,j.job_type AS dataset,CASE WHEN "
+                        +eligible.sql()+" OR j.status NOT IN ('QUEUED','RUNNING','RETRY_WAIT') THEN j.status ELSE 'PAUSED_BY_SCOPE' END AS status "
+                        + "FROM market_data_job j JOIN investment_product p ON p.id=j.product_id "
+                        + "WHERE j.job_type NOT IN ('BACKFILL','DAILY_UPDATE')) scoped GROUP BY catalog_market,dataset,status",eligible.arguments().toArray()));
+    }
+
+    public Map<String, Object> research(long productId, String dataset, OffsetDateTime asOf, int page, int size) {
+        if (db.queryForObject("SELECT COUNT(*) FROM investment_product WHERE id=?", Integer.class, productId) == 0)
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "产品不存在");
+        try { return research.read(productId, dataset, asOf == null ? OffsetDateTime.now(ZoneOffset.UTC) : asOf, page, size); }
+        catch (IllegalArgumentException error) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "研究读取参数无效"); }
+    }
 
     public MarketDataService(JdbcTemplate db, AnalysisServiceClient analysis) {
         this.db = db;
@@ -39,7 +67,7 @@ public class MarketDataService {
         if (market != null && !market.isBlank()) { where.append(" AND p.market=?"); args.add(market); }
         if (marketGroup != null && !marketGroup.isBlank()) {
             if ("CN_A".equals(marketGroup)) where.append(" AND p.market IN ('SSE','SZSE','BSE')");
-            else if ("US".equals(marketGroup)) where.append(" AND p.market IN ('NYSE','NASDAQ')");
+            else if ("US".equals(marketGroup)) where.append(" AND p.market IN ('NYSE','NASDAQ','AMEX','US_INDEX')");
             else bad("市场分组无效");
         }
         if (assetType != null && !assetType.isBlank()) {
@@ -98,7 +126,7 @@ public class MarketDataService {
     public Map<String, Object> coverage(long productId, String adjustType) {
         String adjust = adjustment(adjustType);
         List<Map<String, Object>> products = db.queryForList(
-                "SELECT id,market,product_type FROM investment_product WHERE id=?", productId);
+                "SELECT id,market,product_type,history_coverage_complete FROM investment_product WHERE id=?", productId);
         if (products.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "产品不存在");
         Map<String, Object> product = products.get(0);
         Map<String, Object> stats = db.queryForMap(
@@ -116,9 +144,10 @@ public class MarketDataService {
             try {
                 long expected = 0;
                 long observed = 0;
-                Set<LocalDate> storedDates = new java.util.HashSet<>(db.queryForList(
+                Set<LocalDate> storedDates = db.queryForList(
                         "SELECT trade_date FROM product_daily_quote WHERE product_id=? AND adjust_type=?",
-                        LocalDate.class, productId, adjust));
+                        String.class, productId, adjust).stream().map(MarketDataService::date)
+                        .collect(java.util.stream.Collectors.toSet());
                 for (int year = start.getYear(); year <= end.getYear(); year++) {
                     for (LocalDate tradingDate : analysis.aShareTradingDates(year)) {
                         if (!tradingDate.isBefore(start) && !tradingDate.isAfter(end)) {
@@ -142,14 +171,14 @@ public class MarketDataService {
         result.put("adapterVersion", latest.isEmpty() ? null : latest.get(0).get("adapter_version"));
         result.put("missingTradingDays", missing);
         result.put("coverageRatio", ratio);
+        Object completeFlag = product.get("history_coverage_complete");
+        boolean fullHistoryVerified = Boolean.TRUE.equals(completeFlag)
+                || completeFlag instanceof Number number && number.intValue() == 1;
+        result.put("coverageScope", "OBSERVED_RANGE");
+        result.put("historyCoverageComplete", fullHistoryVerified);
         String derivedStatus = start == null ? "NO_DATA" : ratio == null ? "CALENDAR_UNAVAILABLE" :
-                missing == 0 ? "COMPLETE" : "GAPS";
-        String datasetType = Set.of("MUTUAL_FUND", "FUND").contains(String.valueOf(product.get("product_type")))
-                ? "NAV" : "PRICE";
-        List<String> storedStatus = db.queryForList(
-                "SELECT status FROM product_quote_coverage WHERE product_id=? AND frequency='DAY' "
-                        + "AND adjust_type=? AND dataset_type=?", String.class, productId, adjust, datasetType);
-        result.put("coverageStatus", storedStatus.isEmpty() ? derivedStatus : storedStatus.get(0));
+                missing == 0 ? fullHistoryVerified ? "COMPLETE" : "SAMPLE_COMPLETE" : "GAPS";
+        result.put("coverageStatus", derivedStatus);
         List<String> quality = db.queryForList("SELECT quality_status FROM investment_data_quality_snapshot "
                         + "WHERE product_type=? AND market=? AND code=(SELECT code FROM investment_product WHERE id=?) "
                         + "AND adjust_type=? ORDER BY evaluated_at DESC LIMIT 1", String.class,
@@ -204,26 +233,32 @@ public class MarketDataService {
     }
 
     public List<Map<String, Object>> overview() {
-        List<Map<String, Object>> groups = db.queryForList("SELECT p.market,p.product_type,COUNT(*) AS product_count,"
-                + "MIN(c.history_start_date) AS history_start_date,MAX(c.history_end_date) AS latest_data_date "
-                + "FROM investment_product p LEFT JOIN product_quote_coverage c ON c.product_id=p.id "
-                + "AND c.frequency='DAY' AND c.adjust_type='NONE' "
-                + "AND c.dataset_type=CASE WHEN p.product_type IN ('MUTUAL_FUND','FUND') THEN 'NAV' ELSE 'PRICE' END "
+        List<Map<String, Object>> groups = db.queryForList("SELECT p.market,p.product_type,"
+                + "COUNT(DISTINCT p.id) AS product_count,"
+                + "MIN(q.trade_date) AS history_start_date,MAX(q.trade_date) AS latest_data_date "
+                + "FROM investment_product p "
+                + "LEFT JOIN product_daily_quote q ON q.product_id=p.id AND q.adjust_type='NONE' "
                 + "GROUP BY p.market,p.product_type ORDER BY p.market,p.product_type")
                 .stream().map(MarketDataService::camel).toList();
         Map<String, Long> today = new HashMap<>();
         LocalDate now = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
-        for (Map<String, Object> row : db.queryForList("SELECT p.market,p.product_type,COUNT(DISTINCT q.product_id) AS count "
-                + "FROM product_daily_quote q JOIN investment_product p ON p.id=q.product_id "
-                + "WHERE q.synced_at>=? AND q.synced_at<? GROUP BY p.market,p.product_type",
+        for (Map<String, Object> row : db.queryForList("SELECT p.market,p.product_type,COUNT(*) AS count "
+                + "FROM (SELECT DISTINCT product_id FROM product_daily_quote WHERE synced_at>=? AND synced_at<?) q "
+                + "JOIN investment_product p ON p.id=q.product_id GROUP BY p.market,p.product_type",
                 now.atStartOfDay(), now.plusDays(1).atStartOfDay()))
             today.put(row.get("market") + ":" + row.get("product_type"), ((Number) row.get("count")).longValue());
         Map<String, String> tasks = new HashMap<>();
-        for (Map<String, Object> row : db.queryForList("SELECT p.market,p.product_type,j.status,COUNT(*) AS count "
+        Map<String,Long> active=new HashMap<>(),paused=new HashMap<>();
+        var eligible=eligibility();
+        for (Map<String, Object> row : db.queryForList("SELECT p.market,p.product_type,j.status,scope_state,COUNT(*) AS count FROM (SELECT j.*,CASE WHEN "+eligible.sql()+" THEN 'ACTIVE' ELSE 'PAUSED_BY_SCOPE' END AS scope_state "
                 + "FROM market_data_job j JOIN investment_product p ON p.id=j.product_id "
-                + "GROUP BY p.market,p.product_type,j.status")) {
+                + ") j JOIN investment_product p ON p.id=j.product_id GROUP BY p.market,p.product_type,j.status,scope_state",eligible.arguments().toArray())) {
             String key = row.get("market") + ":" + row.get("product_type");
             String state = String.valueOf(row.get("status"));
+            boolean scoped="ACTIVE".equals(row.get("scope_state"));
+            if(Set.of("QUEUED","RUNNING","RETRY_WAIT").contains(state))
+                (scoped?active:paused).merge(key,((Number)row.get("count")).longValue(),Long::sum);
+            if(!scoped)continue;
             if (!tasks.containsKey(key) || Set.of("RUNNING", "RETRY_WAIT", "FAILED").contains(state)) tasks.put(key, state);
         }
         for (Map<String, Object> row : groups) {
@@ -231,6 +266,8 @@ public class MarketDataService {
             row.put("todaySynced", today.getOrDefault(key, 0L));
             row.put("dataQualityStatus", "NOT_EVALUATED");
             row.put("syncTaskStatus", tasks.getOrDefault(key, "NOT_SCHEDULED"));
+            row.put("activeJobs",active.getOrDefault(key,0L));
+            row.put("pausedJobs",paused.getOrDefault(key,0L));
         }
         Map<String, Long> evaluated = new HashMap<>();
         for (Map<String, Object> row : db.queryForList("SELECT market,product_type,COUNT(DISTINCT code) AS count "
@@ -246,9 +283,10 @@ public class MarketDataService {
     }
 
     public List<Map<String, Object>> jobs() {
+        var eligible=eligibility();
         return db.queryForList("SELECT j.id,j.product_id,p.code,p.market,j.job_type,j.status,j.checkpoint_date,"
-                + "j.target_date,j.attempt_count,j.updated_at FROM market_data_job j "
-                + "JOIN investment_product p ON p.id=j.product_id ORDER BY j.updated_at DESC LIMIT 50")
+                + "j.target_date,j.attempt_count,j.updated_at,CASE WHEN "+eligible.sql()+" THEN 'ACTIVE' ELSE 'PAUSED_BY_SCOPE' END AS scope_state FROM market_data_job j "
+                + "JOIN investment_product p ON p.id=j.product_id ORDER BY j.updated_at DESC LIMIT 50",eligible.arguments().toArray())
                 .stream().map(MarketDataService::camel).toList();
     }
 

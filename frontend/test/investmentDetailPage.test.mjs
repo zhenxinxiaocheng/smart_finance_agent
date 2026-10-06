@@ -123,3 +123,33 @@ test('详情页自动分析且不提供手动刷新分析按钮', () => {
   assert.doesNotMatch(pageSource, /refreshInvestmentAssetAnalysisAPI/)
   assert.doesNotMatch(pageSource, /async function refreshAnalysis/)
 })
+
+test('详情页只读：不轮询历史任务，也不渲染任务状态文案', () => {
+  assert.doesNotMatch(pageSource, /getInvestmentHistoryJobAPI/)
+  assert.doesNotMatch(pageSource, /createHistoryJobPollingController/)
+  assert.doesNotMatch(pageSource, /historyJob/)
+  assert.doesNotMatch(pageSource, /backgroundRefreshing/)
+  assert.doesNotMatch(pageSource, /cachedAnalysisPending/)
+  assert.doesNotMatch(pageSource, /数据暂不可用/)
+})
+
+test('全量修复必须由用户显式触发，默认同步走增量接口', () => {
+  assert.match(pageSource, /syncInvestmentAssetAPI/)
+  assert.match(pageSource, /fullRepair/)
+  assert.match(pageSource, /全量修复历史数据/)
+  assert.match(pageSource, /同步最新行情/)
+})
+
+test('页面优先展示当前分析数据截至日期', () => {
+  assert.match(pageSource, /当前分析数据截至/)
+  assert.match(pageSource, /analysisAsOfText/)
+})
+
+test('内部数据质量问题统一消息提醒且详情接口抑制原始错误弹窗', () => {
+  assert.doesNotMatch(pageSource, /数据完整性校验未通过|数据校验暂不可用|数据已阻断|等待重新校验/)
+  assert.match(pageSource, /feedback.info\('分析正在后台更新，完成后会自动显示。'\)/)
+  assert.match(investmentApiSource, /getInvestmentAssetDetailAPI[^\n]*silentFeedback: true/)
+  assert.match(investmentApiSource, /syncInvestmentAssetAPI[^\n]*silentFeedback: true/)
+  assert.match(investmentApiSource, /refreshInvestmentAssetDataQualityAPI[^\n]*silentFeedback: true/)
+  assert.match(pageSource, /analysisAsOf = computed\(\(\) => sourceStatus\.value\.quoteDate/)
+})

@@ -16,6 +16,20 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class MarketDataControllerTest {
+    @Test void preparationUsesAuthenticatedOwnerAndRequiresLogin() throws Exception {
+        var controller=new MarketDataController(mock(MarketDataService.class));
+        var demand=mock(com.smartfinance.agent.investment.service.MarketDataDemandService.class);
+        var sync=mock(com.smartfinance.agent.investment.service.MarketDataSyncService.class);
+        controller.configureDemand(demand,sync);
+        when(demand.prepareDetail(7L,3L)).thenReturn(Map.of("renewAfterMs",900000));
+        var jwt=new JwtUtils("01234567890123456789012345678901",60000);
+        var mvc=MockMvcBuilders.standaloneSetup(controller).addInterceptors(new JwtInterceptor(jwt,new ObjectMapper())).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/quant/v2/market-data/products/3/prepare")).andExpect(status().isUnauthorized());
+        verifyNoInteractions(demand);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/quant/v2/market-data/products/3/prepare")
+                .param("userId","99").header("Authorization","Bearer "+jwt.generateToken(7L,"researcher"))).andExpect(status().isOk());
+        verify(demand).prepareDetail(7L,3L);verify(sync).reconcileDemand();
+    }
     @Test
     void apiRequiresJwtAndScopesUniverseMembershipToAuthenticatedUser() throws Exception {
         var service = mock(MarketDataService.class);

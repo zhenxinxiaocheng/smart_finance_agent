@@ -2,6 +2,10 @@ package com.smartfinance.agent.investment.controller;
 
 import com.smartfinance.agent.common.Result;
 import com.smartfinance.agent.investment.service.MarketDataService;
+import com.smartfinance.agent.investment.service.MarketDataDemandService;
+import com.smartfinance.agent.investment.service.MarketDataSyncService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestAttribute;
@@ -10,11 +14,23 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 
 @RestController
 @RequestMapping("/api/quant/v2/market-data")
 public class MarketDataController {
     private final MarketDataService service;
+    private MarketDataDemandService demand;
+    private MarketDataSyncService sync;
+    @Autowired
+    void configureDemand(MarketDataDemandService demand,MarketDataSyncService sync) { this.demand=demand;this.sync=sync; }
+
+    @PostMapping("/products/{productId}/prepare")
+    public Result<?> prepare(@RequestAttribute Long userId,@PathVariable long productId) {
+        var state=demand.prepareDetail(userId,productId);
+        sync.reconcileDemand();
+        return Result.success(state);
+    }
 
     public MarketDataController(MarketDataService service) {
         this.service = service;
@@ -51,6 +67,18 @@ public class MarketDataController {
     @GetMapping("/jobs")
     public Result<?> jobs(@RequestAttribute Long userId) {
         return Result.success(service.jobs());
+    }
+
+    @GetMapping("/research-overview")
+    public Result<?> researchOverview(@RequestAttribute Long userId) {
+        return Result.success(service.researchOverview());
+    }
+
+    @GetMapping("/products/{productId}/research")
+    public Result<?> research(@RequestAttribute Long userId, @PathVariable long productId,
+                              @RequestParam String dataset, @RequestParam(required = false) OffsetDateTime asOf,
+                              @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "100") int size) {
+        return Result.success(service.research(productId, dataset, asOf, page, size));
     }
 
     @GetMapping("/universes/{id}/members")

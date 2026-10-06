@@ -30,6 +30,7 @@ public class InvestmentProduct {
     private LocalDate listingDate;
     private LocalDate delistingDate;
     private String sourceMetadata;
+    private String catalogMarket;
     private LocalDate inceptionDate;
     private LocalDate historyStartDate;
     private LocalDate historyEndDate;

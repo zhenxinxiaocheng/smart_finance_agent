@@ -114,6 +114,7 @@ class StockQualityThresholds(StrictContract):
 
 class FundQualityThresholds(StrictContract):
     max_stale_calendar_days: PositiveCount = Field(alias="maxStaleCalendarDays")
+    max_stale_trading_days: PositiveCount = Field(default=3, alias="maxStaleTradingDays")
     max_missing_nav_ratio: Ratio = Field(alias="maxMissingNavRatio")
 
 
@@ -136,6 +137,7 @@ class DataQualityConfig(StrictContract):
     version: NonBlank
     rule_set: NonBlank = Field(alias="ruleSet")
     evidence_aware_rules: StrictBool = Field(default=False, alias="evidenceAwareRules")
+    publication_aware_rules: StrictBool = Field(default=False, alias="publicationAwareRules")
     market_time_zones: Mapping[str, str] = Field(default_factory=dict, alias="marketTimeZones")
     schema_version: NonBlank = Field(alias="schemaVersion")
     enforcement_mode: EnforcementMode = Field(alias="enforcementMode")

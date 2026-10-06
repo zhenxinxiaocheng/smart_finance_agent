@@ -39,7 +39,8 @@ class InvestmentHorizonServiceTest {
                 new HorizonSetting("LONG", "长期", 30, 120, 500, false, "TEMPLATE")
         ), List.of()));
         when(properties.getMaxHistoryTradingDays()).thenReturn(2500);
-        service = new InvestmentHorizonServiceImpl(profileMapper, settingMapper, properties);
+        service = new InvestmentHorizonServiceImpl(profileMapper, settingMapper, properties,
+                mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 
     @Test

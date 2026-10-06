@@ -1,11 +1,16 @@
 package com.smartfinance.agent.investment.service;
 
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.ResourceAccessException;
 
+import java.net.SocketTimeoutException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
@@ -13,10 +18,94 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
 
 class AnalysisServiceClientTest {
+
+    @Test
+    void marketDailyQuotesSendsAnExplicitProductAndAdjustmentWindow() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        InvestmentProduct product = etfProduct();
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/quotes/daily"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Token", "secret-token"))
+                .andExpect(content().json("""
+                        {"code":"510300","market":"SH","product_type":"ETF",
+                         "start_date":"2026-07-01","end_date":"2026-07-30","adjust_type":"NONE"}
+                        """))
+                .andRespond(withSuccess("""
+                        {"records":[{"data_date":"2026-07-01","close":"4.50"}]}
+                        """, MediaType.APPLICATION_JSON));
+
+        Map<String, Object> result = client.marketDailyQuotes(product,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE");
+
+        assertThat(result).containsKey("records");
+        server.verify();
+    }
+
+    @Test
+    void structuredSourceEmpty503IsTheOnlyHttpEmptyWindowSignal() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/quotes/daily"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_JSON)
+                        .body("""
+                                {"detail":{"code":"SOURCE_EMPTY","message":"provider has no records in window"}}
+                                """));
+
+        assertThatThrownBy(() -> client.marketDailyQuotes(etfProduct(),
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE"))
+                .isInstanceOf(AnalysisServiceClient.SourceEmptyException.class)
+                .hasMessageContaining("no records");
+        server.verify();
+    }
+
+    @Test
+    void unstructuredNoRecordsTextPreservesTheHttpFailure() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/quotes/daily"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"detail\":\"provider transport error: no records\"}"));
+
+        assertThatThrownBy(() -> client.marketDailyQuotes(etfProduct(),
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE"))
+                .isInstanceOf(RestClientResponseException.class)
+                .isNotInstanceOf(AnalysisServiceClient.SourceEmptyException.class);
+        server.verify();
+    }
+
+    @Test
+    void transportFailureContainingNoRecordsIsNeverReclassifiedAsEmpty() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/quotes/daily"))
+                .andRespond(withException(new SocketTimeoutException("no records after transport timeout")));
+
+        assertThatThrownBy(() -> client.marketDailyQuotes(etfProduct(),
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE"))
+                .isInstanceOf(ResourceAccessException.class)
+                .isNotInstanceOf(AnalysisServiceClient.SourceEmptyException.class);
+        server.verify();
+    }
+
+    private static InvestmentProduct etfProduct() {
+        InvestmentProduct product = new InvestmentProduct();
+        product.setProductType("ETF");
+        product.setCode("510300");
+        product.setMarket("SH");
+        return product;
+    }
 
     @Test
     void benchmarkHistory_shouldUseVersionedBenchmarkContract() {

@@ -43,19 +43,20 @@ import static org.mockito.Mockito.when;
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
-        "spring.sql.init.mode=never",
+        "spring.sql.init.mode=always",
+        "spring.sql.init.schema-locations=classpath:schema-h2.sql",
         "investment.runtime.market.stock-refresh-start=00:00",
         "investment.runtime.market.stock-refresh-end=23:59"
 })
 @Import({com.smartfinance.agent.investment.service.InvestmentAssetServiceImpl.class,
         com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
         com.smartfinance.agent.investment.service.FundClassificationService.class,
-        com.smartfinance.agent.investment.service.QuoteSeriesPolicy.class,
-        com.smartfinance.agent.investment.service.QuoteSeriesCoverageService.class,
-        com.smartfinance.agent.investment.service.ProductDailyQuotePersistenceService.class,
-        com.smartfinance.agent.investment.service.UnifiedMarketDataIngestionService.class})
+        com.smartfinance.agent.investment.service.InvestmentSyncWorker.class,
+        com.smartfinance.agent.investment.service.InvestmentHorizonServiceImpl.class,
+        com.smartfinance.agent.investment.config.InvestmentHorizonProperties.class})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class InvestmentAssetServiceIntegrationTest {
+    @MockBean private com.smartfinance.agent.investment.service.MarketDataDemandService demand;
 
     @Autowired
     private InvestmentAssetService assetService;
@@ -135,7 +136,7 @@ class InvestmentAssetServiceIntegrationTest {
                         InvestmentDataJob::getJobType,
                         InvestmentDataJob::getStatus,
                         InvestmentDataJob::getForceRefresh)
-                .containsExactly(7L, asset.getProductId(), "STOCK_HISTORY", "QUEUED", true);
+                .containsExactly(7L, asset.getProductId(), "STOCK_HISTORY", "QUEUED", false);
         verify(analysisServiceClient).realtimeQuote("600519", "SSE");
     }
 
@@ -160,7 +161,7 @@ class InvestmentAssetServiceIntegrationTest {
                         InvestmentDataJob::getJobType,
                         InvestmentDataJob::getStatus,
                         InvestmentDataJob::getForceRefresh)
-                .containsExactly(7L, asset.getProductId(), "FUND_NAV_HISTORY", "QUEUED", true);
+                .containsExactly(7L, asset.getProductId(), "FUND_NAV_HISTORY", "QUEUED", false);
         verify(analysisServiceClient, times(1)).resolveProduct("MUTUAL_FUND", "000001");
         verifyNoInteractions(quoteCache);
     }

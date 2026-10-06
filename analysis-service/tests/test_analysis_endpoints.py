@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+from fastapi import HTTPException
 
 from pydantic import ValidationError
 
@@ -15,11 +17,38 @@ from app.main import (
     fundamental_analysis,
     technical_analysis,
     app,
+    QuoteRequest,
+    DataQualityValidateRequest,
+    daily_quotes,
+    validate_data_quality,
 )
+from app.providers import ProviderEmpty, ProviderUnavailable
 from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_market_empty_window_is_structured_and_transport_failure_is_not_empty(self):
+        request = QuoteRequest(code="SPY", market="AMEX", product_type="ETF",
+                               start_date="2026-07-17", end_date="2026-07-18", adjust_type="NONE")
+        for outcome, expected in (([], "SOURCE_EMPTY"),
+                                  (ProviderUnavailable("no records due to timeout"), "SOURCE_ERROR")):
+            with patch("app.main.daily_history", **({"side_effect": outcome} if isinstance(outcome, Exception)
+                                                    else {"return_value": outcome})):
+                with self.assertRaises(HTTPException) as error:
+                    daily_quotes(request)
+                self.assertEqual(503, error.exception.status_code)
+                self.assertEqual(expected, error.exception.detail["code"])
+
+    def test_quality_empty_result_retains_the_structured_empty_code(self):
+        request = DataQualityValidateRequest(productType="MUTUAL_FUND", code="010736", market="FUND_CN",
+                                             frequency="DAY", adjustType="NONE", startDate="2026-07-17",
+                                             endDate="2026-07-18", qualityConfigVersion="data-quality-v4")
+        with patch("app.main.quality_service.validate", side_effect=ProviderEmpty("no records")):
+            with self.assertRaises(HTTPException) as error:
+                validate_data_quality(request)
+            self.assertEqual(503, error.exception.status_code)
+            self.assertEqual("SOURCE_EMPTY", error.exception.detail["code"])
+
     def test_benchmark_history_contract_is_available_to_backend(self):
         request = BenchmarkHistoryRequest(
             benchmarkCode="CSI300_95_CASH_5",

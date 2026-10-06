@@ -1,0 +1,66 @@
+{
+  "version": "market-catalog-v1",
+  "sourceTimeoutSeconds": 30,
+  "requestTimeoutSeconds": 10,
+  "historySourceTimeoutSeconds": 30,
+  "historyRequestTimeoutSeconds": 10,
+  "sourceFailureThreshold": 3,
+  "sourceCooldownSeconds": 180,
+  "cnASources": [
+    {"name": "AKSHARE_SSE_MAIN", "function": "stock_info_sh_name_code", "kwargs": {"symbol": "主板A股"}, "market": "SSE", "codeColumn": "证券代码", "nameColumn": "证券简称", "listingDateColumn": "上市日期"},
+    {"name": "AKSHARE_SSE_STAR", "function": "stock_info_sh_name_code", "kwargs": {"symbol": "科创板"}, "market": "SSE", "codeColumn": "证券代码", "nameColumn": "证券简称", "listingDateColumn": "上市日期"},
+    {"name": "AKSHARE_SZSE", "function": "stock_info_sz_name_code", "kwargs": {"symbol": "A股列表"}, "market": "SZSE", "codeColumn": "A股代码", "nameColumn": "A股简称", "listingDateColumn": "A股上市日期"},
+    {"name": "AKSHARE_BSE", "function": "stock_info_bj_name_code", "kwargs": {}, "market": "BSE", "codeColumn": "证券代码", "nameColumn": "证券简称", "listingDateColumn": "上市日期"}
+  ],
+  "cnEtfSources": [
+    {"name": "AKSHARE_ETF_SPOT", "function": "fund_etf_spot_em", "kwargs": {}, "codeColumn": "代码", "nameColumn": "名称"},
+    {"name": "AKSHARE_ETF_THS", "function": "fund_etf_spot_ths", "kwargs": {}, "codeColumn": "基金代码", "nameColumn": "基金名称"},
+    {"name": "AKSHARE_ETF_SINA", "function": "fund_etf_category_sina", "kwargs": {"symbol": "ETF基金"}, "codeColumn": "代码", "nameColumn": "名称"}
+  ],
+  "fundCnSource": {"name": "AKSHARE_FUND_OPEN_DAILY", "function": "fund_open_fund_daily_em", "kwargs": {}, "codeColumn": "基金代码", "nameColumn": "基金简称"},
+  "usNameSource": {"name": "AKSHARE_US_SPOT", "function": "stock_us_spot_em", "kwargs": {}},
+  "usDirectorySources": [
+    {"name": "NASDAQ_LISTED", "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", "codeColumn": "Symbol"},
+    {"name": "NASDAQ_OTHER_LISTED", "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt", "codeColumn": "ACT Symbol"}
+  ],
+  "historySources": {
+    "cnEtfRaw": [
+      {"name": "AKSHARE_TENCENT", "function": "stock_zh_a_hist_tx", "kwargs": {"symbol": "{etfSymbol}", "start_date": "{startIso}", "end_date": "{endIso}", "adjust": "{adjust}"}},
+      {"name": "AKSHARE_ETF_EASTMONEY", "function": "fund_etf_hist_em", "kwargs": {"symbol": "{code}", "period": "daily", "start_date": "{start}", "end_date": "{end}", "adjust": "{adjust}"}},
+      {"name": "AKSHARE_ETF_SINA", "function": "fund_etf_hist_sina", "kwargs": {"symbol": "{etfSymbol}"}}
+    ],
+    "cnEtfAdjusted": [
+      {"name": "AKSHARE_TENCENT", "function": "stock_zh_a_hist_tx", "kwargs": {"symbol": "{etfSymbol}", "start_date": "{startIso}", "end_date": "{endIso}", "adjust": "{adjust}"}},
+      {"name": "AKSHARE_ETF_EASTMONEY", "function": "fund_etf_hist_em", "kwargs": {"symbol": "{code}", "period": "daily", "start_date": "{start}", "end_date": "{end}", "adjust": "{adjust}"}}
+    ],
+    "cnStock": [
+      {"name": "AKSHARE_TENCENT", "function": "stock_zh_a_hist_tx", "kwargs": {"symbol": "{stockSymbol}", "start_date": "{startIso}", "end_date": "{endIso}", "adjust": "{adjust}"}},
+      {"name": "AKSHARE_SINA", "function": "stock_zh_a_daily", "markets": ["SSE", "SZSE"], "kwargs": {"symbol": "{stockSymbol}", "start_date": "{start}", "end_date": "{end}", "adjust": "{adjust}"}},
+      {"name": "AKSHARE", "function": "stock_zh_a_hist", "kwargs": {"symbol": "{code}", "period": "daily", "start_date": "{start}", "end_date": "{end}", "adjust": "{adjust}"}}
+    ],
+    "usRaw": [
+      {"name": "AKSHARE_US_EASTMONEY", "function": "stock_us_hist", "kwargs": {"symbol": "{usSymbol}", "period": "daily", "start_date": "{start}", "end_date": "{end}", "adjust": ""}},
+      {"name": "AKSHARE_US_SINA", "function": "stock_us_daily", "kwargs": {"symbol": "{code}", "adjust": ""}}
+    ],
+    "cnIndexRaw": [
+      {"name": "AKSHARE_INDEX_EASTMONEY", "function": "index_zh_a_hist", "kwargs": {"symbol": "{indexCode}", "period": "daily", "start_date": "{start}", "end_date": "{end}"}},
+      {"name": "AKSHARE_INDEX_SINA", "function": "stock_zh_index_daily", "kwargs": {"symbol": "{indexSymbol}"}}
+    ],
+    "usIndexRaw": [
+      {"name": "SINA_US_INDEX_HISTORY", "function": "index_us_stock_sina", "kwargs": {"symbol": "{indexSymbol}"}}
+    ],
+    "fundNav": [
+      {"name": "AKSHARE", "function": "fund_open_fund_info_em", "kwargs": {"symbol": "{code}", "indicator": "单位净值走势"}}
+    ]
+  },
+  "usVenues": {
+    "NASDAQ": {"market": "NASDAQ", "exchange": "NASDAQ"},
+    "N": {"market": "NYSE", "exchange": "NYSE"},
+    "A": {"market": "AMEX", "exchange": "NYSE_AMERICAN"},
+    "P": {"market": "NYSE", "exchange": "NYSE_ARCA"},
+    "Z": {"market": null, "exchange": "CBOE_BZX"},
+    "F": {"market": null, "exchange": "TXSE"},
+    "M": {"market": null, "exchange": "NYSE_TEXAS"},
+    "V": {"market": null, "exchange": "IEX"}
+  }
+}

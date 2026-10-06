@@ -18,6 +18,7 @@
             product-type="STOCK"
             :submitting="assetSubmitting"
             :error-message="assetError"
+            :existing-codes="existingAssetCodes('STOCK')"
             @submit="addAsset"
           />
         </TabsContent>
@@ -26,6 +27,7 @@
             product-type="MUTUAL_FUND"
             :submitting="assetSubmitting"
             :error-message="assetError"
+            :existing-codes="existingAssetCodes('MUTUAL_FUND')"
             @submit="addAsset"
           />
         </TabsContent>
@@ -100,6 +102,7 @@ import {
 const props = defineProps({
   open: Boolean,
   initialType: { type: String, default: 'STOCK' },
+  existingAssets: { type: Array, default: () => [] },
   existingIndexCodes: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update:open', 'asset-added', 'index-added'])
@@ -114,28 +117,37 @@ const indexResults = ref([])
 const indexError = ref('')
 const addingIndexCode = ref('')
 const localAddedCodes = ref([])
+const localAddedAssets = ref([])
 
 watch(() => props.open, open => {
   if (!open) return
-  activeType.value = props.initialType === 'INDEX' ? 'INDEX' : 'STOCK'
+  activeType.value = ['STOCK', 'MUTUAL_FUND', 'INDEX'].includes(props.initialType) ? props.initialType : 'STOCK'
   assetError.value = ''
   indexError.value = ''
   localAddedCodes.value = localAddedCodes.value.filter(code => props.existingIndexCodes.includes(code))
+  localAddedAssets.value = localAddedAssets.value.filter(item => props.existingAssets.some(asset => asset.code === item.code && asset.productType === item.productType))
 })
 
 async function addAsset({ productType, code }) {
+  if (assetSubmitting.value) return
   assetSubmitting.value = true
   assetError.value = ''
   try {
-    const response = await createInvestmentAssetAPI({ productType, code })
+    const response = await createInvestmentAssetAPI({ productType, code }, { silentFeedback: true })
+    localAddedAssets.value.push({ productType, code })
     feedback.success(`已添加 ${response.data?.name || code}`)
     emit('asset-added')
-    emit('update:open', false)
   } catch (error) {
-    assetError.value = errorMessage(error, '代码识别失败')
+    assetError.value = '添加暂未完成，请稍后重试。'
   } finally {
     assetSubmitting.value = false
   }
+}
+
+function existingAssetCodes(productType) {
+  return [...props.existingAssets, ...localAddedAssets.value]
+    .filter(item => (item.productType === 'FUND' ? 'MUTUAL_FUND' : item.productType) === productType)
+    .map(item => item.code)
 }
 
 async function searchIndexes() {

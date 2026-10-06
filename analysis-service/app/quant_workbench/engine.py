@@ -68,7 +68,7 @@ def money(value):
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def prepare(payload):
+def normalize_config(payload):
     c = copy.deepcopy(payload.get("config") or {})
     for key, default, low, high, kind, *_ in PARAMETERS:
         value = number(c.get(key, default), key, low, high)
@@ -86,6 +86,19 @@ def prepare(payload):
     if not any(f["weight"] for f in factors):
         fail("INVALID_CONFIG", "At least one nonzero factor weight is required")
     c["factors"] = factors
+    return c
+
+
+def data_requirements(payload):
+    c = normalize_config(payload)
+    return {"config": c, "datasets": ["PRICE"],
+            "warmupTradingDays": max(c["slowWindow"], c["lookback"] + 1),
+            "parameterCatalogVersion": CATALOG_VERSION}
+
+
+def prepare(payload):
+    c = normalize_config(payload)
+    factors = c["factors"]
     assets = {}
     end = str(payload.get("endDate") or date.today().isoformat())
     date.fromisoformat(end)
@@ -479,15 +492,23 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None, *, buy_and_
         for order in state["pendingOrders"]:
             events.append({**order, "status": "CANCELLED", "reason": action})
         state["pendingOrders"] = []
-    days = {b["date"] for a in assets.values() for b in a["bars"]}
-    for a in assets.values():
+    active_assets = assets
+    if paper and action != "RUN":
+        relevant = {aid for aid, position in state["positions"].items() if position["quantity"] > 1e-8}
+        relevant.update(order["assetId"] for order in state["pendingOrders"])
+        relevant.update(row["assetId"] for row in state["unsettledBuys"])
+        active_assets = {aid: asset for aid, asset in assets.items() if aid in relevant}
+    days = {b["date"] for a in active_assets.values() for b in a["bars"]}
+    for a in active_assets.values():
         if a["assetClass"] == "FUND":
             days.update(published_on(b, a, c) for b in a["bars"])
+    if paper and action != "RUN":
+        days.update(row["dueDate"] for row in state["receivables"])
     watermarks = {}
-    for aid, asset in assets.items():
+    for aid, asset in active_assets.items():
         available = available_bars(asset, end, c)
         watermarks[aid] = max((published_on(b, asset, c) for b in available), default="")
-    complete_through = min(watermarks.values())
+    complete_through = min(watermarks.values()) if watermarks else end
     if new_paper:
         # Establish a launch boundary without replaying an old portfolio. Only
         # observed, complete data can advance the shared portfolio watermark.
@@ -656,7 +677,7 @@ def simulate(payload, c, assets, model=None, benchmark_targets=None, *, buy_and_
               "positionHistory": snapshots, "cashLedger": ledger, "signals": signals, "targetHistory": target_history,
               "cash": state["cash"], "receivables": state["receivables"], "liquidated": state["liquidated"]}
     if paper:
-        latest = max(watermarks.values())
+        latest = max(watermarks.values()) if watermarks else end
         valuation_state = copy.deepcopy(state)
         result["valuation"] = {"asOfDate": end, "equity": portfolio_equity(valuation_state, assets, end, c),
                                "completeThrough": complete_through, "assetWatermarks": watermarks,

@@ -23,6 +23,11 @@ public class WorkbenchAnalysisClient {
         client=builder.clone().baseUrl(url).requestFactory(factory).build();
     }
     public long leaseMillis(){return leaseMillis;}
+    @SuppressWarnings("unchecked") public Map<String,Object> dataRequirements(Map<String,Object> config) {
+        var response=client.post().uri("/quant/v2/data-requirements").header("X-Internal-Token",token)
+                .contentType(MediaType.APPLICATION_JSON).body(Map.of("config",config)).retrieve().body(Map.class);
+        if(response==null)throw new IllegalStateException("分析服务未返回数据需求");return response;
+    }
     @SuppressWarnings("unchecked") public Map<String,Object> validateConfig(Map<String,Object> request) {
         try {
             var response=client.post().uri("/quant/v2/validate-config").header("X-Internal-Token",token)

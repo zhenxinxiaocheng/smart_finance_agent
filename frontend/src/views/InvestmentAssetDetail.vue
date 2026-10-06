@@ -20,7 +20,6 @@
     </div>
 
     <template v-else-if="detail?.asset">
-      <p v-if="backgroundRefreshing" role="status" class="text-sm text-muted-foreground">正在更新最新分析...</p>
       <p v-if="error" role="status" class="text-sm text-muted-foreground">更新暂未完成，已保留当前内容。</p>
       <header class="detail-fade-in flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex min-w-0 items-start gap-3">
@@ -30,12 +29,13 @@
               <h1 class="truncate text-2xl font-semibold tracking-tight">{{ asset.name }}</h1>
               <Badge variant="outline">{{ asset.productType === 'MUTUAL_FUND' ? '基金' : '股票' }}</Badge>
               <Badge v-if="asset.productType === 'MUTUAL_FUND'" variant="outline">{{ fundCategoryLabel(asset.fundCategory || sourceStatus.fundCategory) }}</Badge>
-              <Badge variant="secondary">{{ sourceLabel }}</Badge>
             </div>
             <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
               <span class="font-mono text-foreground">{{ asset.code }}</span><span>{{ asset.market }}</span>
               <span>{{ sourceStatus.adjustType === 'QFQ' ? '前复权' : '单位净值' }}</span>
-              <span class="inline-flex items-center gap-1"><Clock3 class="size-3.5" />{{ dataTime }}</span>
+            </div>
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+              <span class="inline-flex items-center gap-1"><CalendarCheck class="size-3.5" />{{ analysisAsOfText }}</span>
             </div>
           </div>
         </div>
@@ -43,41 +43,17 @@
           <Button variant="outline" @click="preferenceOpen = true"><SlidersHorizontal />分析周期</Button>
           <Button variant="outline" @click="editOpen = true"><Pencil />编辑持仓</Button>
           <Button variant="outline" @click="openQuantLab"><FlaskConical />策略工作台</Button>
-          <Button variant="outline" :disabled="refreshingData" @click="refreshData"><RefreshCw :class="refreshingData && 'animate-spin'" />重新拉取数据</Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="outline"><RefreshCw />数据管理</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem :disabled="syncingLatest" @click="syncLatest"><RefreshCw />同步最新行情</DropdownMenuItem>
+              <DropdownMenuItem variant="destructive" :disabled="refreshingData" @click="fullRepair"><RotateCcw />全量修复历史数据</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
-
-      <Alert v-if="qualityBlocked" class="detail-fade-in detail-delay-1" variant="destructive">
-        <ShieldAlert class="size-4" />
-        <AlertTitle>数据完整性校验未通过</AlertTitle>
-        <AlertDescription class="mt-2">
-          当前不展示分析结论。数据问题修复后可重新拉取并校验。
-          <Button variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">立即重试</Button>
-        </AlertDescription>
-      </Alert>
-
-      <Alert v-else-if="qualityWaiting" class="detail-fade-in detail-delay-1">
-        <Clock3 class="size-4" />
-        <AlertTitle>数据校验暂不可用</AlertTitle>
-        <AlertDescription class="mt-2">
-          当前不展示分析结论。请稍后点击“重新拉取数据”。
-        </AlertDescription>
-      </Alert>
-
-      <Alert v-if="historyJobNotice" class="detail-fade-in detail-delay-1" :variant="historyJobStatus === 'FAILED' ? 'destructive' : 'default'">
-        <Clock3 class="size-4" />
-        <AlertTitle>
-          <template v-if="historyJobStatus === 'QUEUED'">正在排队补齐历史数据</template>
-          <template v-else-if="historyJobStatus === 'RUNNING'">正在补齐历史数据</template>
-          <template v-else-if="historyJobStatus === 'RETRY_WAIT'">历史数据准备将自动重试</template>
-          <template v-else-if="historyJobStatus === 'PARTIAL'">历史数据已部分补齐</template>
-          <template v-else>历史数据准备未完成</template>
-        </AlertTitle>
-        <AlertDescription class="mt-2">
-          {{ historyJobNotice }}
-          <Button v-if="['FAILED', 'PARTIAL'].includes(historyJobStatus)" variant="outline" size="sm" class="mt-3" :disabled="refreshingData" @click="refreshData">重新拉取数据</Button>
-        </AlertDescription>
-      </Alert>
 
       <section class="detail-fade-in detail-delay-1 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Card v-for="metric in topMetrics" :key="metric.label" class="gap-2 py-4 shadow-sm">
@@ -99,7 +75,6 @@
               :series="detail.quoteSeries"
               :product-type="asset.productType"
               :levels="activeLevels"
-              :history-warning="technical.status === 'INSUFFICIENT' ? technical.reason : ''"
               :indicator-config="technical.indicatorPeriods"
             />
           </CardContent>
@@ -333,12 +308,12 @@
         <Card class="shadow-sm">
           <CardHeader><CardTitle class="flex items-center gap-2"><ShieldAlert class="size-4" />财务警告</CardTitle><CardDescription>根据账户与市场风险规则实时生成</CardDescription></CardHeader>
           <CardContent class="space-y-2.5">
-            <Alert v-for="warning in detail.financialWarnings || []" :key="warning.code" :variant="warning.severity === 'ERROR' ? 'destructive' : 'default'" class="py-2.5">
+            <Alert v-for="warning in financialWarnings" :key="warning.code" :variant="warning.severity === 'ERROR' ? 'destructive' : 'default'" class="py-2.5">
               <TriangleAlert v-if="warning.severity === 'WARNING'" class="text-amber-600 dark:text-amber-400" /><Info v-else />
               <AlertTitle>{{ warningTitle(warning.code) }}</AlertTitle>
               <AlertDescription>{{ warning.message }}</AlertDescription>
             </Alert>
-            <div v-if="!(detail.financialWarnings || []).length" class="rounded-lg border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
+            <div v-if="!financialWarnings.length" class="rounded-lg border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
               当前没有触发有证据支持的财务或风控警告。
             </div>
             <p class="rounded-lg bg-muted/30 px-3 py-2 text-xs leading-5 text-muted-foreground">
@@ -368,20 +343,23 @@ import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { returnToSource } from './quant-workbench/navigation'
 import {
-  ArrowLeft, ChevronDown, Clock3, Info, Pencil, RefreshCw, ShieldAlert,
+  ArrowLeft, CalendarCheck, ChevronDown, Info, Pencil, RefreshCw, RotateCcw, ShieldAlert,
   FlaskConical, SlidersHorizontal, TriangleAlert
 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { InfoTooltip } from '@/components/ui/tooltip'
 import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
-import { createHistoryJobPollingController } from '@/lib/investmentHistoryJob'
+import { createPrioritizedRefreshRunner, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
 import {
   confidenceLabel,
@@ -393,7 +371,7 @@ import { feedback } from '@/lib/feedback'
 import {
   clearInvestmentAssetHorizonOverrideAPI,
   getInvestmentAssetDetailAPI,
-  getInvestmentHistoryJobAPI,
+  syncInvestmentAssetAPI,
   refreshInvestmentAssetDataQualityAPI,
   updateInvestmentAssetHorizonOverrideAPI,
 } from '@/api/investment'
@@ -401,8 +379,8 @@ import {
 const route = useRoute()
 const router = useRouter()
 const loading = ref(true)
-const reloading = ref(false)
 const refreshingData = ref(false)
+const syncingLatest = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
 const detail = ref(null)
@@ -415,18 +393,10 @@ const technical = computed(() => detail.value?.technicalAnalysis || {})
 const fundamental = computed(() => detail.value?.fundamentalAnalysis || {})
 const disclaimer = computed(() => detail.value?.disclaimer || {})
 const sourceStatus = computed(() => detail.value?.sourceStatus || {})
-const historyJob = computed(() => sourceStatus.value.historyJob || {})
-const historyJobStatus = computed(() => historyJob.value.status)
-const backgroundRefreshing = computed(() => reloading.value || ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(historyJobStatus.value))
-const historyJobNotice = computed(() => ({
-  QUEUED: '最新价格已可使用，历史行情和分析会在后台继续准备。',
-  RUNNING: '历史行情和分析正在后台准备，完成后页面会自动更新。',
-  RETRY_WAIT: '服务正在稍后重试，当前已保存的数据仍可继续查看。',
-  PARTIAL: '已抓取的历史行情可查看，完整历史用途暂不可用。',
-  FAILED: '历史数据未通过校验或同步失败，请查看当前数据状态。',
-}[historyJobStatus.value] || ''))
-const qualityBlocked = computed(() => sourceStatus.value.dataState === 'BLOCKED')
-const qualityWaiting = computed(() => sourceStatus.value.dataState === 'WAITING')
+const financialWarnings = computed(() => (detail.value?.financialWarnings || [])
+  .filter(warning => warning.code !== 'DATA_INCOMPLETE'))
+const pendingAnalysis = computed(() => Boolean(detail.value?.asset)
+  && ['PREPARING', 'WAITING', 'BLOCKED', 'STABLE_CACHE'].includes(sourceStatus.value.dataState))
 const activeFundPeriod = computed(() => isFund.value ? activeAnalysis.value : null)
 const hasFundBenchmarkMetrics = computed(() => [
   'benchmarkReturn',
@@ -492,14 +462,16 @@ const priceZones = computed(() => isFund.value
 const activeVerdict = computed(() => isFund.value
   ? activeAnalysis.value?.verdict || actionVerdict(activeAnalysis.value?.action)
   : activeAnalysis.value.verdict || technical.value.verdict || actionVerdict(technical.value.action))
-const activeHeadline = computed(() => fundAdviceUnavailable.value
+const activeHeadline = computed(() => activeAnalysis.value.status === 'PREPARING'
+  ? '—'
+  : fundAdviceUnavailable.value
   ? '暂无操作建议'
   : activeAnalysis.value.status === 'INSUFFICIENT'
   ? '数据不足'
   : activeAnalysis.value.status === 'BLOCKED'
-    ? '数据已阻断'
+    ? '分析更新中'
     : activeAnalysis.value.status === 'UNAVAILABLE'
-      ? '等待重新校验'
+      ? '分析更新中'
   : isFund.value ? fundActionLabel(activeAnalysis.value?.action) : verdictLabel(activeVerdict.value))
 const activePeriodText = computed(() => horizonRange(activeAnalysis.value))
 const cycleDifference = computed(() => new Set(Object.values(technical.value.horizons || {}).map(item => item.outlook?.direction).filter(Boolean)).size > 1)
@@ -512,15 +484,13 @@ const fundamentalVerdict = computed(() => {
   if (asset.value.productType === 'MUTUAL_FUND') return '历史统计'
   return ({ ATTRACTIVE: '长期较有吸引力', FAIR: '长期中性', CAUTIOUS: '长期需谨慎', INSUFFICIENT: '数据不足' }[fundamental.value.verdict] || '数据不足')
 })
-const sourceLabel = computed(() => ({
-  READY: sourceStatus.value.qualityStatus === 'WARN' || historyJobStatus.value === 'PARTIAL'
-    ? '数据待核实' : '数据正常',
-  STABLE_CACHE: '分析服务重试中',
-  BLOCKED: '数据已阻断',
-  WAITING: '等待数据校验',
-  PREPARING: ['FAILED', 'PARTIAL'].includes(historyJobStatus.value) ? '数据暂不可用' : '数据准备中',
-}[sourceStatus.value.dataState] || '数据准备中'))
-const dataTime = computed(() => sourceStatus.value.quoteDate || asset.value.dataDate || '暂无日期')
+// 页面优先展示“当前分析数据截至”，而不是行情最新日期。
+const analysisAsOf = computed(() => sourceStatus.value.quoteDate || '')
+const analysisAsOfText = computed(() => {
+  const value = analysisAsOf.value
+  if (!value) return '当前分析数据待准备'
+  return `当前分析数据截至 ${typeof value === 'string' ? value.slice(0, 10) : value}`
+})
 const topMetrics = computed(() => [
   { label: asset.value.productType === 'MUTUAL_FUND' ? '最新净值' : '当前价格', value: originalMoney(asset.value.latestPrice, asset.value.currency), hint: `${signedPercent(asset.value.changePercent)} 今日涨跌`, tone: tone(asset.value.changePercent) },
   { label: '持仓市值', value: money(asset.value.marketValueCny), hint: asset.value.quantity == null ? '尚未填写持仓' : `${decimal(asset.value.quantity)} ${asset.value.productType === 'MUTUAL_FUND' ? '份' : '股'}` },
@@ -536,27 +506,29 @@ const MetricMini = defineComponent({ props: { label: String, value: String, tone
 let componentDisposed = false
 let detailRequestToken = 0
 const isCurrentAsset = assetId => !componentDisposed && String(route.params.assetId) === String(assetId)
-const historyJobPolling = createHistoryJobPollingController({
-  poll: async ({ assetId }) => {
-    const response = await getInvestmentHistoryJobAPI(assetId)
-    return response.data || {}
-  },
-  onJob: (nextHistoryJob, { assetId }) => {
-    if (!isCurrentAsset(assetId)) return
-    detail.value = {
-      ...detail.value,
-      sourceStatus: { ...sourceStatus.value, historyJob: nextHistoryJob }
-    }
-  },
-  onTerminal: (_job, { assetId }) => {
-    if (isCurrentAsset(assetId)) void loadAll(assetId)
-  }
+const detailRefreshRunner = createPrioritizedRefreshRunner(async () => {
+  if (componentDisposed || !pendingAnalysis.value || loading.value
+    || syncingLatest.value || refreshingData.value || savingPreference.value) return
+  await loadAll(route.params.assetId, true)
 })
+let stopDetailUpdates = null
+let analysisNoticeShown = false
+
+watch(pendingAnalysis, pending => {
+  if (pending && !analysisNoticeShown) {
+    analysisNoticeShown = true
+    feedback.info('分析正在后台更新，完成后会自动显示。')
+  }
+  stopDetailUpdates?.()
+  stopDetailUpdates = pending
+    ? startInvestmentRealtimePolling(() => detailRefreshRunner(false, true))
+    : null
+}, { immediate: true })
 
 watch(() => route.params.assetId, async () => {
   const assetId = route.params.assetId
+  analysisNoticeShown = false
   detail.value = null
-  historyJobPolling.update(assetId, undefined)
   await loadAll(assetId)
 }, { immediate: true })
 watch(horizonOptions, options => {
@@ -567,50 +539,60 @@ watch(horizonOptions, options => {
 onBeforeUnmount(() => {
   componentDisposed = true
   detailRequestToken += 1
-  historyJobPolling.dispose()
+  stopDetailUpdates?.()
+  detailRefreshRunner.dispose()
 })
 
-async function loadAll(assetId = route.params.assetId) {
+async function loadAll(assetId = route.params.assetId, background = false) {
   const requestToken = ++detailRequestToken
   loading.value = !detail.value?.asset
-  reloading.value = !loading.value
-  error.value = ''
+  if (!background) error.value = ''
   try {
     const response = await getInvestmentAssetDetailAPI(assetId)
     if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     detail.value = response.data
   } catch {
     if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
-    error.value = '系统正在恢复数据服务，请稍后重新加载'
+    if (!background) error.value = '系统正在恢复数据服务，请稍后重新加载'
   } finally {
     if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     loading.value = false
-    reloading.value = false
-    syncHistoryJobPolling()
   }
 }
 
-async function refreshData() {
-  if (refreshingData.value) return
+// 详情页默认增量同步最新行情；仅在本地已最新时不改动任何状态。
+async function syncLatest() {
+  if (syncingLatest.value || refreshingData.value) return
   const assetId = route.params.assetId
-  const previousHistoryJobStatus = historyJobStatus.value
+  syncingLatest.value = true
+  error.value = ''
+  try {
+    await syncInvestmentAssetAPI(assetId)
+    await loadAll(assetId)
+    if (isCurrentAsset(assetId)) feedback.success('已同步最新行情')
+  } catch {
+    if (isCurrentAsset(assetId)) error.value = '同步暂未完成，已保留当前内容。'
+  } finally {
+    if (!componentDisposed) syncingLatest.value = false
+  }
+}
+
+// 全量修复是唯一的重量级操作，必须由用户显式触发。
+async function fullRepair() {
+  if (refreshingData.value || syncingLatest.value) return
+  const assetId = route.params.assetId
   refreshingData.value = true
-  historyJobPolling.restart(assetId, undefined)
+  error.value = ''
   try {
     const response = await refreshInvestmentAssetDataQualityAPI(assetId)
     if (!isCurrentAsset(assetId)) return
     detail.value = response.data
-    historyJobPolling.update(assetId, response.data?.sourceStatus?.historyJob?.status)
-    feedback.success('已开始后台准备历史数据')
+    feedback.success('已开始全量修复历史数据')
   } catch {
-    if (isCurrentAsset(assetId)) historyJobPolling.update(assetId, previousHistoryJobStatus)
+    if (isCurrentAsset(assetId)) error.value = '全量修复暂未开始，已保留当前内容。'
   } finally {
     if (!componentDisposed) refreshingData.value = false
   }
-}
-
-function syncHistoryJobPolling() {
-  if (!componentDisposed) historyJobPolling.update(route.params.assetId, historyJobStatus.value)
 }
 
 async function reloadAfterHoldingSaved(savedAsset) {
@@ -641,6 +623,8 @@ async function savePreference(payload) {
     detail.value = response.data
     preferenceOpen.value = false
     feedback.success('该资产的周期设置已保存')
+  } catch {
+    feedback.info('周期设置暂未保存，请稍后再试')
   } finally { savingPreference.value = false }
 }
 
@@ -652,6 +636,8 @@ async function clearPreference() {
     detail.value = response.data
     preferenceOpen.value = false
     feedback.success('已恢复全局周期设置')
+  } catch {
+    feedback.info('全局设置暂未恢复，请稍后再试')
   } finally { savingPreference.value = false }
 }
 
@@ -707,7 +693,7 @@ function percent(value, signed = true) { if (value == null) return '-'; const n 
 function decimal(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(Number(value)) }
 function hasMetric(value) { return value !== null && value !== undefined && Number.isFinite(Number(value)) }
 function tone(value) { const n = Number(value || 0); return n > 0 ? 'text-emerald-600 dark:text-emerald-400' : n < 0 ? 'text-destructive' : '' }
-function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', DATA_INCOMPLETE: '数据完整性不足', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
+function warningTitle(code) { return ({ WEALTH_NOT_INITIALIZED: '现金基准未初始化', RESERVE_LOW: '备用金不足', CONCENTRATION_HIGH: '持仓集中度较高', VOLATILITY_HIGH: '市场波动偏高', DRAWDOWN_HIGH: '历史回撤偏大', LIQUIDITY_LOW: '流动性偏低', SAVINGS_GOAL: '储蓄目标提醒', RISK_PREFERENCE: '风险偏好提醒' }[code] || '财务提醒') }
 function decimalPercent(value) { return value == null ? '-' : `${Number(value) > 0 ? '+' : ''}${(Number(value) * 100).toFixed(2)}%` }
 function drawdownStatusLabel(value) {
   return ({ RECOVERED: '已回到前高', RECOVERING: '修复中', IN_DRAWDOWN: '回撤中' }[value] || '等待数据')

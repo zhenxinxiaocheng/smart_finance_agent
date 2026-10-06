@@ -35,7 +35,8 @@ class ExperimentFlowTest {
         quoteProperties.getDataQuality().setStockAdjustType("QFQ");
         ordinary=new WorkbenchService(db,json,manager,
                 org.mockito.Mockito.mock(com.smartfinance.agent.investment.quant.workbench.WorkbenchTrackingIndex.class),
-                null,new com.smartfinance.agent.investment.service.QuoteSeriesPolicy(quoteProperties));
+                null,new com.smartfinance.agent.investment.service.InvestmentDataQualityService(
+                        null,null,null,quoteProperties,new com.fasterxml.jackson.databind.ObjectMapper()));
         worker=new WorkbenchWorker(ordinary,client);worker.configureExperiments(resolver,validator,summaries);
         for(String[] object:List.of(new String[]{"strategy","strategies"},new String[]{"universe","universes"})) {
             db.update("INSERT INTO quant_v2_object VALUES(?,7,?,?,'ACTIVE',1,'{}','now','now')",object[0],object[1],object[0]);

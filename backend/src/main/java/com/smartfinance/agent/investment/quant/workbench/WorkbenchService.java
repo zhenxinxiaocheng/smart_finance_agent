@@ -8,7 +8,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
-import com.smartfinance.agent.investment.service.QuoteSeriesPolicy;
+import com.smartfinance.agent.investment.service.InvestmentDataQualityService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import java.time.*;
@@ -21,18 +21,20 @@ public class WorkbenchService {
     final TransactionTemplate tx;
     final WorkbenchTrackingIndex trackingIndex;
     final AnalysisServiceClient marketProvider;
-    final QuoteSeriesPolicy seriesPolicy;
+    final InvestmentDataQualityService dataQualityService;
+    WorkbenchDataPreparation preparation;
+    @Autowired public void configurePreparation(WorkbenchDataPreparation preparation) { this.preparation=preparation; }
     static final Set<String> OBJECTS = Set.of("universes", "factors", "strategies");
     static final Set<String> TASKS = Set.of("training-runs", "backtests", "factor-runs");
     static final int MINIMUM_EVALUATION_DAYS = 60;
     @Autowired
     public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
                              WorkbenchTrackingIndex trackingIndex, AnalysisServiceClient marketProvider,
-                             QuoteSeriesPolicy seriesPolicy) {
+                             InvestmentDataQualityService dataQualityService) {
         this.db=db; this.json=json; this.tx=new TransactionTemplate(manager);
         this.trackingIndex=trackingIndex;
         this.marketProvider=marketProvider;
-        this.seriesPolicy=seriesPolicy;
+        this.dataQualityService=dataQualityService;
     }
     static String now() { return Instant.now().toString(); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -188,17 +190,12 @@ public class WorkbenchService {
     private static final Set<String> DOMESTIC_MARKETS = Set.of("SSE", "SZSE", "BSE", "FUND_CN");
     public List<Map<String,Object>> assets(Long u) {
         return db.queryForList("SELECT a.id,a.product_id,p.name,p.code,p.product_type,p.market,"
-                + "CASE WHEN c.status='COMPLETE' THEN 1 ELSE 0 END AS history_coverage_complete,"
+                + "COALESCE(p.history_coverage_complete,0) AS history_coverage_complete,"
                 + "(SELECT MIN(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_start_date,"
                 + "(SELECT MAX(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_end_date,"
                 + "(SELECT COUNT(*) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS observations "
                 + "FROM investment_asset a JOIN investment_product p ON p.id=a.product_id "
-                + "LEFT JOIN product_quote_coverage c ON c.product_id=p.id AND c.frequency='DAY' "
-                + "AND c.adjust_type=CASE WHEN p.product_type IN ('FUND','MUTUAL_FUND','INDEX') "
-                + "THEN 'NONE' ELSE ? END AND c.dataset_type=CASE "
-                + "WHEN p.product_type IN ('FUND','MUTUAL_FUND') THEN 'TOTAL_RETURN_INDEX' ELSE 'PRICE' END "
-                + "WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name",
-                seriesPolicy.researchAdjustType("STOCK", "SSE"), u)
+                + "WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name", u)
                 .stream().filter(r -> DOMESTIC_MARKETS.contains(str(r.get("market")).toUpperCase(Locale.ROOT)))
                 .map(r -> { Map<String,Object> out=new LinkedHashMap<>(); r.forEach((k,v)->out.put(camel(k),v));
                     out.put("assetClass",assetClass(r)); return out; }).toList();
@@ -280,20 +277,23 @@ public class WorkbenchService {
         r.put("assetClass",assetClass(r)); return r;
     }
     List<Map<String,Object>> snapshot(Long u,Map<String,Object> pool,String end) {
+        return snapshot(members(u,pool),null,end);
+    }
+    List<Map<String,Object>> snapshot(List<Map<String,Object>> selected,String start,String end) {
         List<Map<String,Object>> result=new ArrayList<>();
-        List<Map<String,Object>> selected=members(u,pool);
         require(selected.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
         List<Object> ids=selected.stream().map(member->member.get("product_id")).distinct().toList();
         String marks=String.join(",",Collections.nCopies(ids.size(),"?"));
         List<Object> arguments=new ArrayList<>(ids); arguments.add(end);
+        if(start!=null)arguments.add(start);
         Map<Object,List<Map<String,Object>>> quoteGroups=new HashMap<>();
         for(var quote:db.queryForList("SELECT product_id,trade_date,open_price,high_price,low_price,close_price,previous_close,total_return_index,volume,amount,adjust_type,source "
-                +"FROM product_daily_quote WHERE product_id IN ("+marks+") AND trade_date<=? ORDER BY product_id,trade_date,adjust_type",arguments.toArray()))
+                +"FROM product_daily_quote WHERE product_id IN ("+marks+") AND trade_date<=? "+(start==null?"":"AND trade_date>=? ")+"ORDER BY product_id,trade_date,adjust_type",arguments.toArray()))
             quoteGroups.computeIfAbsent(quote.get("product_id"),ignored->new ArrayList<>()).add(quote);
         for(var a:selected) {
             var quotes=quoteGroups.getOrDefault(a.get("product_id"),List.of());
             Map<String,Map<String,Object>> adjusted=new HashMap<>();
-            String requiredAdjust=seriesPolicy.researchAdjustType(str(a.get("product_type")),str(a.get("market")));
+            String requiredAdjust=dataQualityService.adjustType(str(a.get("product_type")),str(a.get("market")));
             for(var q:quotes) if(requiredAdjust.equals(str(q.get("adjust_type")))) adjusted.put(str(q.get("trade_date")),q);
             List<Map<String,Object>> bars=new ArrayList<>();
             for(var q:quotes) {
@@ -366,7 +366,7 @@ public class WorkbenchService {
                 + "THEN research.total_return_index ELSE research.close_price END>0 "
                 + "GROUP BY raw.trade_date HAVING COUNT(DISTINCT raw.product_id)=? "
                 + "ORDER BY raw.trade_date DESC";
-        parameters.add(0, seriesPolicy.researchAdjustType("STOCK", "SSE"));
+        parameters.add(0, dataQualityService.adjustType("STOCK", "SSE"));
         return db.query(sql, parameters.toArray(), (row, index) -> LocalDate.parse(row.getString(1)));
     }
     private LocalDate dateOrToday(String value, String field) {
@@ -382,14 +382,17 @@ public class WorkbenchService {
         Map<String,Object> config=map(b.get("config")); String strategyId=null,sv=null,universeId=str(b.get("universeId")),name="因子研究";
         Map<String,Object> req=new LinkedHashMap<>();
         if(!"factor-runs".equals(kind)) {var strategy=lockObject(u,"strategies",str(b.get("strategyId")));require(!"ARCHIVED".equals(strategy.get("status")),"策略已归档");var p=decode(strategy.get("payload"));strategyId=str(strategy.get("id"));sv=freeze(u,strategy);universeId=str(p.get("universeId"));config=map(p.get("config"));name=str(strategy.get("name"));if(p.get("factorSetId")!=null&&!str(p.get("factorSetId")).isBlank()){var f=lockObject(u,"factors",str(p.get("factorSetId")));require(!"ARCHIVED".equals(f.get("status")),"因子集已归档");config.put("factors",decode(f.get("payload")).get("factors"));req.put("factorVersionId",freeze(u,f));}}
-        var universe=lockObject(u,"universes",universeId);require(!"ARCHIVED".equals(universe.get("status")),"资产池已归档");var pool=decode(universe.get("payload"));if("backtests".equals(kind)){var window=evaluationWindow(u,universeId,start,end);int available=((Number)window.get("selectedEvaluationDays")).intValue();require(available>=MINIMUM_EVALUATION_DAYS,"有效评估日期不足：当前区间只有"+available+"个共同有效交易日，至少需要"+MINIMUM_EVALUATION_DAYS+"日；可使用最近"+MINIMUM_EVALUATION_DAYS+"个有效交易日。");}req.put("universeId",universeId);req.put("universeVersionId",freeze(u,universe));req.put("universeVersion",req.get("universeVersionId"));config.put("assetClass",pool.get("assetClass"));config.put("corporateActionsVerified",false);if(b.get("initialCash")!=null)config.put("initialCash",b.get("initialCash"));
-        req.put("kind",switch(kind){case "training-runs"->"TRAINING";case "backtests"->"BACKTEST";default->"FACTOR_RESEARCH";});req.put("config",config);req.put("assets",snapshot(u,pool,end));req.put("startDate",start);req.put("endDate",end);req.put("strategyVersionId",sv);req.put("universe",pool);
-        if ("backtests".equals(kind)) {
+        var universe=lockObject(u,"universes",universeId);require(!"ARCHIVED".equals(universe.get("status")),"资产池已归档");var pool=decode(universe.get("payload"));if(preparation==null&&"backtests".equals(kind)){var window=evaluationWindow(u,universeId,start,end);int available=((Number)window.get("selectedEvaluationDays")).intValue();require(available>=MINIMUM_EVALUATION_DAYS,"有效评估日期不足：当前区间只有"+available+"个共同有效交易日，至少需要"+MINIMUM_EVALUATION_DAYS+"日；可使用最近"+MINIMUM_EVALUATION_DAYS+"个有效交易日。");}req.put("universeId",universeId);req.put("universeVersionId",freeze(u,universe));req.put("universeVersion",req.get("universeVersionId"));config.put("assetClass",pool.get("assetClass"));config.put("corporateActionsVerified",false);if(b.get("initialCash")!=null)config.put("initialCash",b.get("initialCash"));
+        req.put("kind",switch(kind){case "training-runs"->"TRAINING";case "backtests"->"BACKTEST";default->"FACTOR_RESEARCH";});req.put("config",config);if(preparation==null)req.put("assets",snapshot(u,pool,end));req.put("startDate",start);req.put("endDate",end);req.put("strategyVersionId",sv);req.put("universe",pool);
+        if (preparation==null && "backtests".equals(kind)) {
             var comparison = trackingIndex.resolve(members(u,pool),LocalDate.parse(start),LocalDate.parse(end));
             if (!comparison.isEmpty()) req.put("trackingIndex",comparison);
         }
+        if(preparation!=null){preparation.initialize(req,members(u,pool));config=map(req.get("config"));}
         String modelTask=str(b.getOrDefault("modelTaskId",b.get("trainingRunId")));if(!modelTask.isBlank()){var trained=row("quant_v2_task",u,modelTask);require("training-runs".equals(trained.get("kind"))&&"SUCCEEDED".equals(trained.get("status")),"请选择成功的训练结果");var trainingRequest=decode(trained.get("request_json"));var tc=map(trainingRequest.get("config"));for(String key:List.of("strategyType","assetClass","predictionHorizon","factors","lookback","slowWindow"))require(Objects.equals(tc.get(key),config.get(key)),"模型配置不兼容："+key);var response=decode(trained.get("result_json"));require(response.get("modelRef")!=null,"训练没有有效模型产物");req.put("modelRef",response.get("modelRef"));req.put("modelTaskId",modelTask);}
-        String key=id();db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,strategy_id,strategy_version_id,universe_id,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",key,u,kind,name,"QUEUED","QUEUED",strategyId,sv,universeId,encode(req),now(),now());return get(u,kind,key);
+        String key=id();db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,strategy_id,strategy_version_id,universe_id,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",key,u,kind,name,"QUEUED",preparation==null?"QUEUED":"DATA_PREPARING",strategyId,sv,universeId,encode(req),now(),now());
+        if(preparation!=null)preparation.register(u,"QUANT_TASK",key,req,false);
+        return get(u,kind,key);
     }); }
     public Map<String,Object> cancel(Long u,String kind,String identity) {requireOrdinaryTask(u,identity);get(u,kind,identity);db.update("UPDATE quant_v2_task SET status='CANCELLED',stage='CANCELLED',claim_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND user_id=? AND status IN ('QUEUED','RUNNING')",now(),identity,u);return get(u,kind,identity);}
     public Map<String,Object> retry(Long u,String kind,String identity) { return tx.execute(txStatus->{
@@ -399,7 +402,7 @@ public class WorkbenchService {
         var request=decode(old.get("request_json"));
         if(request.get("factorVersionId")!=null){var version=row("quant_v2_version",u,str(request.get("factorVersionId")));require(!"ARCHIVED".equals(lockObject(u,"factors",str(version.get("object_id"))).get("status")),"因子集已归档，不能重试");}
         require(!"ARCHIVED".equals(lockObject(u,"universes",str(old.get("universe_id"))).get("status")),"资产池已归档，不能重试");
-        String key=id();db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,strategy_id,strategy_version_id,universe_id,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",key,u,kind,old.get("name"),"QUEUED","QUEUED",old.get("strategy_id"),old.get("strategy_version_id"),old.get("universe_id"),old.get("request_json"),now(),now());return get(u,kind,key);
+        String key=id();db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,strategy_id,strategy_version_id,universe_id,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",key,u,kind,old.get("name"),"QUEUED","QUEUED",old.get("strategy_id"),old.get("strategy_version_id"),old.get("universe_id"),old.get("request_json"),now(),now());if(preparation!=null&&Boolean.TRUE.equals(request.get("dataPreparation"))){preparation.register(u,"QUANT_TASK",key,request,false);db.update("UPDATE quant_v2_task SET stage='DATA_PREPARING' WHERE id=?",key);}return get(u,kind,key);
     }); }
     public Map<String,Object> deploy(Long u,Map<String,Object>b){requireOrdinaryTask(u,str(b.get("backtestId")));return tx.execute(s->{var task=row("quant_v2_task",u,str(b.get("backtestId")));require("backtests".equals(task.get("kind"))&&"SUCCEEDED".equals(task.get("status")),"只能部署完成的回测");var response=decode(task.get("result_json"));require("QUALIFIED".equals(map(response.get("qualification")).get("status")),"回测未通过资格验证，不能部署");var strategy=lockObject(u,"strategies",str(task.get("strategy_id")));var deployRequest=decode(task.get("request_json"));if(deployRequest.get("factorVersionId")!=null){var fv=row("quant_v2_version",u,str(deployRequest.get("factorVersionId")));require(!"ARCHIVED".equals(lockObject(u,"factors",str(fv.get("object_id"))).get("status")),"因子集已归档");}var universe=lockObject(u,"universes",str(task.get("universe_id")));require(!"ARCHIVED".equals(universe.get("status")),"资产池已归档");require(!"ARCHIVED".equals(strategy.get("status")),"策略已归档");var req=decode(task.get("request_json"));var effective=map(map(response.get("result")).get("provenance"));var c=map(effective.getOrDefault("config",req.get("config")));if(b.get("initialCash")!=null)c.put("initialCash",b.get("initialCash"));double cash=((Number)c.getOrDefault("initialCash",100000)).doubleValue();require(Double.isFinite(cash)&&cash>0&&cash<=1e12,"虚拟资金无效");req.put("config",c);req.put("kind","PAPER");String date=LocalDate.now().toString();req.put("startDate",date);req.put("endDate",date);req.put("assets",snapshot(u,map(req.get("universe")),date));Map<String,Object>state=new LinkedHashMap<>();state.put("cash",cash);state.put("positions",Map.of());state.put("pendingOrders",List.of());state.put("receivables",List.of());state.put("lastDate","");state.put("sessionCount",0);state.put("equityCurve",List.of());req.put("state",state);String key=id(),name=str(b.getOrDefault("name",task.get("name")));require(!name.isBlank()&&name.length()<=160,"组合名称必填且不超过160字");db.update("INSERT INTO quant_v2_deployment(id,user_id,name,backtest_id,strategy_id,universe_id,status,revision,request_json,result_json,next_run_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",key,u,name,task.get("id"),task.get("strategy_id"),task.get("universe_id"),"RUNNING",1,encode(req),encode(Map.of("state",state)),System.currentTimeMillis(),now(),now());return get(u,"deployments",key);});}
     public Map<String,Object> lifecycle(Long u,String identity,String action,Map<String,Object>b){return tx.execute(s->{db.update("UPDATE quant_v2_deployment SET revision=revision WHERE id=? AND user_id=?",identity,u);var r=row("quant_v2_deployment",u,identity);String status=str(r.get("status"));require(!"STOPPED".equals(status),"组合已停止");if("pause".equals(action))require("RUNNING".equals(status),"只能暂停运行中的组合");if("resume".equals(action))require("PAUSED".equals(status),"只能恢复已暂停的组合");String next=switch(action){case "pause"->"PAUSED";case "resume"->"RUNNING";case "stop"->{String mode=str(b.get("mode"));require(Set.of("KEEP","LIQUIDATE").contains(mode),"请选择保留持仓或正常清仓");yield "KEEP".equals(mode)?"STOPPED":"STOPPING";}default->throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"未知操作");};require(!"STOPPING".equals(status),"组合正在按正常规则清仓");var result=decode(r.get("result_json"));var state=map(result.get("state"));if(!"RUNNING".equals(next)){

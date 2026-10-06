@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import QuantPageHeader from './QuantPageHeader.vue'
-import { useOperation } from './shared'
+import { label, useOperation } from './shared'
 
 const { busy, error, load } = useOperation()
 const overview = ref([])
@@ -33,6 +33,8 @@ const cards = computed(() => categories.map(([name, match, type]) => {
   return { name, type, count: groups.reduce((sum, group) => sum + Number(group.productCount || 0), 0),
     start: dates[0] || '—', end: latest.at(-1) || '—',
     today: groups.reduce((sum, group) => sum + Number(group.todaySynced || 0), 0),
+    activeJobs: groups.reduce((sum, group) => sum + Number(group.activeJobs || 0), 0),
+    pausedJobs: groups.reduce((sum, group) => sum + Number(group.pausedJobs || 0), 0),
     quality: groups.some(group => group.dataQualityStatus !== 'NOT_EVALUATED') ? '已评估' : '待评估',
     sync: groups.some(group => ['RUNNING', 'QUEUED', 'RETRY_WAIT'].includes(group.syncTaskStatus)) ? '同步中' :
       groups.some(group => group.syncTaskStatus === 'FAILED') ? '部分失败' : '空闲' }
@@ -64,6 +66,10 @@ function choose(card) {
   market.value = ''
   marketGroup.value = card.name === '美股' ? 'US' : card.name === 'A股' ? 'CN_A' : ''
 }
+function jobStatus(job) {
+  return job.scopeState === 'PAUSED_BY_SCOPE' && ['QUEUED','RUNNING','RETRY_WAIT'].includes(job.status)
+    ? '按需暂停' : label(job.status)
+}
 onMounted(() => load(refresh))
 </script>
 
@@ -78,6 +84,7 @@ onMounted(() => load(refresh))
       <p class="muted text-xs mt-2">{{ card.start }} ～ {{ card.end }}</p>
       <p class="muted text-xs">今日同步 {{ card.today }} · {{ card.quality }}</p>
       <p class="muted text-xs">任务 {{ card.sync }}</p>
+      <p class="muted text-xs">当前任务 {{ card.activeJobs }}<template v-if="card.pausedJobs"> · 按需暂停 {{ card.pausedJobs }}</template></p>
     </button>
   </div>
   <div class="panel">
@@ -92,5 +99,5 @@ onMounted(() => load(refresh))
     </TableBody></Table><p v-if="!result.items.length" class="muted py-5 text-center">暂无符合条件的证券</p></div>
     <div class="flex items-center justify-between mt-4"><span class="muted text-xs">共 {{ result.total }} 个 · 第 {{ page }} / {{ totalPages }} 页</span><div class="flex gap-2"><Button variant="outline" size="sm" :disabled="page <= 1" @click="page--">上一页</Button><Button variant="outline" size="sm" :disabled="page >= totalPages" @click="page++">下一页</Button></div></div>
   </div>
-  <details class="panel mt-5"><summary>最近同步任务（{{ jobs.length }}）</summary><div class="table-wrap mt-3"><Table><TableHeader><TableRow><TableHead>代码</TableHead><TableHead>市场</TableHead><TableHead>任务</TableHead><TableHead>状态</TableHead><TableHead>断点</TableHead><TableHead>目标日期</TableHead></TableRow></TableHeader><TableBody><TableRow v-for="job in jobs" :key="job.id"><TableCell>{{ job.code }}</TableCell><TableCell>{{ job.market }}</TableCell><TableCell>{{ job.jobType }}</TableCell><TableCell>{{ job.status }}</TableCell><TableCell>{{ job.checkpointDate || '—' }}</TableCell><TableCell>{{ job.targetDate }}</TableCell></TableRow></TableBody></Table></div></details>
+  <details class="panel mt-5"><summary>最近同步任务（{{ jobs.length }}）</summary><div class="table-wrap mt-3"><Table><TableHeader><TableRow><TableHead>代码</TableHead><TableHead>市场</TableHead><TableHead>任务</TableHead><TableHead>状态</TableHead><TableHead>断点</TableHead><TableHead>目标日期</TableHead></TableRow></TableHeader><TableBody><TableRow v-for="job in jobs" :key="job.id"><TableCell>{{ job.code }}</TableCell><TableCell>{{ job.market }}</TableCell><TableCell>{{ job.jobType }}</TableCell><TableCell>{{ jobStatus(job) }}</TableCell><TableCell>{{ job.checkpointDate || '—' }}</TableCell><TableCell>{{ job.targetDate }}</TableCell></TableRow></TableBody></Table></div></details>
 </template>

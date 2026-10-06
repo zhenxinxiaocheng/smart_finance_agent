@@ -11,3 +11,4 @@ optuna==4.9.0
 akshare==1.18.40
 baostock==0.8.9
 tushare==1.4.24
+exchange-calendars==4.13.2

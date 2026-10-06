@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ from .data_quality import (
 from .providers import (
     ProviderRegistry,
     ProviderUnavailable,
+    ProviderEmpty,
     akshare_fx_rates,
     fetch_a_share_trade_calendar,
     fetch_benchmark_history,
@@ -28,8 +30,20 @@ from .providers import (
     resolve_product_metadata,
     search_index_quotes,
 )
+from .provider_calls import close_workers, open_workers
+from .quote_availability import quote_availability
 
-app = FastAPI(title="Smart Finance Analysis Service", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    open_workers()
+    try:
+        yield
+    finally:
+        close_workers()
+
+
+app = FastAPI(title="Smart Finance Analysis Service", version="1.0.0", lifespan=lifespan)
 registry = ProviderRegistry()
 quality_service = DataQualityService(
     registry,
@@ -45,6 +59,15 @@ class QuoteRequest(BaseModel):
     start_date: date
     end_date: date
     adjust_type: str | None = None
+
+
+class ResearchRequest(BaseModel):
+    code: str
+    market: str
+    product_type: str
+    dataset: str
+    start_date: date
+    end_date: date
 
 
 class BenchmarkHistoryRequest(BaseModel):
@@ -71,12 +94,14 @@ class DataQualityValidateRequest(BaseModel):
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
     quality_config_version: str = Field(alias="qualityConfigVersion", min_length=1)
+    fund_category: str | None = Field(default=None, alias="fundCategory")
 
 
 class DataQualityReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     dataset_version: str = Field(alias="datasetVersion", pattern=r"^[0-9a-f]{64}$")
+    fund_category: str | None = Field(default=None, alias="fundCategory")
     secondary_dataset_version: str | None = Field(
         default=None, alias="secondaryDatasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
@@ -227,14 +252,33 @@ def internal_auth(x_internal_token: str | None = Header(default=None)) -> None:
 
 from .quant_workbench.router import router as quant_workbench_router
 from .market_catalog import catalog as market_catalog, current_members as market_current_members, daily_history
+from .research_data import capabilities as research_capabilities, collect as collect_research
 
 app.include_router(quant_workbench_router, dependencies=[Depends(internal_auth)])
+
+
+@app.get("/internal/v1/market-data/research/capabilities", dependencies=[Depends(internal_auth)])
+def research_datasets():
+    return {"items": research_capabilities()}
+
+
+@app.post("/internal/v1/market-data/research/collect", dependencies=[Depends(internal_auth)])
+def research_collect(request: ResearchRequest):
+    try:
+        return collect_research(request.code, request.market, request.product_type, request.dataset,
+                                request.start_date, request.end_date)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ProviderUnavailable as error:
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(error)}) from error
 
 
 @app.get("/internal/v1/market-data/catalog", dependencies=[Depends(internal_auth)])
 def catalog_snapshot(market: str):
     try:
-        return {"items": market_catalog(market), "membershipCapability": "CURRENT_SNAPSHOT"}
+        rows = market_catalog(market)
+        return {"items": rows, "membershipCapability": "CURRENT_SNAPSHOT",
+                "diagnostics": getattr(rows, "diagnostics", {})}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderUnavailable as exc:
@@ -304,8 +348,12 @@ def daily_quotes(request: QuoteRequest):
             warnings = []
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderEmpty as exc:
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": str(exc)}) from exc
     except ProviderUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
+    if not records:
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": "Requested window is empty"})
     latest = max((item.data_date for item in records), default=None)
     return {
         "provider": records[0].provider if records else "AKSHARE",
@@ -352,11 +400,14 @@ def validate_data_quality(request: DataQualityValidateRequest):
             start_date=request.start_date,
             end_date=request.end_date,
             quality_config_version=request.quality_config_version,
+            fund_category=request.fund_category,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderEmpty as exc:
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": str(exc)}) from exc
     except ProviderUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
     except SnapshotIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -367,6 +418,7 @@ def replay_data_quality(request: DataQualityReplayRequest):
         return quality_service.replay(
             dataset_version=request.dataset_version,
             secondary_dataset_version=request.secondary_dataset_version,
+            fund_category=request.fund_category,
             quality_config_version=request.quality_config_version,
         )
     except SnapshotNotFoundError as exc:
@@ -421,6 +473,28 @@ def market_calendar(year: int, market: str = "A_SHARE"):
         "provider": "AKSHARE",
         "tradingDates": trading_dates,
     }
+
+
+class QuoteAvailabilityRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    product_type: str = Field(alias='productType')
+    market: str
+    fund_category: str | None = Field(default=None, alias='fundCategory')
+    start_date: date = Field(alias='startDate')
+    end_date: date = Field(alias='endDate')
+    at: datetime
+    delisting_date: date | None = Field(default=None, alias='delistingDate')
+
+
+@app.post('/internal/v1/market-data/availability', dependencies=[Depends(internal_auth)])
+def daily_availability(request: QuoteAvailabilityRequest):
+    try:
+        return quote_availability.resolve(product_type=request.product_type, market=request.market,
+                                          fund_category=request.fund_category, at=request.at,
+                                          start=request.start_date, end=request.end_date,
+                                          delisting_date=request.delisting_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/internal/v1/analysis/technical", dependencies=[Depends(internal_auth)])

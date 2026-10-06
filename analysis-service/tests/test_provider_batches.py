@@ -2,6 +2,9 @@ import json
 import math
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 from dataclasses import FrozenInstanceError
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -15,6 +18,7 @@ from app.providers import (
     ProviderBatch,
     ProviderRegistry,
     ProviderUnavailable,
+    ProviderEmpty,
     TencentHistoryProvider,
     TushareProvider,
 )
@@ -309,6 +313,18 @@ class FakeProvider:
 
 
 class ProviderRegistryBatchTest(unittest.TestCase):
+    def test_only_successfully_empty_supported_sources_are_source_empty(self):
+        request = dict(code="000001", market="SZSE", product_type=ProductType.STOCK,
+                       start_date=date(2026, 7, 1), end_date=date(2026, 7, 18),
+                       adjust_type=AdjustType.QFQ, clock=lambda: FETCHED_AT)
+        with self.assertRaises(ProviderEmpty):
+            ProviderRegistry([FakeProvider("EMPTY", None)]).daily_quality_batches(**request)
+        for providers in ([], [FakeProvider("OUTAGE", RuntimeError("no records due to timeout"))],
+                          [FakeProvider("EMPTY", None), FakeProvider("OUTAGE", RuntimeError("offline"))]):
+            with self.assertRaises(ProviderUnavailable) as error:
+                ProviderRegistry(providers).daily_quality_batches(**request)
+            self.assertNotIsInstance(error.exception, ProviderEmpty)
+
     def test_registry_returns_deterministic_distinct_primary_secondary_and_accumulated_warnings(self):
         empty = FakeProvider("EMPTY", None)
         second = FakeProvider("SECOND", lambda: batch(provider="SECOND", records=[quote(provider="SECOND")]))
@@ -358,6 +374,30 @@ class ProviderRegistryBatchTest(unittest.TestCase):
             ProviderRegistry([FakeProvider("EMPTY", None)]).daily_quality_batches(
                 **(call | {"start_date": date(2026, 7, 1)})
             )
+
+
+class TradingCalendarConcurrencyTest(unittest.TestCase):
+    def test_concurrent_first_calendar_requests_share_one_load(self):
+        from app import providers
+        providers._cached_a_share_trade_dates.cache_clear()
+        self.addCleanup(providers._cached_a_share_trade_dates.cache_clear)
+        lock = threading.Lock()
+        running = 0
+        peak = 0
+        loads = 0
+        def load(_):
+            nonlocal running, peak, loads
+            with lock:
+                running += 1; peak = max(peak, running); loads += 1
+            time.sleep(0.05)
+            with lock: running -= 1
+            return (date(2026, 9, 30), date(2026, 10, 8))
+        with patch('app.providers._load_a_share_trade_dates', side_effect=load):
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                results = list(executor.map(lambda _: providers.fetch_a_share_trade_calendar(2026), range(6)))
+        self.assertEqual([['2026-09-30', '2026-10-08']] * 6, results)
+        self.assertEqual(1, peak)
+        self.assertEqual(1, loads)
 
 
 if __name__ == "__main__":

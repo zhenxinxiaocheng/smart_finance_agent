@@ -1,15 +1,18 @@
 package com.smartfinance.agent.investment.service;
 
-import com.smartfinance.agent.investment.entity.InvestmentDataJob;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.smartfinance.agent.investment.entity.InvestmentAsset;
+import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
-import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
+import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
 import java.time.LocalDate;
@@ -23,11 +26,16 @@ import static org.mockito.Mockito.*;
 
 class InvestmentDataJobServiceTest {
 
+    @BeforeAll
+    static void initializeAssetMetadata() {
+        var assistant = new org.apache.ibatis.builder.MapperBuilderAssistant(
+                new com.baomidou.mybatisplus.core.MybatisConfiguration(), "product-analysis-job-test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, InvestmentAsset.class);
+    }
+
     private InvestmentDataJobMapper mapper;
     private InvestmentProductMapper productMapper;
-    private InvestmentAssetMapper assetMapper;
     private ProductDailyQuoteMapper quoteMapper;
-    private QuoteSeriesCoverageService seriesCoverage;
     private InvestmentDataJobService service;
 
     @BeforeEach
@@ -36,24 +44,14 @@ class InvestmentDataJobServiceTest {
         when(mapper.requeueTerminal(any())).thenReturn(1);
         when(mapper.requeueTerminalIncremental(any())).thenReturn(1);
         productMapper = mock(InvestmentProductMapper.class);
-        assetMapper = mock(InvestmentAssetMapper.class);
         quoteMapper = mock(ProductDailyQuoteMapper.class);
-        seriesCoverage = mock(QuoteSeriesCoverageService.class);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
         product.setProductType("STOCK");
-        product.setHistoryCoverageComplete(true);
+        product.setHistoryEndDate(java.time.LocalDate.of(2026, 7, 30));
         when(productMapper.selectById(21L)).thenReturn(product);
-        when(seriesCoverage.find(anyLong(), anyString(), anyString())).thenAnswer(invocation -> {
-            InvestmentProduct found = productMapper.selectById(invocation.getArgument(0));
-            return new QuoteSeriesCoverageService.Coverage(null, null, null, null, 0,
-                    found != null && Boolean.TRUE.equals(found.getHistoryCoverageComplete())
-                            ? "COMPLETE" : "INCOMPLETE", null);
-        });
-        var runtime = new com.smartfinance.agent.investment.config.InvestmentRuntimeProperties();
-        runtime.getDataQuality().setStockAdjustType("QFQ");
-        service = new InvestmentDataJobService(mapper, productMapper, assetMapper, quoteMapper,
-                seriesCoverage, new QuoteSeriesPolicy(runtime));
+        when(quoteMapper.selectCount(any())).thenReturn(10L);
+        service = new InvestmentDataJobService(mapper, productMapper, quoteMapper);
     }
 
     @Test
@@ -231,27 +229,14 @@ class InvestmentDataJobServiceTest {
     }
 
     @Test
-    void scannerDoesNotRequeueTerminalIncompleteJob() {
-        InvestmentAsset asset = asset(7L, 11L, 21L);
-        when(assetMapper.selectList(null)).thenReturn(List.of(asset));
-        when(productMapper.selectById(21L)).thenReturn(product(21L, "STOCK", false));
-        InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
-        existing.setFinishedAt(LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(1));
-        when(mapper.selectOne(any())).thenReturn(existing);
-
-        assertThat(service.requeueIncompleteHistoryJobs()).isZero();
-        verify(mapper, never()).requeueTerminal(any());
-    }
-
-    @Test
     void automaticRecoveryRequeuesACompletedJobIncrementally() {
         InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
         existing.setRecordCount(526);
-        existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 22));
         when(mapper.selectOne(any())).thenReturn(existing);
 
-        InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK");
+        // 只有「分析已过期」时才增量重排，绝不因此做全量回补。
+        InvestmentDataJob job = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
 
         assertThat(job.getStatus()).isEqualTo("QUEUED");
         assertThat(job.getForceRefresh()).isFalse();
@@ -260,9 +245,111 @@ class InvestmentDataJobServiceTest {
     }
 
     @Test
+    void changedDataRecoversAFailedJobIncrementally() {
+        InvestmentDataJob existing = job("FAILED", "STOCK_HISTORY");
+        existing.setId(91L);
+        existing.setAttemptCount(3);
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        InvestmentDataJob result = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
+
+        assertThat(result.getStatus()).isEqualTo("QUEUED");
+        assertThat(result.getForceRefresh()).isFalse();
+        assertThat(result.getAttemptCount()).isZero();
+        verify(mapper).requeueTerminalIncremental(91L);
+        verify(mapper, never()).requeueTerminal(any());
+    }
+
+    @Test
+    void productAnalysisQueueUsesRealUndeletedAssetIdsAndPreservesActiveJobs() {
+        InvestmentAssetMapper assetMapper = mock(InvestmentAssetMapper.class);
+        InvestmentAsset first = new InvestmentAsset();
+        first.setId(11L);
+        first.setUserId(7L);
+        first.setProductId(21L);
+        InvestmentAsset second = new InvestmentAsset();
+        second.setId(12L);
+        second.setUserId(8L);
+        second.setProductId(21L);
+        when(assetMapper.selectList(any())).thenReturn(List.of(first, second));
+        InvestmentDataJob active = job("RUNNING", "STOCK_HISTORY");
+        active.setId(91L);
+        active.setLeaseToken("active-worker");
+        InvestmentDataJob failed = job("FAILED", "STOCK_HISTORY");
+        failed.setId(92L);
+        failed.setAssetId(12L);
+        when(mapper.selectOne(any())).thenReturn(active, failed);
+        InvestmentDataJobService productService = spy(new InvestmentDataJobService(
+                mapper, productMapper, quoteMapper, assetMapper));
+        InvestmentDetailCacheService cache = mock(InvestmentDetailCacheService.class);
+        productService.configureDetailCache(cache);
+
+        productService.queueAnalysisForProduct(21L);
+
+        verify(productService).ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
+        verify(productService).ensureRecoveryQueued(8L, 12L, 21L, "STOCK", true);
+        verify(cache).evict(7L, 11L);
+        verify(cache).evict(8L, 12L);
+        assertThat(active.getStatus()).isEqualTo("RUNNING");
+        assertThat(active.getLeaseToken()).isEqualTo("active-worker");
+        verify(mapper, never()).requeueTerminalIncremental(91L);
+        verify(mapper).requeueTerminalIncremental(92L);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<InvestmentAsset>> query = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(assetMapper).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment()).contains("product_id", "deleted");
+        assertThat(query.getValue().getParamNameValuePairs().values()).contains(21L, 0);
+    }
+
+    @Test
+    void startupResumesEachHeldProductOnceWithoutASecondQueue() {
+        InvestmentAssetMapper assets = mock(InvestmentAssetMapper.class);
+        InvestmentAsset first = new InvestmentAsset();
+        first.setProductId(21L);
+        InvestmentAsset second = new InvestmentAsset();
+        second.setProductId(21L);
+        when(assets.selectList(any())).thenReturn(List.of(first, second));
+        InvestmentDataJobService startup = spy(new InvestmentDataJobService(mapper, productMapper, quoteMapper, assets));
+        doNothing().when(startup).queueAnalysisForProduct(any());
+
+        startup.resumeHeldData();
+
+        verify(startup, times(1)).queueAnalysisForProduct(21L);
+    }
+
+    @Test
+    void missingCoverageMetadataDoesNotForceReloadOfRealLocalHistory() {
+        InvestmentProduct product = product(21L, "STOCK", false);
+        when(productMapper.selectById(21L)).thenReturn(product);
+        when(quoteMapper.selectCount(any())).thenReturn(526L);
+
+        InvestmentDataJob queued = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+
+        assertThat(queued.getForceRefresh()).isFalse();
+    }
+
+    @Test
+    void firstDemandJobDoesNotTurnMissingLocalHistoryIntoAnExplicitFullRepair() {
+        service.configureDemand(mock(MarketDataDemandService.class));
+        when(quoteMapper.selectCount(any())).thenReturn(0L);
+
+        InvestmentDataJob queued = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+
+        assertThat(queued.getForceRefresh()).isFalse();
+    }
+
+    @Test
+    void noLocalHistoryStillQueuesFirstBackfill() {
+        when(quoteMapper.selectCount(any())).thenReturn(0L);
+
+        InvestmentDataJob queued = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+
+        assertThat(queued.getForceRefresh()).isTrue();
+    }
+
+    @Test
     void completedJobIsNotRequeuedWithoutNewQuotes() {
         InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
-        existing.setSampleEndDate(LocalDate.of(2026, 7, 22));
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 22));
         when(mapper.selectOne(any())).thenReturn(existing);
 
@@ -291,105 +378,6 @@ class InvestmentDataJobServiceTest {
         verify(mapper, never()).requeueTerminal(any());
     }
 
-    @Test
-    void requeueIncompleteHistoryJobsCoversEveryIncompleteAsset() {
-        InvestmentProduct stock = product(21L, "STOCK", false);
-        InvestmentProduct fund = product(31L, "MUTUAL_FUND", false);
-        InvestmentProduct complete = product(41L, "STOCK", true);
-        when(productMapper.selectById(21L)).thenReturn(stock);
-        when(productMapper.selectById(31L)).thenReturn(fund);
-        when(productMapper.selectById(41L)).thenReturn(complete);
-        InvestmentAsset stockAsset = asset(7L, 11L, 21L);
-        InvestmentAsset fundAsset = asset(7L, 12L, 31L);
-        InvestmentAsset completeAsset = asset(8L, 13L, 41L);
-        when(assetMapper.selectList(null)).thenReturn(List.of(stockAsset, fundAsset, completeAsset));
-        when(mapper.insert(any())).thenAnswer(invocation -> {
-            InvestmentDataJob job = invocation.getArgument(0);
-            job.setId(job.getProductId() + 100L);
-            return 1;
-        });
-
-        int requeued = service.requeueIncompleteHistoryJobs();
-
-        assertThat(requeued).isEqualTo(2);
-        verify(mapper).insert(argThat(job -> "STOCK_HISTORY".equals(job.getJobType())
-                && Boolean.TRUE.equals(job.getForceRefresh())));
-        verify(mapper).insert(argThat(job -> "FUND_NAV_HISTORY".equals(job.getJobType())
-                && Boolean.TRUE.equals(job.getForceRefresh())));
-    }
-
-    @Test
-    void anotherUserCannotReadAssetJobStatus() {
-        when(mapper.selectOne(any())).thenReturn(null);
-
-        var status = service.statusForAsset(8L, 11L);
-
-        assertThat(status).isEmpty();
-    }
-
-    @Test
-    void statusIncludesAttemptCount() {
-        InvestmentDataJob existing = job("RETRY_WAIT", "STOCK_HISTORY");
-        existing.setAttemptCount(2);
-        when(assetMapper.selectOne(any())).thenReturn(asset(7L, 11L, 21L));
-        when(mapper.selectOne(any())).thenReturn(existing);
-
-        var status = service.statusForAsset(7L, 11L);
-
-        assertThat(status).containsEntry("attemptCount", 2);
-    }
-
-    @Test
-    void statusExposesOnlySafeHistoryJobFields() {
-        InvestmentDataJob existing = job("RUNNING", "STOCK_HISTORY");
-        existing.setRecordCount(12);
-        existing.setAttemptCount(1);
-        existing.setErrorMessage("temporary");
-        existing.setStartedAt(LocalDateTime.of(2026, 7, 22, 9, 55));
-        existing.setFinishedAt(LocalDateTime.of(2026, 7, 22, 9, 56));
-        existing.setUpdatedAt(LocalDateTime.of(2026, 7, 22, 10, 0));
-        existing.setRequestedStartDate(LocalDate.of(2001, 8, 27));
-        existing.setSampleStartDate(LocalDate.of(2001, 8, 27));
-        existing.setSampleEndDate(LocalDate.of(2026, 7, 21));
-        existing.setCoverageComplete(true);
-        existing.setDatasetVersion("dataset-v1");
-        when(assetMapper.selectOne(any())).thenReturn(asset(7L, 11L, 21L));
-        when(mapper.selectOne(any())).thenReturn(existing);
-
-        var status = service.statusForAsset(7L, 11L);
-
-        assertThat(status).containsOnlyKeys(
-                "status", "recordCount", "attemptCount", "errorMessage", "updatedAt",
-                "requestedStartDate", "sampleStartDate", "sampleEndDate",
-                "coverageComplete", "datasetVersion");
-        assertThat(status).containsEntry("coverageComplete", true);
-    }
-
-    @Test
-    void recordsActualCoverageOnlyForCurrentLeaseOwner() {
-        when(mapper.updateCoverage(
-                91L,
-                "worker-token",
-                LocalDate.of(2001, 8, 27),
-                LocalDate.of(2001, 8, 27),
-                LocalDate.of(2026, 7, 21),
-                true,
-                "dataset-v1")).thenReturn(1);
-
-        boolean updated = service.recordCoverage(
-                91L,
-                "worker-token",
-                new InvestmentHistoryPreparationService.PreparationResult(
-                        5_987,
-                        LocalDate.of(2001, 8, 27),
-                        LocalDate.of(2001, 8, 27),
-                        LocalDate.of(2026, 7, 21),
-                        true,
-                        "dataset-v1"));
-
-        assertThat(updated).isTrue();
-    }
-
     private static InvestmentDataJob job(String status, String jobType) {
         InvestmentDataJob job = new InvestmentDataJob();
         job.setUserId(7L);
@@ -409,13 +397,5 @@ class InvestmentDataJobServiceTest {
         product.setProductType(productType);
         product.setHistoryCoverageComplete(coverageComplete);
         return product;
-    }
-
-    private static InvestmentAsset asset(Long userId, Long assetId, Long productId) {
-        InvestmentAsset asset = new InvestmentAsset();
-        asset.setId(assetId);
-        asset.setUserId(userId);
-        asset.setProductId(productId);
-        return asset;
     }
 }

@@ -12,6 +12,7 @@ const base = '/quant/v2'
 const data = promise => promise.then(response => response.data)
 export const quant = {
   marketData: {
+    prepare: id => data(request.post(`${base}/market-data/products/${encodeURIComponent(id)}/prepare`)),
     overview: () => data(request.get(`${base}/market-data/overview`)),
     products: params => data(request.get(`${base}/market-data/products`, { params })),
     detail: id => data(request.get(`${base}/market-data/products/${encodeURIComponent(id)}`)),

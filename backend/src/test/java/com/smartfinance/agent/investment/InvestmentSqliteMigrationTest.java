@@ -45,8 +45,22 @@ class InvestmentSqliteMigrationTest {
         }
         Flyway flyway = Flyway.configure().dataSource(url, user, password)
                 .locations("classpath:db/migration/" + dialect).baselineOnMigrate(false).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
+        Flyway throughV7 = Flyway.configure().dataSource(url, user, password)
+                .locations("classpath:db/migration/" + dialect).target("7").baselineOnMigrate(false).load();
+        assertThat(throughV7.migrate().migrationsExecuted).isEqualTo(7);
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO investment_product(product_type,market,code,name,currency) "
+                    + "VALUES ('STOCK','NASDAQ','EXISTING_FIXTURE','Existing product before upgrade','USD')");
+        }
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
+        String longName = "Long official security name ".repeat(8);
+        try (var connection = DriverManager.getConnection(url, user, password);
+             var insert = connection.prepareStatement("INSERT INTO investment_product(product_type,market,code,name,currency) "
+                     + "VALUES ('ETF','NYSE','LONG_NAME_FIXTURE',?,'USD')")) {
+            insert.setString(1, longName);
+            assertThat(insert.executeUpdate()).isEqualTo(1);
+        }
         try (var connection = DriverManager.getConnection(url, user, password)) {
             String tableQuery = dialect.equals("mysql")
                     ? "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' AND table_name<>'flyway_schema_history'"
@@ -54,9 +68,9 @@ class InvestmentSqliteMigrationTest {
             try (var statement = connection.createStatement(); var rows = statement.executeQuery(tableQuery)) {
                 var names = new java.util.HashSet<String>();
                 while (rows.next()) names.add(rows.getString(1));
-                assertThat(names).hasSize(59)
-                        .contains("product_quote_coverage", "market_data_scope_product")
-                        .doesNotContain("investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
+                assertThat(names).hasSize(59).contains("market_data_requirement")
+                        .doesNotContain("product_quote_coverage", "market_data_scope_product",
+                                "investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
             }
             assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "value_hash"));
             assertUniqueColumns(connection, "quant_v2_experiment_run", List.of("experiment_id", "ordinal"));
@@ -106,6 +120,16 @@ class InvestmentSqliteMigrationTest {
         }
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement();
+             var rows = statement.executeQuery("SELECT name FROM investment_product WHERE code='EXISTING_FIXTURE'")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getString(1)).isEqualTo("Existing product before upgrade");
+        }
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement();
+             var rows = statement.executeQuery("SELECT name FROM investment_product WHERE code='LONG_NAME_FIXTURE'")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getString(1)).isEqualTo(longName);
+        }
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT COUNT(*) FROM `user` WHERE username='migration_restart_check'")) {
             assertThat(rows.next()).isTrue();
             assertThat(rows.getInt(1)).isEqualTo(1);
@@ -127,6 +151,39 @@ class InvestmentSqliteMigrationTest {
             }
         }
         assertThat(indexes.values().stream().map(index -> List.copyOf(index.values())).toList()).contains(expected);
+    }
+
+    @Test
+    void historyRepairRetainsQuotesAndDoesNotAssumeUnknownHistoryIsComplete() throws Exception {
+        Path database = Files.createTempFile("smart-finance-market-repair-", ".db");
+        String url = "jdbc:sqlite:" + database.toAbsolutePath();
+        try {
+            Flyway.configure().dataSource(url, null, null).locations("classpath:db/migration/sqlite")
+                    .target("5").load().migrate();
+            try (var connection = DriverManager.getConnection(url); var statement = connection.createStatement()) {
+                statement.executeUpdate("INSERT INTO investment_product(id,product_type,market,code,name,currency,"
+                        + "source_metadata,history_start_date,history_end_date,history_coverage_complete) "
+                        + "VALUES(1,'STOCK','NASDAQ','AAPL','Apple','USD','AKSHARE_US_SPOT',"
+                        + "'2026-01-01','2026-01-01',1)");
+                statement.executeUpdate("INSERT INTO product_daily_quote(product_id,trade_date,close_price,source) "
+                        + "VALUES(1,'2026-01-01',100,'TEST')");
+            }
+            Flyway.configure().dataSource(url, null, null).locations("classpath:db/migration/sqlite")
+                    .load().migrate();
+            try (var connection = DriverManager.getConnection(url); var statement = connection.createStatement()) {
+                try (var rows = statement.executeQuery("SELECT catalog_market,history_coverage_complete FROM investment_product")) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("US");
+                    assertThat(rows.getBoolean(2)).isFalse();
+                }
+                try (var rows = statement.executeQuery("SELECT COUNT(*) FROM product_daily_quote")) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getInt(1)).isEqualTo(1);
+                }
+            }
+        } finally {
+            Files.deleteIfExists(database);
+        }
     }
 
     @Test

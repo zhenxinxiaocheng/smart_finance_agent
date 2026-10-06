@@ -155,7 +155,7 @@ class DataQualityEngine:
             "STOCK_CROSS_SOURCE_RECONCILIATION": lambda: self._cross_source(manifest, records, secondary),
             "FUND_NAV_TYPE_CONSISTENCY": lambda: self._fund_nav_type(records),
             "FUND_ESTIMATED_NAV_FORBIDDEN": lambda: self._fund_estimated(records),
-            "FUND_STALENESS": lambda: self._fund_staleness(records, evaluated_at),
+            "FUND_STALENESS": lambda: self._fund_staleness(records, evaluated_at, calendar),
             "FUND_UNEXPLAINED_NAV_GAPS": lambda: self._missing_dates(
                 "FUND_UNEXPLAINED_NAV_GAPS", manifest, records, calendar,
                 self._config.fund.max_missing_nav_ratio, evaluated_at,
@@ -310,7 +310,7 @@ class DataQualityEngine:
         market_date = evaluated_at.astimezone(ZoneInfo(
             self._config.market_time_zones.get(manifest.market, "UTC"))).date()
         expected = tuple(day for day in calendar if window_start <= day <= window_end
-                         and (not self._config.evidence_aware_rules or day < market_date))
+                         and (self._config.publication_aware_rules or not self._config.evidence_aware_rules or day < market_date))
         if not expected:
             return self._issue(code, IssueOutcome.NOT_APPLICABLE, "no expected dates fall in the requested range",
                                observed={"expectedDateCount": 0}, expected={"maximumMissingRatio": str(maximum_ratio)})
@@ -499,13 +499,25 @@ class DataQualityEngine:
                            expected={"estimated": False, "strictBoolean": True},
                            affected_dates=affected)
 
-    def _fund_staleness(self, records: tuple[Record, ...], evaluated_at: datetime) -> DataQualityIssue:
+    def _fund_staleness(self, records: tuple[Record, ...], evaluated_at: datetime, calendar: tuple[date, ...]) -> DataQualityIssue:
         days = [day for row in records if (day := _record_date(row)) is not None]
         if not days:
             return self._issue("FUND_STALENESS", IssueOutcome.NOT_APPLICABLE, "fund staleness needs an actual NAV date",
                                observed={"actualDates": 0},
                                expected={"maximumCalendarDays": self._config.fund.max_stale_calendar_days})
         latest = max(days)
+        if self._config.publication_aware_rules:
+            if not calendar:
+                return self._issue('FUND_STALENESS', IssueOutcome.NOT_APPLICABLE,
+                                   'fund valuation/publication calendar is unverified',
+                                   observed={'latestDate': latest.isoformat(), 'calendarVerified': False})
+            stale_sessions = sum(day > latest for day in calendar)
+            failed = stale_sessions > self._config.fund.max_stale_trading_days
+            return self._issue('FUND_STALENESS', IssueOutcome.FAIL if failed else IssueOutcome.PASS,
+                               'fund NAV is overdue' if failed else 'fund NAV is current for due sessions',
+                               observed={'staleTradingDays': stale_sessions, 'latestDate': latest.isoformat()},
+                               expected={'maximumTradingDays': self._config.fund.max_stale_trading_days},
+                               affected_dates=(latest,) if failed else ())
         stale_days = max((evaluated_at.date() - latest).days, 0)
         failed = stale_days > self._config.fund.max_stale_calendar_days
         return self._issue("FUND_STALENESS", IssueOutcome.FAIL if failed else IssueOutcome.PASS,

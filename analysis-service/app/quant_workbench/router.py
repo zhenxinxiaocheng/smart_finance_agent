@@ -1,10 +1,18 @@
 from fastapi import APIRouter, HTTPException
 
-from .engine import EngineError, execute, FACTOR_KEYS, runtime_info, validate_config
+from .engine import EngineError, execute, FACTOR_KEYS, runtime_info, validate_config, data_requirements
 from .parameters import parameter_catalog
 from .sensitivity import CandidateError, generate_candidates
 
 router = APIRouter(prefix="/quant/v2", tags=["quant-workbench"])
+
+
+@router.post("/data-requirements")
+def requirements(payload: dict) -> dict:
+    try:
+        return data_requirements(payload)
+    except (EngineError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_CONFIG", "message": str(exc)}) from exc
 
 
 @router.get("/parameters")

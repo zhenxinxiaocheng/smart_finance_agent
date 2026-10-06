@@ -6,7 +6,7 @@ import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
-import com.smartfinance.agent.investment.service.QuoteSeriesPolicy;
+import com.smartfinance.agent.investment.service.InvestmentDataQualityService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -17,16 +17,16 @@ public class QuantBenchmarkPreparationService {
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final QuantBenchmarkProfileService benchmarkProfileService;
-    private final QuoteSeriesPolicy seriesPolicy;
+    private final InvestmentDataQualityService dataQualityService;
 
     public QuantBenchmarkPreparationService(InvestmentProductMapper productMapper,
                                               ProductDailyQuoteMapper quoteMapper,
                                               QuantBenchmarkProfileService benchmarkProfileService,
-                                              QuoteSeriesPolicy seriesPolicy) {
+                                              InvestmentDataQualityService dataQualityService) {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.benchmarkProfileService = benchmarkProfileService;
-        this.seriesPolicy = seriesPolicy;
+        this.dataQualityService = dataQualityService;
     }
 
     public int prepare(InvestmentDataJob job) {
@@ -40,7 +40,7 @@ public class QuantBenchmarkPreparationService {
         List<ProductDailyQuote> quotes = quoteMapper.selectList(
                 new LambdaQueryWrapper<ProductDailyQuote>()
                         .eq(ProductDailyQuote::getProductId, product.getId())
-                        .eq(ProductDailyQuote::getAdjustType, seriesPolicy.researchAdjustType(product))
+                        .eq(ProductDailyQuote::getAdjustType, dataQualityService.adjustType(product))
                         .orderByAsc(ProductDailyQuote::getTradeDate)
         );
         if (quotes.size() < 2) {

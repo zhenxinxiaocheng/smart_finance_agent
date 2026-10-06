@@ -47,7 +47,7 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     db-config:
       logic-delete-field: deleted
@@ -101,6 +101,42 @@ analysis-service:
   internal-token: ${ANALYSIS_INTERNAL_TOKEN:dev-analysis-token}
   benchmark-connect-timeout: ${ANALYSIS_BENCHMARK_CONNECT_TIMEOUT:10s}
   benchmark-read-timeout: ${ANALYSIS_BENCHMARK_READ_TIMEOUT:90s}
+  catalog-read-timeout: ${ANALYSIS_CATALOG_READ_TIMEOUT:120s}
+
+market-data:
+  full-library:
+    enabled: ${MARKET_DATA_FULL_LIBRARY_ENABLED:false}
+    markets: ${MARKET_DATA_FULL_LIBRARY_MARKETS:CN_A,CN_ETF,US,INDEX,FUND_CN}
+    datasets: ${MARKET_DATA_FULL_LIBRARY_DATASETS:PRICE,PROFILE,FINANCIALS,CORPORATE_ACTIONS,FUND_HOLDINGS,FUND_OPERATIONS,VALUATION,SHAREHOLDERS,FUND_NOTICES}
+  demand:
+    a-share-calendar-fund-categories: ${MARKET_DATA_A_SHARE_CALENDAR_FUND_CATEGORIES:INDEX_FUND,ACTIVE_EQUITY_FUND,HYBRID_FUND,BOND_FUND}
+    detail-ttl: ${MARKET_DATA_DETAIL_TTL:30m}
+    reconcile-ms: ${MARKET_DATA_DEMAND_RECONCILE_MS:60000}
+    preparation-check-ms: ${MARKET_DATA_PREPARATION_CHECK_MS:15000}
+    preparation-timeout: ${MARKET_DATA_PREPARATION_TIMEOUT:24h}
+  sync:
+    enabled: ${MARKET_DATA_SYNC_ENABLED:true}
+  history-years: ${MARKET_DATA_HISTORY_YEARS:50}
+  bootstrap:
+    initial-delay-ms: ${MARKET_DATA_BOOTSTRAP_INITIAL_DELAY_MS:10000}
+    interval-ms: ${MARKET_DATA_BOOTSTRAP_INTERVAL_MS:21600000}
+  catalog:
+    cron: ${MARKET_DATA_CATALOG_CRON:0 15 9 * * *}
+  worker:
+    foreground-quota: ${MARKET_DATA_FOREGROUND_QUOTA:8}
+    initial-delay-ms: ${MARKET_DATA_WORKER_INITIAL_DELAY_MS:15000}
+    poll-ms: ${MARKET_DATA_WORKER_POLL_MS:2000}
+    chunk-days: ${MARKET_DATA_WORKER_CHUNK_DAYS:3650}
+    lease-seconds: ${MARKET_DATA_WORKER_LEASE_SECONDS:600}
+    max-attempts: ${MARKET_DATA_WORKER_MAX_ATTEMPTS:6}
+    concurrency: ${MARKET_DATA_WORKER_CONCURRENCY:2}
+    failed-retry-hours: ${MARKET_DATA_FAILED_RETRY_HOURS:6}
+  research:
+    refresh-overlap-years: ${MARKET_DATA_RESEARCH_REFRESH_OVERLAP_YEARS:2}
+  daily:
+    cn-cron: ${MARKET_DATA_DAILY_CN_CRON:0 30 17 * * MON-FRI}
+    us-cron: ${MARKET_DATA_DAILY_US_CRON:0 30 8 * * TUE-SAT}
+    fund-cron: ${MARKET_DATA_DAILY_FUND_CRON:0 0 22 * * MON-FRI}
 
 quant:
   workbench:

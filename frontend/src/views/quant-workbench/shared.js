@@ -14,7 +14,8 @@ export const labels = {
   QUALIFIED: '可继续模拟', UNQUALIFIED: '暂不能继续模拟', STOCK: '股票', ETF: 'ETF', FUND: '场外基金',
   TREND: '趋势策略', MULTI_FACTOR: '多因子策略', ML_ELASTIC_NET: 'Elastic Net', ML_XGBOOST: 'XGBoost',
   TRAINING: '模型训练', FACTOR: '因子研究', BACKTEST: '组合回测', BUY: '买入', SELL: '卖出',
-  EXECUTING:'计算中', COMPLETED:'已完成', STOPPING:'等待清仓和结算',
+  DATA_PREPARING:'准备数据中', EXECUTING:'计算中', COMPLETED:'已完成', STOPPING:'等待清仓和结算',
+  PAUSED_BY_SCOPE:'按需暂停', RETRY_WAIT:'等待重试', SKIPPED:'已满足需求',
   ...researchLabels,
 }
 export const label = value => labels[value] || userMessage(value, null, '—')

@@ -2,19 +2,20 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 
 const source = readFileSync(new URL('./InvestmentAssetDetail.vue', import.meta.url), 'utf8')
 const template = source.match(/<template>[\s\S]*<\/template>/)?.[0] || ''
 
 function loader(existing, request) {
   const context = vm.createContext({
-    detail: { value: existing }, loading: { value: false }, reloading: { value: false },
+    detail: { value: existing }, loading: { value: false },
     error: { value: '' }, detailRequestToken: 0, route: { params: { assetId: '11' } },
-    isCurrentAsset: id => String(id) === '11', getInvestmentAssetDetailAPI: request,
-    syncHistoryJobPolling() {}
+    isCurrentAsset: id => String(id) === '11', getInvestmentAssetDetailAPI: request
   })
   const start = source.indexOf('async function loadAll(')
-  const end = source.indexOf('\nasync function refreshData(', start)
+  const end = source.indexOf('\nasync function syncLatest(', start)
+  assert.ok(start >= 0 && end > start, '详情加载函数边界必须存在')
   vm.runInContext(source.slice(start, end), context)
   return context
 }
@@ -26,11 +27,10 @@ test('首次加载显示 Skeleton，后台重新加载保留现有内容', async
   const refresh = loader(existing, () => pending)
   const done = refresh.loadAll()
   assert.equal(refresh.loading.value, false)
-  assert.equal(refresh.reloading.value, true)
   assert.equal(refresh.detail.value, existing)
   finish({ data: { asset: { id: 11, name: '更新后的资产' } } })
   await done
-  assert.equal(refresh.reloading.value, false)
+  assert.equal(refresh.loading.value, false)
   assert.equal(refresh.detail.value.asset.name, '更新后的资产')
 
   const first = loader(null, () => new Promise(() => {}))
@@ -63,21 +63,74 @@ test('用户页面不展示内部数据质量诊断', () => {
   assert.doesNotMatch(template, /dataQualityError/)
 })
 
-test('数据阻断和校验服务等待使用不同提示且绝不展示旧结论', () => {
-  assert.match(template, /数据完整性校验未通过/)
-  assert.match(template, /数据校验暂不可用/)
+test('内部阻断和服务等待不在标题、页面和图表重复提示', () => {
+  assert.doesNotMatch(template, /数据完整性校验未通过|数据校验暂不可用/)
+  assert.doesNotMatch(template, /sourceLabel|history-warning|分析更新中<\/AlertTitle>|历史数据准备中<\/AlertTitle>/)
   assert.doesNotMatch(template, /使用可靠缓存|最近一次可靠结果/)
-  assert.match(source, /qualityBlocked = computed\(\(\) => sourceStatus\.value\.dataState === 'BLOCKED'\)/)
-  assert.match(source, /qualityWaiting = computed\(\(\) => sourceStatus\.value\.dataState === 'WAITING'\)/)
 })
 
-test('历史任务使用用户可理解的状态提示', () => {
-  assert.match(template, /正在排队补齐历史数据/)
-  assert.match(template, /正在补齐历史数据/)
-  assert.match(template, /历史数据准备将自动重试/)
-  assert.match(template, /历史数据已部分补齐/)
-  assert.match(template, /历史数据准备未完成/)
+test('历史准备自动更新详情，内部任务状态不直接呈现', () => {
+  assert.match(source, /watch\(pendingAnalysis/)
+  assert.match(source, /startInvestmentRealtimePolling/)
+  assert.doesNotMatch(template, /historyJob\.status|historyJob\.errorMessage/)
   assert.doesNotMatch(template, /errorMessage/)
+})
+
+function analysisNotifications(t) {
+  const messages = []
+  const detail = ref(null)
+  const route = reactive({ params: { assetId: '11' } })
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  const context = vm.createContext({
+    computed, watch, detail, route,
+    sourceStatus: computed(() => detail.value?.sourceStatus || {}),
+    feedback: { info: message => messages.push(message) },
+    startInvestmentRealtimePolling: () => () => {},
+    detailRefreshRunner: () => {}, loadAll: async () => {}
+  })
+  const pendingStart = source.indexOf('const pendingAnalysis = computed(')
+  const watchersStart = source.indexOf('let stopDetailUpdates = null')
+  scope.run(() => vm.runInContext(
+    source.slice(pendingStart, source.indexOf('const activeFundPeriod', pendingStart))
+      + source.slice(watchersStart, source.indexOf('watch(horizonOptions', watchersStart)), context))
+  return { messages, route, async receive(state) {
+    detail.value = { asset: { id: route.params.assetId }, sourceStatus: { dataState: state } }
+    await nextTick()
+  } }
+}
+
+test('同一资产只提醒一次，轮询及准备状态变化不会重复弹出', async t => {
+  const state = analysisNotifications(t)
+  for (const status of ['PREPARING', 'PREPARING', 'WAITING', 'BLOCKED', 'STABLE_CACHE', 'READY', 'BLOCKED']) {
+    await state.receive(status)
+  }
+  assert.equal(state.messages.length, 1)
+  assert.match(state.messages[0], /分析.*后台.*自动显示/)
+})
+
+test('已就绪资产不提醒，切换到另一资产后独立提醒一次', async t => {
+  const state = analysisNotifications(t)
+  await state.receive('READY')
+  assert.deepEqual(state.messages, [])
+  await state.receive('WAITING')
+  assert.equal(state.messages.length, 1)
+  state.route.params.assetId = '13'
+  await nextTick()
+  await state.receive('PREPARING')
+  await state.receive('BLOCKED')
+  assert.equal(state.messages.length, 2)
+})
+
+test('已有行情等待分析时不误报数据不足', () => {
+  const activeAnalysis = ref({ status: 'PREPARING' })
+  const context = vm.createContext({ computed, activeAnalysis, fundAdviceUnavailable: ref(false), isFund: ref(true), fundActionLabel: () => '暂无操作建议' })
+  const start = source.indexOf('const activeHeadline = computed(')
+  const end = source.indexOf('const activePeriodText', start)
+  vm.runInContext(source.slice(start, end) + '\nglobalThis.headline = activeHeadline', context)
+  assert.equal(context.headline.value, '—')
+  activeAnalysis.value = { status: 'INSUFFICIENT' }
+  assert.equal(context.headline.value, '数据不足')
 })
 
 test('技术分析不再伪造金额和买卖数量', () => {

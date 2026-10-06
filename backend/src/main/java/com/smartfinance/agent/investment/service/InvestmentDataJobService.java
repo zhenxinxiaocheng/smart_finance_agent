@@ -1,23 +1,25 @@
 package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.InvestmentAsset;
+import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
-import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
+import com.smartfinance.agent.investment.entity.ProductDailyQuote;
+import com.smartfinance.agent.investment.domain.GlobalHorizonChangedEvent;
 import com.smartfinance.agent.investment.mapper.InvestmentDataJobMapper;
+import com.smartfinance.agent.investment.mapper.InvestmentAssetMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class InvestmentDataJobService {
@@ -25,31 +27,42 @@ public class InvestmentDataJobService {
 
     private final InvestmentDataJobMapper mapper;
     private final InvestmentProductMapper productMapper;
-    private final InvestmentAssetMapper assetMapper;
     private final ProductDailyQuoteMapper quoteMapper;
-    private final QuoteSeriesCoverageService seriesCoverage;
-    private final QuoteSeriesPolicy seriesPolicy;
+    private final InvestmentAssetMapper assetMapper;
+    private InvestmentDetailCacheService detailCache;
+    private MarketDataDemandService demand;
+    @Autowired
+    void configureDemand(MarketDataDemandService demand) { this.demand = demand; }
+
+    @Autowired
+    void configureDetailCache(InvestmentDetailCacheService detailCache) {
+        this.detailCache = detailCache;
+    }
 
     public InvestmentDataJobService(InvestmentDataJobMapper mapper,
                                     InvestmentProductMapper productMapper,
-                                    InvestmentAssetMapper assetMapper,
+                                    ProductDailyQuoteMapper quoteMapper) {
+        this(mapper, productMapper, quoteMapper, null);
+    }
+
+    @Autowired
+    public InvestmentDataJobService(InvestmentDataJobMapper mapper,
+                                    InvestmentProductMapper productMapper,
                                     ProductDailyQuoteMapper quoteMapper,
-                                    QuoteSeriesCoverageService seriesCoverage,
-                                    QuoteSeriesPolicy seriesPolicy) {
+                                    InvestmentAssetMapper assetMapper) {
         this.mapper = mapper;
         this.productMapper = productMapper;
-        this.assetMapper = assetMapper;
         this.quoteMapper = quoteMapper;
-        this.seriesCoverage = seriesCoverage;
-        this.seriesPolicy = seriesPolicy;
+        this.assetMapper = assetMapper;
     }
 
     @Transactional
     public InvestmentDataJob ensureQueued(Long userId, Long assetId, Long productId,
                                            String productType, boolean forceRefresh) {
         String jobType = jobTypeFor(productType);
-        boolean requiresCompleteHistory = isAssetHistoryJob(jobType)
-                && !Boolean.TRUE.equals(historyCoverageComplete(productId));
+        if (demand != null && isAssetHistoryJob(jobType)) demand.asset(userId,assetId,productId);
+        // 按需模式的首次准备交给共享采集任务，forceRefresh 仅保留用户显式修复语义。
+        boolean requiresCompleteHistory = demand == null && isAssetHistoryJob(jobType) && !hasLocalHistory(productId);
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing != null) {
             if (isActive(existing)) {
@@ -92,6 +105,7 @@ public class InvestmentDataJobService {
     public InvestmentDataJob ensureRecoveryQueued(Long userId, Long assetId, Long productId,
                                                    String productType, boolean analysisStale) {
         String jobType = jobTypeFor(productType);
+        if (demand != null && isAssetHistoryJob(jobType)) demand.asset(userId,assetId,productId);
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing == null) {
             return ensureQueued(userId, assetId, productId, productType, false);
@@ -99,35 +113,63 @@ public class InvestmentDataJobService {
         if (isActive(existing)) {
             return existing;
         }
-        InvestmentProduct product = productMapper.selectById(productId);
-        if (product == null) throw new IllegalArgumentException("产品不存在");
-        LocalDate latestQuoteDate = "FUND_NAV_HISTORY".equals(jobType)
-                ? quoteMapper.latestCompleteFundTradeDate(productId)
-                : quoteMapper.latestTradeDate(productId,
-                seriesPolicy.researchAdjustType(product));
-        if ("PARTIAL".equals(existing.getStatus()) && latestQuoteDate != null
-                && existing.getSampleEndDate() != null
-                && latestQuoteDate.isAfter(existing.getSampleEndDate())) {
-            return requeueTerminal(existing, true);
+        // 已有终态任务且分析过期时只做增量补齐，绝不因 PARTIAL / FAILED 触发全量回补。
+        if (analysisStale && List.of("SUCCEEDED", "PARTIAL", "FAILED").contains(existing.getStatus())) {
+            return requeueTerminal(existing, false);
         }
-        if (analysisStale && "FUND_NAV_HISTORY".equals(jobType)
-                && "PARTIAL".equals(existing.getStatus())
-                && existing.getSampleEndDate() != null
-                && quoteMapper.hasMissingFundReturns(productId)
-                && !quoteMapper.hasMissingFundReturns(productId, existing.getSampleEndDate())) {
-            // One full retry repairs jobs that counted a newer display-only NAV as incomplete history.
-            if (mapper.requeuePartialRecoveryOnce(existing.getId()) == 1) {
-                return findByAssetAndType(assetId, jobType);
+        return existing;
+    }
+
+    /** 新行情落库后，只为仍存在的个人资产排队重建分析。 */
+    @Transactional
+    public void queueAnalysisForProduct(Long productId) {
+        if (productId == null || assetMapper == null) {
+            return;
+        }
+        InvestmentProduct product = productMapper.selectById(productId);
+        if (product == null || !isAssetHistoryProduct(product)) {
+            return;
+        }
+        List<InvestmentAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                .select(InvestmentAsset::getId, InvestmentAsset::getUserId, InvestmentAsset::getProductId)
+                .eq(InvestmentAsset::getProductId, productId)
+                .eq(InvestmentAsset::getDeleted, 0));
+        for (InvestmentAsset asset : assets) {
+            if (asset.getId() != null && asset.getUserId() != null) {
+                ensureRecoveryQueued(asset.getUserId(), asset.getId(), productId,
+                        product.getProductType(), true);
+                if (detailCache != null) detailCache.evict(asset.getUserId(), asset.getId());
             }
         }
-        if (!"SUCCEEDED".equals(existing.getStatus())) {
-            return existing;
+    }
+
+    /** 周期保存和分析入队使用同一事务；仅重算当前用户仍存在的资产。 */
+    @EventListener
+    @Transactional
+    public void onGlobalHorizonChanged(GlobalHorizonChangedEvent event) {
+        if (assetMapper == null) return;
+        List<InvestmentAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                .select(InvestmentAsset::getId, InvestmentAsset::getUserId, InvestmentAsset::getProductId)
+                .eq(InvestmentAsset::getUserId, event.userId())
+                .eq(InvestmentAsset::getDeleted, 0));
+        for (InvestmentAsset asset : assets) {
+            InvestmentProduct product = asset.getProductId() == null ? null : productMapper.selectById(asset.getProductId());
+            if (product != null && isAssetHistoryProduct(product)) {
+                ensureRecoveryQueued(asset.getUserId(), asset.getId(), product.getId(), product.getProductType(), true);
+                if (detailCache != null) detailCache.evict(asset.getUserId(), asset.getId());
+            }
         }
-        if (!analysisStale && (latestQuoteDate == null || (existing.getSampleEndDate() != null
-                && !latestQuoteDate.isAfter(existing.getSampleEndDate())))) {
-            return existing;
-        }
-        return requeueTerminal(existing, false);
+    }
+
+    /** 启动后核对既有持仓，补齐停机期间遗漏的数据或分析更新。 */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void resumeHeldData() {
+        if (assetMapper == null) return;
+        assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                        .select(InvestmentAsset::getProductId).eq(InvestmentAsset::getDeleted, 0))
+                .stream().map(InvestmentAsset::getProductId).filter(java.util.Objects::nonNull)
+                .distinct().forEach(this::queueAnalysisForProduct);
     }
 
     private InvestmentDataJob requeueTerminal(InvestmentDataJob existing, boolean forceRefresh) {
@@ -141,31 +183,6 @@ public class InvestmentDataJobService {
             return existing;
         }
         return findByAssetAndType(existing.getAssetId(), existing.getJobType());
-    }
-
-    @Transactional
-    public int requeueIncompleteHistoryJobs() {
-        int requeued = 0;
-        for (InvestmentAsset asset : assetMapper.selectList(null)) {
-            InvestmentProduct product = productMapper.selectById(asset.getProductId());
-            if (product == null || !isAssetHistoryProduct(product)) {
-                continue;
-            }
-            String jobType = jobTypeFor(product.getProductType());
-            InvestmentDataJob existing = findByAssetAndType(asset.getId(), jobType);
-            if (existing != null || Boolean.TRUE.equals(historyCoverageComplete(product.getId()))) {
-                continue;
-            }
-            ensureQueued(
-                    asset.getUserId(),
-                    asset.getId(),
-                    product.getId(),
-                    product.getProductType(),
-                    false
-            );
-            requeued++;
-        }
-        return requeued;
     }
 
     @Transactional
@@ -212,39 +229,6 @@ public class InvestmentDataJobService {
             throw duplicateKey;
         }
         return job;
-    }
-
-    public Map<String, Object> statusForAsset(Long userId, Long assetId) {
-        InvestmentAsset asset = assetMapper.selectOne(new LambdaQueryWrapper<InvestmentAsset>()
-                .eq(InvestmentAsset::getUserId, userId)
-                .eq(InvestmentAsset::getId, assetId)
-                .eq(InvestmentAsset::getDeleted, 0));
-        if (asset == null) {
-            return Map.of();
-        }
-        InvestmentProduct product = productMapper.selectById(asset.getProductId());
-        if (product == null) {
-            return Map.of();
-        }
-        InvestmentDataJob job = findByAssetAndType(
-                assetId,
-                jobTypeFor(product.getProductType())
-        );
-        if (job == null) {
-            return Map.of();
-        }
-        Map<String, Object> status = new LinkedHashMap<>();
-        status.put("status", job.getStatus());
-        status.put("recordCount", job.getRecordCount());
-        status.put("attemptCount", job.getAttemptCount());
-        status.put("errorMessage", job.getErrorMessage());
-        status.put("updatedAt", job.getUpdatedAt());
-        status.put("requestedStartDate", job.getRequestedStartDate());
-        status.put("sampleStartDate", job.getSampleStartDate());
-        status.put("sampleEndDate", job.getSampleEndDate());
-        status.put("coverageComplete", job.getCoverageComplete());
-        status.put("datasetVersion", job.getDatasetVersion());
-        return status;
     }
 
     public List<InvestmentDataJob> pendingJobs(int limit) {
@@ -300,46 +284,16 @@ public class InvestmentDataJobService {
                 errorMessage, finishedAt, finishedAt) == 1;
     }
 
-    public boolean recordCoverage(
-            Long id,
-            String leaseToken,
-            InvestmentHistoryPreparationService.PreparationResult result) {
-        if (result == null) {
-            return false;
-        }
-        return mapper.updateCoverage(
-                id,
-                leaseToken,
-                result.requestedStartDate(),
-                result.sampleStartDate(),
-                result.sampleEndDate(),
-                result.coverageComplete(),
-                result.datasetVersion()) == 1;
-    }
-
     private InvestmentDataJob findByAssetAndType(Long assetId, String jobType) {
         return mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
                 .eq(InvestmentDataJob::getAssetId, assetId)
                 .eq(InvestmentDataJob::getJobType, jobType));
     }
 
-    private Boolean historyCoverageComplete(Long productId) {
-        InvestmentProduct product = productMapper.selectById(productId);
-        if (product == null) {
-            return false;
-        }
-        String adjustType = seriesPolicy.researchAdjustType(product);
-        QuoteSeriesCoverageService.Coverage primary = seriesCoverage.find(productId, adjustType,
-                seriesPolicy.datasetType(product));
-        if (primary == null || !primary.complete()) return false;
-        if ("STOCK".equals(product.getProductType())) {
-            QuoteSeriesCoverageService.Coverage raw = seriesCoverage.find(productId, "NONE", "PRICE");
-            return raw != null && raw.complete();
-        }
-        if (!"FUND_NAV_HISTORY".equals(jobTypeFor(product.getProductType()))) return true;
-        QuoteSeriesCoverageService.Coverage returns =
-                seriesCoverage.find(productId, "NONE", "TOTAL_RETURN_INDEX");
-        return returns != null && returns.complete();
+    /** 本地真实行情决定是否首次回补，不依赖覆盖标记或上一次任务状态。 */
+    private boolean hasLocalHistory(Long productId) {
+        return quoteMapper.selectCount(new LambdaQueryWrapper<ProductDailyQuote>()
+                .eq(ProductDailyQuote::getProductId, productId)) > 0;
     }
 
     private static boolean isAssetHistoryJob(String jobType) {

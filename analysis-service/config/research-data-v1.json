@@ -1,0 +1,127 @@
+{
+  "version": "research-data-v1",
+  "sourceTimeoutSeconds": 25,
+  "requestTimeoutSeconds": 8,
+  "collectionBudgetSeconds": 90,
+  "sourceFailureThreshold": 3,
+  "sourceCooldownSeconds": 180,
+  "sec": {"requestTimeoutSeconds": 10, "minimumRequestIntervalSeconds": 0.2, "tickerCacheSeconds": 86400, "userAgentEnvironment": "SEC_USER_AGENT"},
+  "datasets": {
+    "PROFILE": {"refreshDays": 30, "families": {
+      "CN_STOCK": [{"section": "profile", "sources": [
+        {"provider": "CNINFO", "function": "stock_profile_cninfo", "kwargs": {"symbol": "{code}"}},
+        {"provider": "EASTMONEY", "function": "stock_individual_info_em", "layout": "fields", "kwargs": {"symbol": "{code}"}}
+      ]}],
+      "US_STOCK": [{"section": "profile", "sources": [{"provider": "SEC", "function": "sec_profile"}]}],
+      "US_ETF": [{"section": "profile", "sources": [{"provider": "SEC", "function": "sec_profile"}]}],
+      "CN_FUND": [{"section": "profile", "sources": [
+        {"provider": "EASTMONEY", "function": "fund_overview_em", "kwargs": {"symbol": "{code}"}},
+        {"provider": "XUEQIU", "function": "fund_individual_basic_info_xq", "layout": "fields", "kwargs": {"symbol": "{code}"}}
+      ]}]
+    }},
+    "FINANCIALS": {"refreshDays": 7, "families": {
+      "CN_STOCK": [
+        {"section": "balance_sheet", "sources": [{"provider": "SINA", "function": "stock_financial_report_sina", "kwargs": {"stock": "{stockSymbol}", "symbol": "资产负债表"}}]},
+        {"section": "income_statement", "sources": [{"provider": "SINA", "function": "stock_financial_report_sina", "kwargs": {"stock": "{stockSymbol}", "symbol": "利润表"}}]},
+        {"section": "cash_flow", "sources": [{"provider": "SINA", "function": "stock_financial_report_sina", "kwargs": {"stock": "{stockSymbol}", "symbol": "现金流量表"}}]}
+      ],
+      "US_STOCK": [{"section": "company_facts", "sources": [
+        {"provider": "SEC", "function": "sec_facts"}, {"provider": "EASTMONEY", "function": "em_us_financials"}
+      ]}]
+    }},
+    "CORPORATE_ACTIONS": {"refreshDays": 7, "families": {
+      "CN_STOCK": [{"section": "dividends", "sources": [{"provider": "CNINFO", "function": "stock_dividend_cninfo", "kwargs": {"symbol": "{code}"}}]}],
+      "CN_FUND": [
+        {"section": "dividends", "sources": [{"provider": "EASTMONEY", "function": "fund_open_fund_info_em", "kwargs": {"symbol": "{code}", "indicator": "分红送配详情"}}]},
+        {"section": "splits", "sources": [{"provider": "EASTMONEY", "function": "fund_open_fund_info_em", "kwargs": {"symbol": "{code}", "indicator": "拆分详情"}}]}
+      ]
+    }},
+    "FUND_HOLDINGS": {"refreshDays": 14, "yearly": true, "families": {
+      "CN_FUND": [
+        {"section": "stocks", "sources": [
+          {"provider": "EASTMONEY", "function": "fund_portfolio_hold_em", "kwargs": {"symbol": "{code}", "date": "{year}"}},
+          {"provider": "EASTMONEY", "function": "http_fund_archive", "endpoint": "fundHoldings", "params": {"type": "jjcc", "code": "{code}", "year": "{year}", "topline": "10000", "month": ""}}
+        ]},
+        {"section": "bonds", "sources": [
+          {"provider": "EASTMONEY", "function": "fund_portfolio_bond_hold_em", "kwargs": {"symbol": "{code}", "date": "{year}"}},
+          {"provider": "EASTMONEY", "function": "http_fund_archive", "endpoint": "fundHoldings", "params": {"type": "zqcc", "code": "{code}", "year": "{year}", "month": ""}}
+        ]},
+        {"section": "industries", "sources": [{"provider": "EASTMONEY", "function": "fund_portfolio_industry_allocation_em", "kwargs": {"symbol": "{code}", "date": "{year}"}}]}
+      ]
+    }},
+    "FUND_OPERATIONS": {"refreshDays": 30, "families": {
+      "CN_FUND": [{"section": "fees_and_rules", "sources": [
+        {"provider": "XUEQIU", "function": "fund_individual_detail_info_xq", "kwargs": {"symbol": "{code}"}},
+        {"provider": "EASTMONEY", "function": "fund_fee_em", "kwargs": {"symbol": "{code}", "indicator": "运作费用"}}
+      ]}]
+    }},
+    "VALUATION": {"refreshDays": 1, "families": {
+      "CN_STOCK": [{"section": "daily_valuation", "sources": [{"provider": "EASTMONEY", "function": "stock_value_em", "kwargs": {"symbol": "{code}"}}]}]
+    }},
+    "SHAREHOLDERS": {"refreshDays": 14, "families": {
+      "CN_STOCK": [{"section": "shareholders", "sources": [{"provider": "SINA", "function": "stock_main_stock_holder", "kwargs": {"stock": "{code}"}}]}]
+    }},
+    "FUND_NOTICES": {"refreshDays": 7, "families": {
+      "CN_FUND": [
+        {"section": "periodic_reports", "sources": [{"provider": "EASTMONEY", "function": "http_json_rows", "endpoint": "fundNotices", "params": {"fundcode": "{code}", "type": "3"}}]},
+        {"section": "personnel", "sources": [{"provider": "EASTMONEY", "function": "http_json_rows", "endpoint": "fundNotices", "params": {"fundcode": "{code}", "type": "4"}}]},
+        {"section": "dividend_notices", "sources": [{"provider": "EASTMONEY", "function": "http_json_rows", "endpoint": "fundNotices", "params": {"fundcode": "{code}", "type": "2"}}]}
+      ]
+    }},
+    "FILINGS": {"refreshDays": 1, "yearly": true, "windowField": "publishedDate", "families": {
+      "US_STOCK": [{"section": "filings", "sources": [{"provider": "SEC", "function": "sec_filings"}]}],
+      "US_ETF": [{"section": "filings", "sources": [{"provider": "SEC", "function": "sec_filings"}]}]
+    }}
+  },
+  "httpSources": {"fundNotices": {
+    "url": "https://api.fund.eastmoney.com/f10/JJGG", "pageSize": 1000, "maxPages": 10,
+    "headers": {"Referer": "https://fundf10.eastmoney.com/", "User-Agent": "Mozilla/5.0"},
+    "fieldMap": {"FUNDCODE": "基金代码", "TITLE": "公告标题", "ShortTitle": "基金名称", "PUBLISHDATE": "公告日期", "ID": "报告ID"}
+  }, "fundHoldings": {
+    "url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx",
+    "headers": {"Referer": "https://fundf10.eastmoney.com/", "User-Agent": "Mozilla/5.0"},
+    "columnAliases": {"占净值比例": ["占净值比例", "占净值 比例"], "持股数": ["持股数 （万股）", "持股数（万股）"], "持仓市值": ["持仓市值 （万元）", "持仓市值（万元）", "持仓市值（万元人民币）", "持仓市值 （万元人民币）"]}
+  }},
+  "usFinancialFallback": [
+    {"section": "balance_sheet", "provider": "EASTMONEY", "function": "stock_financial_us_report_em", "kwargs": {"stock": "{code}", "symbol": "资产负债表", "indicator": "累计季报"}},
+    {"section": "income_statement", "provider": "EASTMONEY", "function": "stock_financial_us_report_em", "kwargs": {"stock": "{code}", "symbol": "综合损益表", "indicator": "累计季报"}},
+    {"section": "cash_flow", "provider": "EASTMONEY", "function": "stock_financial_us_report_em", "kwargs": {"stock": "{code}", "symbol": "现金流量表", "indicator": "累计季报"}}
+  ],
+  "fieldUnits": {
+    "SINA": {
+      "FINANCIALS": {"营业收入": "REPORT_CURRENCY", "营业总收入": "REPORT_CURRENCY", "净利润": "REPORT_CURRENCY", "归属于母公司股东的净利润": "REPORT_CURRENCY", "归属于母公司所有者的净利润": "REPORT_CURRENCY", "资产总计": "REPORT_CURRENCY", "负债合计": "REPORT_CURRENCY", "所有者权益合计": "REPORT_CURRENCY", "股东权益合计": "REPORT_CURRENCY", "经营活动产生的现金流量净额": "REPORT_CURRENCY", "基本每股收益": "REPORT_CURRENCY_PER_SHARE", "稀释每股收益": "REPORT_CURRENCY_PER_SHARE", "币种": "CURRENCY_CODE"},
+      "SHAREHOLDERS": {"持股数量": "SHARES", "持股比例": "PERCENT", "股东总数": "COUNT", "平均持股数": "SHARES"}
+    },
+    "EASTMONEY": {
+      "VALUATION": {"总市值": "CNY", "流通市值": "CNY", "总股本": "SHARES", "流通股本": "SHARES", "PE(TTM)": "RATIO", "市净率": "RATIO", "市销率": "RATIO"},
+      "FUND_HOLDINGS": {"占净值比例": "PERCENT", "持股数": "TEN_THOUSAND_SHARES", "持仓市值": "TEN_THOUSAND_CNY", "市值": "CNY"}
+    },
+    "CNINFO": {"CORPORATE_ACTIONS": {"派息比例": "CNY_PER_TEN_SHARES", "送股比例": "SHARES_PER_TEN_SHARES", "转增比例": "SHARES_PER_TEN_SHARES"}}
+  },
+  "dateColumns": ["报告日", "报告日期", "报告期", "REPORT_DATE", "数据日期", "截至日期", "截止日期", "截止时间", "季度", "报告时间", "除权日", "除息日", "拆分折算日"],
+  "publicationColumns": ["公告日期", "实施方案公告日期", "公告时间", "UPDATE_DATE", "披露日期"],
+  "identityColumns": ["股票代码", "债券代码", "股东名称", "行业类别", "费用类型", "费用类别", "条件或名称", "适用金额", "适用期限", "STD_ITEM_CODE", "REPORT_TYPE", "分红类型", "登记日", "权益登记日", "报告ID", "公告标题"],
+  "fieldAliases": {
+    "companyName": ["公司名称", "公司名", "公司全称"],
+    "industry": ["所属行业", "行业", "行业类别"],
+    "inceptionDate": ["成立日期", "成立时间", "成立日期/规模", "found_date"],
+    "listingDate": ["上市日期", "上市时间"],
+    "fundManager": ["基金经理", "基金经理人", "manager"],
+    "fundCompany": ["基金公司", "基金管理人"],
+    "benchmark": ["业绩比较基准", "业绩基准"],
+    "revenue": ["营业收入", "营业总收入", "营业收入(元)"],
+    "netProfit": ["净利润", "归属于母公司股东的净利润", "归属于母公司所有者的净利润"],
+    "totalAssets": ["资产总计", "资产总额"],
+    "totalLiabilities": ["负债合计", "负债总额"],
+    "equity": ["所有者权益合计", "股东权益合计"],
+    "operatingCashFlow": ["经营活动产生的现金流量净额"],
+    "totalShares": ["总股本"], "floatShares": ["流通股本"],
+    "marketCap": ["总市值"], "floatMarketCap": ["流通市值"],
+    "peTtm": ["PE(TTM)"], "pb": ["市净率"], "ps": ["市销率"],
+    "weight": ["占净值比例", "占净值比例(%)", "持股比例"],
+    "quantity": ["持股数", "持股数量", "持债数量"],
+    "marketValue": ["持仓市值", "市值"], "dividendPerShare": ["每份分红", "派息比例"],
+    "fundAssets": ["资产规模", "最新规模"], "fundShares": ["份额规模"],
+    "managementFee": ["管理费率"], "custodyFee": ["托管费率"], "salesServiceFee": ["销售服务费率"]
+  }
+}

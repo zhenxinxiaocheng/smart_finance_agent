@@ -6,8 +6,6 @@ import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.quant.QuantBenchmarkPreparationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -17,6 +15,11 @@ import java.time.ZoneId;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * 个人持仓历史任务执行器。
+ *
+ * <p>只消费已入队的任务，自身不创建任务；启动时不扫描、不回补。
+ */
 @Component
 @Slf4j
 public class InvestmentDataJobWorker {
@@ -33,6 +36,9 @@ public class InvestmentDataJobWorker {
     private final Clock clock;
     private final QuantBenchmarkPreparationService benchmarkPreparationService;
     private final InvestmentHistoryPreparationService historyPreparationService;
+    private MarketDataDemandService demand;
+    @Autowired
+    void configureDemand(MarketDataDemandService demand) { this.demand=demand; }
 
     @Autowired
     public InvestmentDataJobWorker(InvestmentDataJobService jobService,
@@ -71,19 +77,6 @@ public class InvestmentDataJobWorker {
         }
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    @Scheduled(fixedDelayString = "${investment.history-job.recovery-scan-delay-ms:60000}")
-    public void requeueIncompleteHistoryJobs() {
-        try {
-            int requeued = jobService.requeueIncompleteHistoryJobs();
-            if (requeued > 0) {
-                log.info("Requeued {} incomplete asset history jobs for full backfill", requeued);
-            }
-        } catch (RuntimeException exception) {
-            log.warn("Incomplete asset history backfill scan failed: {}", exception.getMessage());
-        }
-    }
-
     private void run(InvestmentDataJob job) {
         LocalDateTime claimTime = LocalDateTime.now(clock);
         String leaseToken = UUID.randomUUID().toString();
@@ -99,8 +92,22 @@ public class InvestmentDataJobWorker {
             InvestmentHistoryPreparationService.PreparationResult historyResult = null;
             if ("BENCHMARK_HISTORY".equals(claimedJob.getJobType())) {
                 recordCount = benchmarkPreparationService.prepare(claimedJob);
+                // 基准属于基金分析输入；更新后必须由既有历史任务重建分析。
+                jobService.queueAnalysisForProduct(claimedJob.getProductId());
             } else if (isAssetHistoryJob(claimedJob)) {
-                historyResult = historyPreparationService.prepare(claimedJob);
+                if (demand != null && !Boolean.TRUE.equals(claimedJob.getForceRefresh())) {
+                    demand.asset(claimedJob.getUserId(),claimedJob.getAssetId(),claimedJob.getProductId());
+                    if (!demand.preparedForAnalysis(claimedJob.getUserId(),claimedJob.getAssetId(),claimedJob.getProductId())) {
+                        jobService.markRetryWait(claimedJob.getId(),leaseToken,claimedJob.getAttemptCount(),
+                                claimTime.plusSeconds(LEASE_SECONDS),null,claimTime);
+                        return;
+                    }
+                    historyResult = new InvestmentHistoryPreparationService.PreparationResult(
+                            demand.recordCount(claimedJob.getProductId()),null,null,null,false,null,true);
+                } else {
+                    // 显式全量修复必须重新采集，不能复用先前的需求回执。
+                    historyResult = historyPreparationService.prepare(claimedJob);
+                }
                 recordCount = historyResult.recordCount();
             } else {
                 InvestmentAssetDetailResponse detail = Boolean.TRUE.equals(claimedJob.getForceRefresh())
@@ -111,22 +118,9 @@ public class InvestmentDataJobWorker {
             }
             int minimum = horizonProperties.getMinimumHistoryTradingDays();
             LocalDateTime completionTime = LocalDateTime.now(clock);
-            if (historyResult != null
-                    && !jobService.recordCoverage(claimedJob.getId(), leaseToken, historyResult)) {
-                return;
-            }
-            if (historyResult != null && !historyResult.coverageComplete()) {
-                jobService.markPartial(
-                        claimedJob.getId(),
-                        leaseToken,
-                        recordCount,
-                        "历史覆盖不完整，已阻止正式训练",
-                        completionTime);
-                return;
-            }
             if (recordCount >= minimum) {
                 if (historyResult != null) {
-                    requireFreshAnalysis(claimedJob);
+                    requireAnalysis(claimedJob, historyResult.skipped());
                     completionTime = LocalDateTime.now(clock);
                 }
                 jobService.markSucceeded(
@@ -156,15 +150,21 @@ public class InvestmentDataJobWorker {
         }
     }
 
-    private void requireFreshAnalysis(InvestmentDataJob job) {
+    private void requireAnalysis(InvestmentDataJob job, boolean historyUnchanged) {
+        if (historyUnchanged && readyAnalysis(analysisService.detail(job.getUserId(), job.getAssetId()))) {
+            return;
+        }
         InvestmentAssetDetailResponse detail = analysisService.refresh(job.getUserId(), job.getAssetId());
-        Map<String, Object> sourceStatus = detail == null ? null : detail.getSourceStatus();
-        boolean ready = sourceStatus != null
-                && "READY".equals(sourceStatus.get("dataState"))
-                && !Boolean.TRUE.equals(sourceStatus.get("historicalCache"));
-        if (!ready) {
+        if (!readyAnalysis(detail)) {
             throw new IllegalStateException("历史数据已更新，但尚未生成新分析结果");
         }
+    }
+
+    private static boolean readyAnalysis(InvestmentAssetDetailResponse detail) {
+        Map<String, Object> sourceStatus = detail == null ? null : detail.getSourceStatus();
+        return sourceStatus != null
+                && "READY".equals(sourceStatus.get("dataState"))
+                && !Boolean.TRUE.equals(sourceStatus.get("historicalCache"));
     }
 
     private static boolean isAssetHistoryJob(InvestmentDataJob job) {

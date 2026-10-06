@@ -48,7 +48,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final QuantBenchmarkProfileService benchmarkProfileService;
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
-    private final UnifiedMarketDataIngestionService ingestion;
+    private final InvestmentSyncWorker syncWorker;
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -68,7 +68,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       QuantBenchmarkProfileService benchmarkProfileService,
                                       InvestmentDetailCacheService detailCache,
                                       InvestmentQuoteCacheService quoteCache,
-                                      UnifiedMarketDataIngestionService ingestion) {
+                                      InvestmentSyncWorker syncWorker) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -84,7 +84,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.benchmarkProfileService = benchmarkProfileService;
         this.detailCache = detailCache;
         this.quoteCache = quoteCache;
-        this.ingestion = ingestion;
+        this.syncWorker = syncWorker;
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -501,7 +501,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("resolve-v1");
         quote.setSyncedAt(LocalDateTime.now());
-        ingestion.ingestDisplayQuote(product, quote);
+        syncWorker.persistDisplayQuote(product, quote);
     }
 
     private void saveRealtimeQuote(InvestmentProduct product, AnalysisServiceClient.RealtimeQuote resolved) {
@@ -523,7 +523,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("realtime-v1");
         quote.setSyncedAt(resolved.fetchedAt());
-        ingestion.ingestDisplayQuote(product, quote);
+        syncWorker.persistDisplayQuote(product, quote);
     }
 
     private InvestmentAsset requireAsset(Long userId, Long assetId) {

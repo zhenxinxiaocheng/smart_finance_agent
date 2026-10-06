@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { quant } from '@/api/quantWorkbench'
 import { Button } from '@/components/ui/button'
@@ -32,11 +32,32 @@ const volumeBars = computed(() => {
 async function refresh() {
   const id = route.params.productId
   const [detail, preview] = await Promise.all([quant.marketData.detail(id), quant.marketData.daily(id, 180)])
+  if (disposed || id !== route.params.productId) return
   product.value = detail
   daily.value = preview
 }
-onMounted(() => load(refresh))
-watch(() => route.params.productId, () => load(refresh))
+let timer, disposed = false, renewedAt = 0, renewAfterMs = 0, running = false
+async function update() {
+  if (disposed || running || document.hidden) return
+  running = true
+  try {
+    const id = route.params.productId
+    if (Date.now() - renewedAt >= renewAfterMs) {
+      const state = await quant.marketData.prepare(id)
+      if (disposed || id !== route.params.productId) return
+      renewAfterMs = state.renewAfterMs
+      renewedAt = Date.now()
+    }
+    await refresh()
+  } finally {
+    running = false
+    if (!disposed) timer = setTimeout(() => load(update), 15000)
+  }
+}
+function resume() { clearTimeout(timer); if (!document.hidden) load(update) }
+onMounted(() => { document.addEventListener('visibilitychange', resume); load(update) })
+watch(() => route.params.productId, () => { renewedAt = 0; clearTimeout(timer); load(update) })
+onBeforeUnmount(() => { disposed = true; clearTimeout(timer); document.removeEventListener('visibilitychange', resume) })
 </script>
 
 <template>

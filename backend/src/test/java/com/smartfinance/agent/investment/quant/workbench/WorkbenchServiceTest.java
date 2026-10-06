@@ -19,10 +19,12 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.*;
 
 class WorkbenchServiceTest {
-    private static com.smartfinance.agent.investment.service.QuoteSeriesPolicy seriesPolicy() {
+    private static com.smartfinance.agent.investment.service.InvestmentDataQualityService qualityService() {
         var properties = new com.smartfinance.agent.investment.config.InvestmentRuntimeProperties();
         properties.getDataQuality().setStockAdjustType("QFQ");
-        return new com.smartfinance.agent.investment.service.QuoteSeriesPolicy(properties);
+        properties.getDataQuality().setFundAdjustType("NONE");
+        return new com.smartfinance.agent.investment.service.InvestmentDataQualityService(
+                null, null, null, properties, new ObjectMapper());
     }
     private JdbcTemplate db;
     private WorkbenchService service;
@@ -45,12 +47,86 @@ class WorkbenchServiceTest {
         }
         tracking = org.mockito.Mockito.mock(WorkbenchTrackingIndex.class);
         service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
-                tracking, null, seriesPolicy());
+                tracking, null, qualityService());
     }
 
     private Map<String,Object> universe() {
         return service.save(1L, "universes", null,
                 Map.of("name", "基金池", "assetClass", "FUND", "assetIds", List.of(1)));
+    }
+    private void assertPublishedDeploymentScope(String status,boolean onlyHeld) {
+        LocalDate today=LocalDate.now(),published=today.minusDays(1),start=today.minusDays(10);
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'未持有基金','unused','MUTUAL_FUND','FUND_CN')");
+        for(long product:List.of(1L,3L))db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) VALUES(?,?,1.2,1.2,'NONE','TEST')",product,published.toString());
+        var selected=List.of(Map.<String,Object>of("id",1,"product_id",1,"code","fixture","name","held","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"),
+                Map.<String,Object>of("id",3,"product_id",3,"code","unused","name","unused","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"));
+        var request=new java.util.LinkedHashMap<String,Object>(Map.of("config",Map.of("strategyType","TREND","assetClass","FUND"),"startDate",start.toString(),"endDate",today.toString(),
+                "dataStartDate",start.toString(),"warmupCalendarDays",10,"preparedMembers",selected,"assets",service.snapshot(selected,start.toString(),published.toString())));
+        var state=Map.of("lastDate",published.toString(),"positions",Map.of("1",Map.of("quantity",100),"3",Map.of("quantity",0)),"pendingOrders",List.of());
+        db.update("INSERT INTO quant_v2_deployment(id,user_id,name,backtest_id,strategy_id,universe_id,status,revision,request_json,result_json,claim_token,lease_until,next_run_at,created_at,updated_at) VALUES('deployment',1,'test','test','test','test',?,1,?,?, 'claim',?,0,?,?)",
+                status,service.encode(request),service.encode(Map.of("state",state)),System.currentTimeMillis()+60000,WorkbenchService.now(),WorkbenchService.now());
+        var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
+        var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
+        var demand=new com.smartfinance.agent.investment.service.MarketDataDemandService(db,requirements,null,properties);
+        var preparation=new WorkbenchDataPreparation(requirements,demand,null,properties);
+        requirements.save(1,"DEPLOYMENT","deployment",3,"PRICE","REQUIRED",start,today,true,null);
+        var deployment=db.queryForMap("SELECT * FROM quant_v2_deployment WHERE id='deployment'");
+        assertThat(preparation.prepareDeployment(service,deployment,"claim")).isFalse();
+        assertThat(requirements.active()).hasSize(onlyHeld?1:2);
+        requirements.recordPrepared(1,"PRICE",start,published);
+        if(!onlyHeld)requirements.recordPrepared(3,"PRICE",start,published);
+        // This later row lacks a return index and must stay outside the certified snapshot.
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) VALUES(1,?,1.3,'NONE','TEST')",today.toString());
+        db.update("UPDATE quant_v2_deployment SET claim_token='claim',lease_until=? WHERE id='deployment'",System.currentTimeMillis()+60000);
+        assertThat(preparation.prepareDeployment(service,deployment,"claim")).isTrue();
+        var ready=service.decode(deployment.get("request_json"));
+        assertThat(ready.get("endDate")).isEqualTo(today.toString());
+        assertThat((List<?>)ready.get("assets")).hasSize(2);
+        for(var asset:(List<?>)ready.get("assets"))for(var bar:(List<?>)WorkbenchService.map(asset).get("bars"))
+            assertThat(WorkbenchService.str(WorkbenchService.map(bar).get("date"))).isLessThanOrEqualTo(published.toString());
+    }
+    @Test void publishedFundReceiptAllowsPaperExecutionBeforeTodaysNavExists() {
+        assertPublishedDeploymentScope("RUNNING",false);
+    }
+    @Test void pausedDeploymentReleasesUnusedMembersAndPreservesItsFrozenUniverse() {
+        assertPublishedDeploymentScope("PAUSED",true);
+    }
+    @Test void multiDigitAssetOwnershipRemainsActiveAndDeletionReleasesIt() {
+        db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(42,1,1,1,0)");
+        var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
+        requirements.save(1,"ASSET","42",1,"PRICE","REQUIRED",LocalDate.now().minusDays(10),LocalDate.now(),true,null);
+        assertThat(requirements.active()).hasSize(1);
+        db.update("UPDATE investment_asset SET deleted=1 WHERE id=42");
+        assertThat(requirements.active()).isEmpty();
+    }
+    @Test void missingHistoryQueuesPreparationWithFrozenMembersAndCancellationReleasesDemand() {
+        var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
+        var demand=org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.MarketDataDemandService.class);
+        org.mockito.Mockito.when(demand.boundedStart(org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call->call.getArgument(1));
+        var client=org.mockito.Mockito.mock(WorkbenchAnalysisClient.class);
+        org.mockito.Mockito.when(client.dataRequirements(org.mockito.ArgumentMatchers.anyMap()))
+                .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
+        var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
+        properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
+        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties));
+        db.update("DELETE FROM product_daily_quote");
+        String pool=(String)universe().get("id"), strategy=(String)strategy(pool).get("id");
+        var task=service.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
+        assertThat(task).containsEntry("stage","DATA_PREPARING");
+        assertThat(requirements.active()).hasSize(1);
+        var request=service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
+        assertThat((List<?>)request.get("preparedMembers")).hasSize(1);
+        var worker=new WorkbenchWorker(service,client);
+        worker.tasks();
+        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("stage","DATA_PREPARING").containsEntry("status","QUEUED");
+        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).execute(org.mockito.ArgumentMatchers.anyMap());
+        db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,request_json,created_at,updated_at) VALUES('ready',1,'factor-runs','ready','QUEUED','QUEUED','{}',?,?)",WorkbenchService.now(),WorkbenchService.now());
+        org.mockito.Mockito.when(client.execute(org.mockito.ArgumentMatchers.anyMap())).thenReturn(Map.of("status","SUCCEEDED"));
+        worker.tasks();
+        assertThat(db.queryForObject("SELECT status FROM quant_v2_task WHERE id='ready'",String.class)).isEqualTo("SUCCEEDED");
+        service.cancel(1L,"backtests",task.get("id").toString());
+        assertThat(requirements.active()).isEmpty();
     }
 
     @Test
@@ -206,7 +282,7 @@ class WorkbenchServiceTest {
         service.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
         var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
-                org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, seriesPolicy());
+                org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, qualityService());
         assertThat(restarted.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id")))
                 .isEqualTo(snapshot);

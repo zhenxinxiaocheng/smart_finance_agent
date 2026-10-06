@@ -8,11 +8,9 @@ import com.smartfinance.agent.investment.dto.HorizonSettingRequest;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentAnalysisService;
 import com.smartfinance.agent.investment.service.InvestmentAssetService;
-import com.smartfinance.agent.investment.service.InvestmentDataJobService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -82,50 +80,16 @@ class InvestmentAssetControllerTest {
     }
 
     @Test
-    void historyJob_shouldVerifyAssetOwnershipBeforeReturningSafeStatus() {
-        InvestmentAssetService assetService = mock(InvestmentAssetService.class);
-        InvestmentAnalysisService analysisService = mock(InvestmentAnalysisService.class);
-        InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
-        InvestmentAssetView asset = asset(11L, 21L, "STOCK");
-        Map<String, Object> status = Map.of("status", "RUNNING", "recordCount", 3);
-        when(assetService.get(7L, 11L)).thenReturn(asset);
-        when(jobService.statusForAsset(7L, 11L)).thenReturn(status);
-        InvestmentAssetController controller = new InvestmentAssetController(
-                assetService, analysisService, jobService);
-
-        assertThat(controller.historyJob(7L, 11L).getData()).isEqualTo(status);
-        verify(assetService).get(7L, 11L);
-        verify(jobService).statusForAsset(7L, 11L);
-    }
-
-    @Test
-    void historyJob_shouldRejectAnotherUserBeforeJobLookup() {
-        InvestmentAssetService assetService = mock(InvestmentAssetService.class);
-        InvestmentAnalysisService analysisService = mock(InvestmentAnalysisService.class);
-        InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
-        when(assetService.get(8L, 11L)).thenThrow(new IllegalArgumentException("资产不存在"));
-        InvestmentAssetController controller = new InvestmentAssetController(
-                assetService, analysisService, jobService);
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.historyJob(8L, 11L))
-                .isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(jobService);
-    }
-
-    @Test
     void dataQualityRefresh_shouldOnlyForceQueueAndReturnReadOnlyDetail() {
         InvestmentAssetService assetService = mock(InvestmentAssetService.class);
         InvestmentAnalysisService analysisService = mock(InvestmentAnalysisService.class);
-        InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
         InvestmentAssetView asset = asset(11L, 21L, "MUTUAL_FUND");
         InvestmentAssetDetailResponse detail = new InvestmentAssetDetailResponse();
         when(assetService.get(7L, 11L)).thenReturn(asset);
         when(analysisService.queueDataRefresh(7L, 11L)).thenReturn(detail);
-        InvestmentAssetController controller = new InvestmentAssetController(
-                assetService, analysisService, jobService);
+        InvestmentAssetController controller = new InvestmentAssetController(assetService, analysisService);
 
         assertThat(controller.refreshDataQuality(7L, 11L).getData()).isSameAs(detail);
-        verifyNoInteractions(jobService);
         verify(analysisService).queueDataRefresh(7L, 11L);
         verify(analysisService, never()).retryData(any(), any());
         verify(analysisService, never()).refresh(any(), any());

@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.context.jdbc.Sql;
@@ -23,15 +24,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
-        "spring.sql.init.mode=never"
+        "spring.sql.init.mode=always",
+        "spring.sql.init.schema-locations=classpath:schema-h2.sql"
 })
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class InvestmentDataJobServiceIntegrationTest {
+    @MockBean private MarketDataDemandService demand;
 
     @Autowired
     private InvestmentDataJobService service;
     @Autowired
     private InvestmentDataJobMapper mapper;
+    @MockBean
+    private InvestmentDetailCacheService detailCache;
 
     @Test
     void uniqueAssetAndTypeConstraintPreventsDuplicateJobs() {
@@ -76,13 +81,6 @@ class InvestmentDataJobServiceIntegrationTest {
     }
 
     @Test
-    void statusViewDoesNotExposeAnotherUsersJob() {
-        service.ensureQueued(7L, 11L, 21L, "STOCK", false);
-
-        assertThat(service.statusForAsset(8L, 11L)).isEmpty();
-    }
-
-    @Test
     void concurrentRequeueCannotResetAQueuedOrClaimedJob() {
         InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", true);
         LocalDateTime now = LocalDateTime.now();
@@ -109,11 +107,28 @@ class InvestmentDataJobServiceIntegrationTest {
         assertThat(queued.getForceRefresh()).isFalse();
     }
 
+    @Test
+    void failedJobCanRecoverIncrementallyAfterANewWriteWithoutResettingAnActiveLease() {
+        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "failed-worker")).isTrue();
+        assertThat(service.markFailed(job.getId(), "failed-worker", 3, "provider unavailable", now)).isTrue();
+
+        InvestmentDataJob queued = service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
+
+        assertThat(queued.getId()).isEqualTo(job.getId());
+        assertThat(mapper.selectById(job.getId()).getForceRefresh()).isFalse();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "new-worker")).isTrue();
+        service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK", true);
+        InvestmentDataJob active = mapper.selectById(job.getId());
+        assertThat(active.getStatus()).isEqualTo("RUNNING");
+        assertThat(active.getLeaseToken()).isEqualTo("new-worker");
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     @MapperScan("com.smartfinance.agent.investment.mapper")
     @Import({MyBatisPlusConfig.class, InvestmentDataJobService.class,
-            QuoteSeriesCoverageService.class, QuoteSeriesPolicy.class,
             com.smartfinance.agent.investment.config.InvestmentRuntimeProperties.class})
     static class Configuration {
     }

@@ -1,0 +1,26 @@
+{
+  "version": "quote-availability-v1",
+  "marketProfiles": {
+    "SSE": "CN_CLOSE", "SZSE": "CN_CLOSE", "BSE": "CN_CLOSE", "CN": "CN_CLOSE",
+    "SH": "CN_CLOSE", "SZ": "CN_CLOSE", "BJ": "CN_CLOSE", "CN_INDEX": "CN_CLOSE",
+    "NYSE": "US_CLOSE", "NASDAQ": "US_CLOSE", "AMEX": "US_CLOSE", "US_INDEX": "US_CLOSE",
+    "HKEX": "HK_CLOSE"
+  },
+  "fundProfiles": {
+    "INDEX_FUND": "CN_NAV", "ACTIVE_EQUITY_FUND": "CN_NAV", "HYBRID_FUND": "CN_NAV",
+    "BOND_FUND": "CN_NAV", "QDII_INDEX_FUND": "QDII_NAV", "QDII_OTHER_FUND": "QDII_NAV",
+    "FOF_FUND": "FOF_NAV"
+  },
+  "profiles": {
+    "CN_CLOSE": {"calendar": "A_SHARE", "zone": "Asia/Shanghai", "cutoff": "16:00", "lagSessions": 0, "expectedDatesKnown": true},
+    "US_CLOSE": {"calendar": "XNYS", "zone": "America/New_York", "cutoff": "17:00", "lagSessions": 0, "expectedDatesKnown": true},
+    "HK_CLOSE": {"calendar": "XHKG", "zone": "Asia/Hong_Kong", "cutoff": "17:00", "lagSessions": 0, "expectedDatesKnown": true},
+    "CN_NAV": {"calendar": "A_SHARE", "zone": "Asia/Shanghai", "cutoff": "23:00", "lagSessions": 0, "expectedDatesKnown": true},
+    "QDII_NAV": {"calendar": "A_SHARE", "zone": "Asia/Shanghai", "cutoff": "23:00", "lagSessions": 1, "expectedDatesKnown": false},
+    "FOF_NAV": {"calendar": "A_SHARE", "zone": "Asia/Shanghai", "cutoff": "23:00", "lagSessions": 2, "expectedDatesKnown": false}
+  },
+  "sources": [
+    "https://www.nyse.com/trade/hours-calendars",
+    "https://edu.gffunds.com.cn/lcxt/zdjptzjhl/tzjhl1/202504/t20250418_413106.shtml"
+  ]
+}

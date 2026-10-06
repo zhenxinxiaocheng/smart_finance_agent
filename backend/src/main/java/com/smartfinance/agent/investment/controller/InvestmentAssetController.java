@@ -9,14 +9,12 @@ import com.smartfinance.agent.investment.dto.InvestmentAssetView;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentAssetService;
 import com.smartfinance.agent.investment.service.InvestmentAnalysisService;
-import com.smartfinance.agent.investment.service.InvestmentDataJobService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/investment/assets")
@@ -24,24 +22,16 @@ public class InvestmentAssetController {
 
     private final InvestmentAssetService assetService;
     private final InvestmentAnalysisService analysisService;
-    private final InvestmentDataJobService dataJobService;
 
     public InvestmentAssetController(InvestmentAssetService assetService) {
-        this(assetService, null, null);
-    }
-
-    public InvestmentAssetController(InvestmentAssetService assetService,
-                                     InvestmentAnalysisService analysisService) {
-        this(assetService, analysisService, null);
+        this(assetService, null);
     }
 
     @Autowired
     public InvestmentAssetController(InvestmentAssetService assetService,
-                                     InvestmentAnalysisService analysisService,
-                                     InvestmentDataJobService dataJobService) {
+                                     InvestmentAnalysisService analysisService) {
         this.assetService = assetService;
         this.analysisService = analysisService;
-        this.dataJobService = dataJobService;
     }
 
     @PostMapping("/resolve")
@@ -97,12 +87,6 @@ public class InvestmentAssetController {
     @GetMapping("/{id}/detail")
     public Result<InvestmentAssetDetailResponse> detail(@RequestAttribute Long userId, @PathVariable Long id) {
         return Result.success(analysisService.detail(userId, id));
-    }
-
-    @GetMapping("/{id}/history-job")
-    public Result<Map<String, Object>> historyJob(@RequestAttribute Long userId, @PathVariable Long id) {
-        assetService.get(userId, id);
-        return Result.success(dataJobService.statusForAsset(userId, id));
     }
 
     @PutMapping("/{id}/analysis-preference")

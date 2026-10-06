@@ -45,6 +45,8 @@ public class InvestmentRuntimeProperties {
         requirePositive(sync.pollDelayMs, "sync.poll-delay-ms");
         requirePositive(sync.initialDelayMs, "sync.initial-delay-ms");
         requirePositive(sync.batchLimit, "sync.batch-limit");
+        requirePositive(sync.quoteBatchSize, "sync.quote-batch-size");
+        if (sync.quoteBatchSize > 2000) throw invalid("sync.quote-batch-size 超出数据库参数上限");
         requirePositive(sync.errorMessageMaxLength, "sync.error-message-max-length");
         requirePositive(sync.fxLookbackCalendarDays, "sync.fx-lookback-calendar-days");
         if (market.zone == null || market.stockRefreshStart == null || market.stockRefreshEnd == null
@@ -130,6 +132,7 @@ public class InvestmentRuntimeProperties {
         private long initialDelayMs;
         private long pollDelayMs;
         private int batchLimit;
+        private int quoteBatchSize = 200;
         private int errorMessageMaxLength;
         private int fxLookbackCalendarDays;
     }
