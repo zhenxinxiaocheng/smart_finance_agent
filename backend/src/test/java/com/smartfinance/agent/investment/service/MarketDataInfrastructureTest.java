@@ -125,6 +125,67 @@ class MarketDataInfrastructureTest {
     }
 
     @Test
+    void combinedAssetSearchIncludesStocksAndFundsButNotIndexesOrEtfs() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) VALUES "
+                + "(991,'STOCK','NASDAQ','NVDA','NVIDIA Corporation','USD','ACTIVE'),"
+                + "(992,'MUTUAL_FUND','FUND_CN','010736','易方达基金','CNY','ACTIVE'),"
+                + "(993,'INDEX','US_INDEX','NDX','纳斯达克','USD','ACTIVE'),"
+                + "(994,'ETF','NYSE','SPY','SPDR ETF','USD','ACTIVE')");
+        var result = new MarketDataService(db, analysis).products(null, null, null, "STOCK,FUND", "ACTIVE", 1, 25);
+        assertThat(((Number) result.get("total")).longValue()).isEqualTo(2);
+        assertThat((List<Map<String,Object>>) result.get("items"))
+                .extracting(row -> row.get("code")).containsExactlyInAnyOrder("NVDA", "010736");
+    }
+
+    @Test
+    void sourceChineseAliasesFindOfficialUsProductWithoutReplacingNameOrCreatingSecurities() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(991,'STOCK','NASDAQ','NVDA','NVIDIA Corporation','USD','ACTIVE')");
+        when(analysis.marketProductNames("英伟达")).thenReturn(List.of(
+                Map.of("code", "NVDA", "aliases", List.of("英伟达", "NVIDIA")),
+                Map.of("code", "MISSING", "aliases", List.of("虚构证券"))));
+        var names = new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper());
+        var service = new MarketDataService(db, analysis);
+        service.setProductNames(names);
+
+        var result = service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25);
+        service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25);
+
+        assertThat(((Number)result.get("total")).longValue()).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT name FROM investment_product WHERE id=991", String.class)).isEqualTo("NVIDIA Corporation");
+        assertThat(db.queryForObject("SELECT name_aliases FROM investment_product WHERE id=991", String.class)).contains("英伟达");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM investment_product WHERE code='MISSING'", Integer.class)).isZero();
+        verify(analysis, times(1)).marketProductNames("英伟达");
+    }
+
+    @Test
+    void cachedSourceNamesCanBeAppliedAfterCatalogInitialization() {
+        when(analysis.marketProductNames("英伟达")).thenReturn(List.of(
+                Map.of("code", "NVDA", "aliases", List.of("英伟达"))));
+        var service = new MarketDataService(db, analysis);
+        service.setProductNames(new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper()));
+        assertThat(service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(0L);
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(991,'STOCK','NASDAQ','NVDA','NVIDIA Corporation','USD','ACTIVE')");
+        assertThat(service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(1L);
+        verify(analysis, times(1)).marketProductNames("英伟达");
+    }
+
+    @Test
+    void optionalNameProviderFailureKeepsLocalSearchAndDoesNotAffectChineseStockOnlySearch() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(991,'STOCK','SSE','600001','测试股票','CNY','ACTIVE')");
+        when(analysis.marketProductNames("测试")).thenThrow(new IllegalStateException("provider unavailable"));
+        var service = new MarketDataService(db, analysis);
+        service.setProductNames(new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper()));
+        assertThat(service.products("测试", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(1L);
+        assertThat(service.products("测试", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(1L);
+        service.products("股票", null, "CN_A", "STOCK", "ACTIVE", 1, 25);
+        verify(analysis, times(1)).marketProductNames("测试");
+        verify(analysis, never()).marketProductNames("股票");
+    }
+
+    @Test
     void slimMigrationDropsScopeAndCoverageState() {
         List<String> tables = db.queryForList(
                 "SELECT name FROM sqlite_master WHERE type='table'", String.class);

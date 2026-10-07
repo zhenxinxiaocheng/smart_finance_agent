@@ -190,6 +190,11 @@ test('runs a mutation refresh after an older forced request instead of joining i
 })
 
 test('shows exact quote time for stocks and data date for funds', () => {
-  assert.equal(formatQuoteTime({ productType: 'STOCK', fetchedAt: '2026-07-13T11:23:30' }), '11:23:30')
+  assert.equal(formatQuoteTime({ productType: 'STOCK', quoteFrequency: 'REALTIME', fetchedAt: '2026-07-13T11:23:30' }), '11:23:30')
   assert.equal(formatQuoteTime({ productType: 'MUTUAL_FUND', dataDate: '2026-07-12' }), '2026-07-12')
+})
+
+test('daily stock quotes display the trading date instead of the fetch clock', () => {
+  assert.equal(formatQuoteTime({ productType: 'STOCK', quoteFrequency: 'DAILY',
+    fetchedAt: '2026-10-07T01:02:03', dataDate: '2026-10-05' }), '2026-10-05')
 })

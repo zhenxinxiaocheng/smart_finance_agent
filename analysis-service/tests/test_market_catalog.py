@@ -7,6 +7,7 @@ import pytest
 
 from app.market_catalog import catalog, current_members
 from app.market_catalog import daily_history
+import app.market_catalog as market_catalog_module
 from app.providers import ProviderUnavailable
 
 
@@ -61,6 +62,31 @@ def test_us_catalog_falls_back_without_slow_sina_snapshot(monkeypatch):
     provider = SimpleNamespace(stock_us_spot_em=failed,
                                get_us_stock_name=lambda: pytest.fail("unbounded Sina directory"))
     assert any(item["code"] == "NEWETF" for item in catalog("US", provider))
+
+
+def test_us_name_search_uses_source_names_and_normalizes_tickers(monkeypatch):
+    payload = 'var us_suggest="英伟达,41,nvda,nvda,英伟达,,英伟达,99,1,ESG,,;测试基金,41,abcd,ABCD Trust,测试基金,,测试基金,99,1,,,";'
+    requests = []
+    def get(url, **kwargs):
+        requests.append((url, kwargs))
+        return SimpleNamespace(content=payload.encode('gbk'), raise_for_status=lambda: None)
+    monkeypatch.setattr('requests.get', get)
+    search = getattr(market_catalog_module, 'search_us_names', None)
+    assert callable(search), '应提供有界的美股名称查询，不能硬编码公司名单'
+    rows = search('英伟达')
+    assert rows[0]['code'] == 'NVDA'
+    assert '英伟达' in rows[0]['aliases']
+    assert rows[1]['code'] == 'ABCD'
+    assert requests[0][1]['timeout'] > 0
+
+
+def test_us_name_search_rejects_malformed_response(monkeypatch):
+    monkeypatch.setattr('requests.get', lambda *args, **kwargs: SimpleNamespace(
+        content=b'<html>blocked</html>', raise_for_status=lambda: None))
+    search = getattr(market_catalog_module, 'search_us_names', None)
+    assert callable(search)
+    with pytest.raises(ProviderUnavailable):
+        search('英伟达')
 
 
 def test_official_preferred_suffix_does_not_abort_common_stock_directory(monkeypatch):

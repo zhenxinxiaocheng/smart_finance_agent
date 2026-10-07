@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from urllib.parse import quote
 from typing import Any
 
 from .providers import (ProviderUnavailable, _china_index_provider_symbol, _frame_to_quotes,
@@ -304,6 +305,39 @@ def catalog(market: str, ak_module=None) -> list[dict[str, Any]]:
                  "status": "ACTIVE", "source": "INDEX_WATCHLIST_REGISTRY"}
                 for item in INDEX_WATCHLIST_REGISTRY.instruments()]
     raise ValueError("unsupported catalog market")
+
+
+def search_us_names(keyword: str) -> list[dict[str, Any]]:
+    """A bounded name lookup enriches existing official securities, never membership."""
+    import requests
+
+    keyword = keyword.strip()
+    if not 2 <= len(keyword) <= 80:
+        return []
+    source = _catalog_config().value("usNameSearch")
+    url = source["url"].format(types=quote(source["types"], safe=""), keyword=quote(keyword, safe=""))
+    try:
+        response = requests.get(url, timeout=source["timeoutSeconds"])
+        response.raise_for_status()
+        payload = response.content.decode(source["encoding"])
+        match = re.fullmatch(r'\s*var\s+us_suggest\s*=\s*"([^"\r\n]*)"\s*;?\s*', payload)
+        if match is None:
+            raise ValueError("unexpected name search response")
+        result = {}
+        for row in match[1].split(";"):
+            fields = row.split(",")
+            if len(fields) < 7 or fields[1] != source["types"]:
+                continue
+            code = fields[2].strip().upper()
+            if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,39}", code):
+                continue
+            aliases = list(dict.fromkeys(value.strip() for value in
+                (fields[0], fields[3], fields[4], fields[6]) if value.strip()))
+            if aliases:
+                result[code] = {"code": code, "aliases": aliases, "source": "SINA_US_SUGGEST"}
+        return list(result.values())[:source["maxResults"]]
+    except Exception as exc:
+        raise ProviderUnavailable(f"SINA_US_SUGGEST: {type(exc).__name__}: {exc}") from exc
 
 
 CN_PRESET_CODES = {"CSI300": "000300", "CSI500": "000905", "CSI1000": "000852"}

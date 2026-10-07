@@ -7,27 +7,16 @@
       </DialogHeader>
 
       <Tabs v-model="activeType">
-        <TabsList class="grid h-10 w-full grid-cols-3">
-          <TabsTrigger value="STOCK">股票</TabsTrigger>
-          <TabsTrigger value="MUTUAL_FUND">基金</TabsTrigger>
+        <TabsList class="grid h-10 w-full grid-cols-2">
+          <TabsTrigger value="ASSET">股票/基金</TabsTrigger>
           <TabsTrigger value="INDEX">指数</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="STOCK" class="pt-3">
+        <TabsContent value="ASSET" class="pt-3">
           <InvestmentAssetAddForm
-            product-type="STOCK"
             :submitting="assetSubmitting"
             :error-message="assetError"
-            :existing-codes="existingAssetCodes('STOCK')"
-            @submit="addAsset"
-          />
-        </TabsContent>
-        <TabsContent value="MUTUAL_FUND" class="pt-3">
-          <InvestmentAssetAddForm
-            product-type="MUTUAL_FUND"
-            :submitting="assetSubmitting"
-            :error-message="assetError"
-            :existing-codes="existingAssetCodes('MUTUAL_FUND')"
+            :existing-assets="[...existingAssets, ...localAddedAssets]"
             @submit="addAsset"
           />
         </TabsContent>
@@ -107,7 +96,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:open', 'asset-added', 'index-added'])
 
-const activeType = ref('STOCK')
+const activeType = ref('ASSET')
 const assetSubmitting = ref(false)
 const assetError = ref('')
 const indexKeyword = ref('')
@@ -121,20 +110,20 @@ const localAddedAssets = ref([])
 
 watch(() => props.open, open => {
   if (!open) return
-  activeType.value = ['STOCK', 'MUTUAL_FUND', 'INDEX'].includes(props.initialType) ? props.initialType : 'STOCK'
+  activeType.value = props.initialType === 'INDEX' ? 'INDEX' : 'ASSET'
   assetError.value = ''
   indexError.value = ''
   localAddedCodes.value = localAddedCodes.value.filter(code => props.existingIndexCodes.includes(code))
-  localAddedAssets.value = localAddedAssets.value.filter(item => props.existingAssets.some(asset => asset.code === item.code && asset.productType === item.productType))
+  localAddedAssets.value = localAddedAssets.value.filter(item => props.existingAssets.some(asset => asset.productId === item.productId))
 })
 
-async function addAsset({ productType, code }) {
+async function addAsset({ productId, productType, market, code }) {
   if (assetSubmitting.value) return
   assetSubmitting.value = true
   assetError.value = ''
   try {
-    const response = await createInvestmentAssetAPI({ productType, code }, { silentFeedback: true })
-    localAddedAssets.value.push({ productType, code })
+    const response = await createInvestmentAssetAPI({ productId, productType, code }, { silentFeedback: true })
+    localAddedAssets.value.push({ productId, productType, market, code })
     feedback.success(`已添加 ${response.data?.name || code}`)
     emit('asset-added')
   } catch (error) {
@@ -142,12 +131,6 @@ async function addAsset({ productType, code }) {
   } finally {
     assetSubmitting.value = false
   }
-}
-
-function existingAssetCodes(productType) {
-  return [...props.existingAssets, ...localAddedAssets.value]
-    .filter(item => (item.productType === 'FUND' ? 'MUTUAL_FUND' : item.productType) === productType)
-    .map(item => item.code)
 }
 
 async function searchIndexes() {

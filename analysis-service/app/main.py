@@ -285,6 +285,15 @@ def catalog_snapshot(market: str):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.get("/internal/v1/market-data/product-names", dependencies=[Depends(internal_auth)])
+def product_names(search: str = Query(min_length=2, max_length=80)):
+    from .market_catalog import search_us_names
+    try:
+        return {"items": search_us_names(search)}
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Product names temporarily unavailable") from exc
+
+
 @app.get("/internal/v1/market-data/universe-members", dependencies=[Depends(internal_auth)])
 def universe_members_snapshot(preset: str):
     try:

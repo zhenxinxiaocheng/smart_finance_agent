@@ -24,8 +24,7 @@ export const resolveInvestmentAssetAPI = data => request.post('/investment/asset
 export const searchInvestmentAssetProductsAPI = ({ keyword, productType, page }) => request.get('/quant/v2/market-data/products', {
   params: {
     search: keyword,
-    assetType: productType === 'STOCK' ? 'STOCK' : 'FUND',
-    marketGroup: productType === 'STOCK' ? 'CN_A' : undefined,
+    assetType: productType ? (productType === 'STOCK' ? 'STOCK' : 'FUND') : 'STOCK,FUND',
     status: 'ACTIVE',
     page
   },

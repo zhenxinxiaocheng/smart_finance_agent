@@ -27,6 +27,28 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
+    void optionalProductNamesHaveABoundedHttpReadTimeout() throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/internal/v1/market-data/product-names", exchange -> {
+            try { Thread.sleep(800); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            try {
+                byte[] body = "{\"items\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            var client = new AnalysisServiceClient(RestClient.builder(), "http://127.0.0.1:" + server.getAddress().getPort(),
+                    "test-token", java.time.Duration.ofMillis(50), java.time.Duration.ofMillis(50));
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> client.marketProductNames("英伟达")).isInstanceOf(ResourceAccessException.class);
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - started)).isLessThan(java.time.Duration.ofMillis(600));
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void marketDailyQuotesSendsAnExplicitProductAndAdjustmentWindow() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

@@ -102,6 +102,8 @@ analysis-service:
   benchmark-connect-timeout: ${ANALYSIS_BENCHMARK_CONNECT_TIMEOUT:10s}
   benchmark-read-timeout: ${ANALYSIS_BENCHMARK_READ_TIMEOUT:90s}
   catalog-read-timeout: ${ANALYSIS_CATALOG_READ_TIMEOUT:120s}
+  name-connect-timeout: ${ANALYSIS_NAME_CONNECT_TIMEOUT:1s}
+  name-read-timeout: ${ANALYSIS_NAME_READ_TIMEOUT:4s}
 
 market-data:
   full-library:

@@ -111,7 +111,7 @@ export function createPrioritizedRefreshRunner(callback) {
 }
 
 export function formatQuoteTime(asset) {
-  if (asset?.productType === 'STOCK' && asset?.fetchedAt) {
+  if (asset?.quoteFrequency === 'REALTIME' && asset?.fetchedAt) {
     const match = String(asset.fetchedAt).match(/T(\d{2}:\d{2}:\d{2})/)
     if (match) return match[1]
   }

@@ -49,6 +49,7 @@ public class InvestmentRealtimeQuoteWorker {
                 new LambdaQueryWrapper<InvestmentAsset>().orderByAsc(InvestmentAsset::getId))) {
             InvestmentProduct product = productMapper.selectById(asset.getProductId());
             if (product == null || !"STOCK".equals(product.getProductType())) continue;
+            if (!runtimeProperties.getMarket().getRealtimeStockMarkets().contains(product.getMarket())) continue;
             try {
                 assetService.refresh(asset.getUserId(), asset.getId(), false);
             } catch (RuntimeException exception) {

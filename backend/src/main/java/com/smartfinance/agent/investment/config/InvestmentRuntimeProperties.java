@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Data
 @Component
@@ -61,6 +62,10 @@ public class InvestmentRuntimeProperties {
         requirePositive(market.activeRefreshConcurrency, "market.active-refresh-concurrency");
         requirePositive(market.calendarCacheHours, "market.calendar-cache-hours");
         requirePositive(market.calendarSearchLimitDays, "market.calendar-search-limit-days");
+        requirePositive(market.dailyQuoteLookbackDays, "market.daily-quote-lookback-days");
+        if (market.realtimeStockMarkets == null || market.realtimeStockMarkets.isEmpty()) {
+            throw invalid("market.realtime-stock-markets 未配置");
+        }
         requirePositive(api.productSearchLimit, "api.product-search-limit");
         requirePositive(api.defaultTransactionLimit, "api.default-transaction-limit");
         requirePositive(api.maxTransactionLimit, "api.max-transaction-limit");
@@ -139,6 +144,8 @@ public class InvestmentRuntimeProperties {
 
     @Data
     public static class Market {
+        private Set<String> realtimeStockMarkets = Set.of("SSE", "SZSE", "BSE");
+        private int dailyQuoteLookbackDays = 10;
         private ZoneId zone;
         private long stockRefreshIntervalMs;
         private long stockActiveFreshnessMs;

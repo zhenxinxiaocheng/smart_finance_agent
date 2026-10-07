@@ -21,11 +21,11 @@
       <div v-for="item in results" :key="item.id ?? `${item.market}:${item.code}`" class="flex items-center gap-3 p-3">
         <div class="min-w-0 flex-1">
           <div class="truncate font-medium" :title="item.name">{{ item.name }}</div>
-          <div class="mt-1 text-xs text-muted-foreground">{{ item.code }} · {{ item.market }}</div>
+          <div class="mt-1 text-xs text-muted-foreground">{{ item.code }} · {{ item.market }} · {{ item.productType === 'STOCK' ? '股票' : '基金' }}</div>
         </div>
-        <Button size="sm" variant="outline" :disabled="submitting || isExisting(item.code)" @click="submit(item)">
+        <Button size="sm" variant="outline" :disabled="submitting || isExisting(item)" @click="submit(item)">
           <LoaderCircle v-if="submitting && addingCode === item.code" class="animate-spin" />
-          {{ isExisting(item.code) ? '已添加' : '添加' }}
+          {{ isExisting(item) ? '已添加' : '添加' }}
         </Button>
       </div>
       <div v-if="results.length < total" class="p-2 text-center">
@@ -48,9 +48,10 @@ import { Input } from '@/components/ui/input'
 import { resolveInvestmentAssetAPI, searchInvestmentAssetProductsAPI } from '@/api/investment'
 
 const props = defineProps({
-  productType: { type: String, required: true },
+  productType: { type: String, default: '' },
   submitting: Boolean,
   existingCodes: { type: Array, default: () => [] },
+  existingAssets: { type: Array, default: () => [] },
   errorMessage: { type: String, default: '' }
 })
 const emit = defineEmits(['submit'])
@@ -63,10 +64,8 @@ const page = ref(1)
 const total = ref(0)
 const addingCode = ref('')
 let requestId = 0
-const typeLabel = computed(() => props.productType === 'STOCK' ? '股票' : '基金')
-const placeholder = computed(() => props.productType === 'STOCK'
-  ? '搜索股票名称或代码，如贵州茅台、600519'
-  : '搜索基金名称或代码，如易方达、010736')
+const typeLabel = computed(() => props.productType ? (props.productType === 'STOCK' ? '股票' : '基金') : '股票或基金')
+const placeholder = computed(() => `搜索${typeLabel.value}名称或代码`)
 
 watch(keyword, resetSearch, { flush: 'sync' })
 watch(() => props.productType, () => { keyword.value = ''; resetSearch() }, { flush: 'sync' })
@@ -97,11 +96,17 @@ async function search(nextPage = 1) {
     let items = response.data?.items || []
     let count = response.data?.total || 0
     // 目录首次准备期间仍保留原有的精确代码识别能力。
-    if (nextPage === 1 && !items.length && /^\d{6}$/.test(value)) {
-      const resolved = await resolveInvestmentAssetAPI({ productType, code: value })
+    if (nextPage === 1 && /^\d{6}$/.test(value)) {
+      const types = (productType ? [productType] : ['STOCK', 'MUTUAL_FUND']).filter(type =>
+        !items.some(item => item.code === value && normalizeType(item.productType) === type))
+      const resolutions = await Promise.allSettled(types.map(type =>
+        resolveInvestmentAssetAPI({ productType: type, code: value })))
       if (current !== requestId) return
-      items = resolved.data ? [resolved.data] : []
-      count = items.length
+      const identified = resolutions.filter(result => result.status === 'fulfilled' && result.value.data)
+        .map(result => result.value.data)
+      if (!items.length && resolutions.length && resolutions.every(result => result.status === 'rejected')) throw new Error('resolution unavailable')
+      items = [...items, ...identified]
+      count += identified.length
     }
     results.value = nextPage === 1 ? items : [...results.value, ...items]
     total.value = count
@@ -113,13 +118,22 @@ async function search(nextPage = 1) {
   }
 }
 
-function isExisting(code) {
-  return props.existingCodes.includes(code)
+function normalizeType(type) {
+  return type === 'FUND' ? 'MUTUAL_FUND' : type
+}
+
+function isExisting(item) {
+  return props.existingAssets.some(asset => asset.productId != null && item.id != null
+    ? String(asset.productId) === String(item.id)
+    : asset.code === item.code && asset.market === item.market &&
+      normalizeType(asset.productType) === normalizeType(item.productType)) ||
+    (Boolean(props.productType) && props.existingCodes.includes(item.code))
 }
 
 function submit(item) {
-  if (props.submitting || isExisting(item.code)) return
+  if (props.submitting || isExisting(item)) return
   addingCode.value = item.code
-  emit('submit', { productType: props.productType, code: item.code })
+  emit('submit', { productId: item.id, productType: normalizeType(item.productType),
+    market: item.market, code: item.code })
 }
 </script>

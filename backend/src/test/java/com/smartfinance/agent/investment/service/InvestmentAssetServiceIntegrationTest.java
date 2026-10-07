@@ -32,6 +32,8 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -117,6 +119,112 @@ class InvestmentAssetServiceIntegrationTest {
         assertThat(assetService.list(7L)).extracting("id").containsExactly(asset.getId());
         assertThatThrownBy(() -> assetService.get(8L, asset.getId()))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void catalogUsStockCanBeAddedWithoutCallingAStockMetadataOrRealtime() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(8001,'STOCK','NASDAQ','NVDA','NVIDIA Corporation','USD','ACTIVE')");
+        jdbc.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) "
+                + "VALUES(8001,'2026-10-02','NONE',180,'AKSHARE_US_SINA')");
+        reset(analysisServiceClient);
+
+        var asset = assetService.create(7L, createRequest("STOCK", "NVDA"));
+
+        assertThat(asset.getProductId()).isEqualTo(8001L);
+        assertThat(asset.getMarket()).isEqualTo("NASDAQ");
+        assertThat(asset.getQuoteFrequency()).isEqualTo("DAILY");
+        assertThat(asset.getCurrency()).isEqualTo("USD");
+        assertThat(asset.getLatestPrice()).isEqualByComparingTo("180");
+        assertThat(asset.getSyncStatus()).isNotEqualTo("FAILED");
+        verifyNoInteractions(analysisServiceClient);
+        verify(demand).asset(7L, asset.getId(), 8001L);
+    }
+
+    @Test
+    void selectedLegacyFundKeepsProductIdentityAndUsesNormalizedResolverType() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(8001,'FUND','FUND_CN','010736','旧基金条目','CNY','ACTIVE')");
+        reset(analysisServiceClient);
+        when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "010736"))
+                .thenReturn(resolvedFundProduct("010736", "已识别基金", "FUND_CN", "1.23", "指数型-股票", "CN_EQUITY_INDEX_FUND"));
+        var request = createRequest("MUTUAL_FUND", "010736");
+        request.setProductId(8001L);
+        var asset = assetService.create(7L, request);
+        assertThat(asset.getProductId()).isEqualTo(8001L);
+        assertThat(asset.getProductType()).isEqualTo("MUTUAL_FUND");
+        assertThat(asset.getLatestPrice()).isEqualByComparingTo("1.23");
+        assertThat(asset.getSyncStatus()).isEqualTo("SUCCESS");
+        assertThat(productMapper.selectById(8001L).getProductType()).isEqualTo("MUTUAL_FUND");
+        assertThat(asset.getFundCategory()).isEqualTo("CN_EQUITY_INDEX_FUND");
+        verify(benchmarkProfileService).configureImportedFundBenchmark(
+                org.mockito.ArgumentMatchers.argThat(product -> product.getId().equals(8001L)
+                        && "MUTUAL_FUND".equals(product.getProductType())), any());
+        assertThat(assetService.refresh(7L, asset.getId(), true).getSyncStatus()).isEqualTo("SUCCESS");
+        verify(analysisServiceClient, org.mockito.Mockito.never()).resolveProduct("FUND", "010736");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM investment_product WHERE code='010736'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void legacyFundSelectionReusesExistingCanonicalProductWithoutUniqueKeyConflict() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) VALUES "
+                + "(8001,'FUND','FUND_CN','010736','旧基金条目','CNY','ACTIVE'),"
+                + "(8002,'MUTUAL_FUND','FUND_CN','010736','规范基金条目','CNY','ACTIVE')");
+        when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "010736"))
+                .thenReturn(resolvedProduct("MUTUAL_FUND", "010736", "已识别基金", "FUND_CN", "1.23"));
+        var request = createRequest("MUTUAL_FUND", "010736");
+        request.setProductId(8001L);
+        var asset = assetService.create(7L, request);
+        assertThat(asset.getProductId()).isEqualTo(8002L);
+        assertThat(asset.getLatestPrice()).isEqualByComparingTo("1.23");
+        request.setProductId(8002L);
+        assertThatThrownBy(() -> assetService.create(7L, request)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("已经添加");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM investment_product WHERE code='010736'", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void selectedProductIdKeepsCatalogIdentityAndRejectsMismatchedSelection() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) VALUES "
+                + "(8001,'STOCK','NASDAQ','SAME','First company','USD','ACTIVE'),"
+                + "(8002,'STOCK','NYSE','SAME','Second company','USD','ACTIVE')");
+        var request = createRequest("STOCK", "SAME");
+        request.setProductId(8002L);
+        var asset = assetService.create(7L, request);
+        assertThat(asset.getProductId()).isEqualTo(8002L);
+        assertThat(asset.getMarket()).isEqualTo("NYSE");
+        assertThatThrownBy(() -> assetService.create(7L, createRequest("STOCK", "SAME")))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("搜索结果");
+        request.setCode("OTHER");
+        assertThatThrownBy(() -> assetService.create(7L, request))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("重新搜索");
+    }
+
+    @Test
+    void usStockRefreshUsesRawDailyHistoryAndPreservesOldDataIfResponseIsOutsideWindow() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(8001,'STOCK','NASDAQ','NVDA','NVIDIA','USD','ACTIVE')");
+        var request = createRequest("STOCK", "NVDA");
+        request.setProductId(8001L);
+        var asset = assetService.create(7L, request);
+        reset(analysisServiceClient);
+        LocalDate recent = LocalDate.now().minusDays(2);
+        java.util.Map<String,Object> response = java.util.Map.of("provider", "AKSHARE_US_SINA", "adapterVersion", "1",
+                "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", List.of(
+                java.util.Map.of("data_date", recent.toString(), "close", "180", "volume", "1000")));
+        when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(response);
+
+        var refreshed = assetService.refresh(7L, asset.getId(), true);
+
+        assertThat(refreshed.getLatestPrice()).isEqualByComparingTo("180");
+        assertThat(refreshed.getDataDate()).isEqualTo(recent);
+        assertThat(refreshed.getSyncStatus()).isEqualTo("SUCCESS");
+        verify(analysisServiceClient, org.mockito.Mockito.never()).realtimeQuote(anyString(), anyString());
+        when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(java.util.Map.of(
+                "records", List.of(java.util.Map.of("data_date", recent.minusYears(1).toString(), "close", "1"))));
+        var failed = assetService.refresh(7L, asset.getId(), true);
+        assertThat(failed.getSyncStatus()).isEqualTo("FAILED");
+        assertThat(failed.getLatestPrice()).isEqualByComparingTo("180");
+        assertThat(failed.getDataDate()).isEqualTo(recent);
     }
 
     @Test

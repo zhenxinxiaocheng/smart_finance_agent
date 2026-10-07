@@ -140,6 +140,7 @@ public class AnalysisServiceClient {
     private final RestClient restClient;
     private final RestClient benchmarkRestClient;
     private final RestClient catalogRestClient;
+    private final RestClient nameRestClient;
     private final String internalToken;
 
     @Autowired
@@ -148,7 +149,9 @@ public class AnalysisServiceClient {
                                  @Value("${analysis-service.internal-token:dev-analysis-token}") String internalToken,
                                  @Value("${analysis-service.benchmark-connect-timeout:10s}") Duration benchmarkConnectTimeout,
                                  @Value("${analysis-service.benchmark-read-timeout:90s}") Duration benchmarkReadTimeout,
-                                 @Value("${analysis-service.catalog-read-timeout}") Duration catalogReadTimeout) {
+                                 @Value("${analysis-service.catalog-read-timeout}") Duration catalogReadTimeout,
+                                 @Value("${analysis-service.name-connect-timeout:1s}") Duration nameConnectTimeout,
+                                 @Value("${analysis-service.name-read-timeout:4s}") Duration nameReadTimeout) {
         RestClient.Builder baseBuilder = builder.clone().baseUrl(baseUrl);
         this.restClient = baseBuilder.clone().build();
         SimpleClientHttpRequestFactory benchmarkRequestFactory =
@@ -162,7 +165,16 @@ public class AnalysisServiceClient {
         catalogFactory.setConnectTimeout(benchmarkConnectTimeout);
         catalogFactory.setReadTimeout(catalogReadTimeout);
         this.catalogRestClient = baseBuilder.clone().requestFactory(catalogFactory).build();
+        SimpleClientHttpRequestFactory nameFactory = new SimpleClientHttpRequestFactory();
+        nameFactory.setConnectTimeout(nameConnectTimeout);
+        nameFactory.setReadTimeout(nameReadTimeout);
+        this.nameRestClient = baseBuilder.clone().requestFactory(nameFactory).build();
         this.internalToken = internalToken;
+    }
+
+    public AnalysisServiceClient(RestClient.Builder builder, String baseUrl, String internalToken,
+                                 Duration connectTimeout, Duration readTimeout, Duration catalogReadTimeout) {
+        this(builder, baseUrl, internalToken, connectTimeout, readTimeout, catalogReadTimeout, connectTimeout, readTimeout);
     }
 
     public AnalysisServiceClient(RestClient.Builder builder, String baseUrl, String internalToken,
@@ -174,6 +186,7 @@ public class AnalysisServiceClient {
         this.restClient = builder.baseUrl(baseUrl).build();
         this.benchmarkRestClient = this.restClient;
         this.catalogRestClient = this.restClient;
+        this.nameRestClient = this.restClient;
         this.internalToken = internalToken;
     }
 
@@ -238,6 +251,17 @@ public class AnalysisServiceClient {
         if (response == null || !(response.get("records") instanceof List<?>))
             throw new IllegalStateException("分析服务返回空日线响应");
         return response;
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Map<String,Object>> marketProductNames(String search) {
+        Map<String,Object> response = nameRestClient.get()
+                .uri(builder -> builder.path("/internal/v1/market-data/product-names")
+                        .queryParam("search", search).build())
+                .header("X-Internal-Token", internalToken).retrieve().body(Map.class);
+        if (response == null || !(response.get("items") instanceof List<?>))
+            throw new IllegalStateException("分析服务返回空名称响应");
+        return (List<Map<String,Object>>) response.get("items");
     }
 
     @SuppressWarnings("unchecked")

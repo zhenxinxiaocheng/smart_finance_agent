@@ -38,6 +38,7 @@ public class InvestmentAssetView {
     private BigDecimal unrealizedPnlCny;
     private BigDecimal holdingReturnPercent;
     private LocalDate dataDate;
+    private String quoteFrequency;
     private LocalDateTime fetchedAt;
     private String note;
     private String syncStatus;

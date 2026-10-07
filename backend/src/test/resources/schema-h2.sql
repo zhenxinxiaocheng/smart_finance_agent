@@ -573,6 +573,7 @@ CREATE TABLE `investment_product` (
     `market` VARCHAR(30) NOT NULL,
     `code` VARCHAR(40) NOT NULL,
     `name` VARCHAR(512) NOT NULL,
+    `name_aliases` TEXT NULL,
     `currency` VARCHAR(3) NOT NULL DEFAULT 'CNY',
     `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

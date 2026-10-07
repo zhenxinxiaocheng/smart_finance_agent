@@ -19,6 +19,10 @@
   ],
   "fundCnSource": {"name": "AKSHARE_FUND_OPEN_DAILY", "function": "fund_open_fund_daily_em", "kwargs": {}, "codeColumn": "基金代码", "nameColumn": "基金简称"},
   "usNameSource": {"name": "AKSHARE_US_SPOT", "function": "stock_us_spot_em", "kwargs": {}},
+  "usNameSearch": {
+    "url": "https://suggest3.sinajs.cn/suggest/type={types}&key={keyword}&name=us_suggest",
+    "types": "41", "encoding": "gbk", "timeoutSeconds": 3, "maxResults": 30
+  },
   "usDirectorySources": [
     {"name": "NASDAQ_LISTED", "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", "codeColumn": "Symbol"},
     {"name": "NASDAQ_OTHER_LISTED", "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt", "codeColumn": "ACT Symbol"}

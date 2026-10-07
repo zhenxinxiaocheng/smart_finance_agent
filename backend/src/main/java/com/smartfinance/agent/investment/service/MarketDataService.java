@@ -23,6 +23,8 @@ public class MarketDataService {
     private final JdbcTemplate db;
     private final AnalysisServiceClient analysis;
     private InvestmentResearchDataService research;
+    private InvestmentProductNameService productNames;
+    @Autowired public void setProductNames(InvestmentProductNameService productNames) { this.productNames = productNames; }
     private com.smartfinance.agent.investment.config.MarketDataScopeProperties scopeProperties=new com.smartfinance.agent.investment.config.MarketDataScopeProperties();
     @Autowired public void setScopeProperties(com.smartfinance.agent.investment.config.MarketDataScopeProperties properties){this.scopeProperties=properties;}
     private MarketDataRequirementService.SqlScope eligibility() {
@@ -58,11 +60,21 @@ public class MarketDataService {
         if (page < 1 || size < 1 || size > 100) bad("分页范围无效");
         StringBuilder where = new StringBuilder(" WHERE 1=1");
         List<Object> args = new ArrayList<>();
+        Set<String> types = new java.util.LinkedHashSet<>();
+        if (assetType != null && !assetType.isBlank()) {
+            for (String type : assetType.split(",")) {
+                if ("FUND".equals(type.trim())) types.addAll(List.of("FUND", "MUTUAL_FUND"));
+                else types.add(type.trim());
+            }
+        }
+        if (productNames != null && page == 1 && (types.isEmpty() || types.contains("STOCK"))
+                && !"CN_A".equals(marketGroup) && (market == null || market.isBlank()
+                || Set.of("NASDAQ","NYSE","AMEX").contains(market))) productNames.enrich(search == null ? null : search.trim());
         if (search != null && !search.isBlank()) {
-            where.append(" AND (p.code LIKE ? ESCAPE '!' OR p.name LIKE ? ESCAPE '!')");
+            where.append(" AND (p.code LIKE ? ESCAPE '!' OR p.name LIKE ? ESCAPE '!' OR p.name_aliases LIKE ? ESCAPE '!')");
             String value = "%" + search.trim().replace("!", "!!").replace("%", "!%")
                     .replace("_", "!_") + "%";
-            args.add(value); args.add(value);
+            args.add(value); args.add(value); args.add(value);
         }
         if (market != null && !market.isBlank()) { where.append(" AND p.market=?"); args.add(market); }
         if (marketGroup != null && !marketGroup.isBlank()) {
@@ -70,9 +82,9 @@ public class MarketDataService {
             else if ("US".equals(marketGroup)) where.append(" AND p.market IN ('NYSE','NASDAQ','AMEX','US_INDEX')");
             else bad("市场分组无效");
         }
-        if (assetType != null && !assetType.isBlank()) {
-            if ("FUND".equals(assetType)) where.append(" AND p.product_type IN ('FUND','MUTUAL_FUND')");
-            else { where.append(" AND p.product_type=?"); args.add(assetType); }
+        if (!types.isEmpty()) {
+            where.append(" AND p.product_type IN (").append(String.join(",", Collections.nCopies(types.size(), "?"))).append(")");
+            args.addAll(types);
         }
         if (status != null && !status.isBlank()) { where.append(" AND p.status=?"); args.add(status); }
         long total = db.queryForObject("SELECT COUNT(*) FROM investment_product p" + where, Long.class, args.toArray());

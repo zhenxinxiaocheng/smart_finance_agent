@@ -27,14 +27,19 @@ class InvestmentRealtimeQuoteWorkerTest {
                 assetMapper, productMapper, assetService, tradingCalendar, runtimeProperties());
         InvestmentAsset stock = asset(11L, 2L, 101L);
         InvestmentAsset fund = asset(12L, 2L, 102L);
-        when(assetMapper.selectList(any(Wrapper.class))).thenReturn(List.of(stock, fund));
+        InvestmentAsset usStock = asset(13L, 2L, 103L);
+        var foreign = product(103L, "STOCK");
+        foreign.setMarket("NASDAQ");
+        when(assetMapper.selectList(any(Wrapper.class))).thenReturn(List.of(stock, fund, usStock));
         when(productMapper.selectById(101L)).thenReturn(product(101L, "STOCK"));
         when(productMapper.selectById(102L)).thenReturn(product(102L, "MUTUAL_FUND"));
+        when(productMapper.selectById(103L)).thenReturn(foreign);
 
         worker.refreshStockAssets(LocalDateTime.of(2026, 7, 13, 10, 0));
 
         verify(assetService).refresh(2L, 11L, false);
         verify(assetService, never()).refresh(2L, 12L, false);
+        verify(assetService, never()).refresh(2L, 13L, false);
         verify(assetService, never()).sync(anyLong(), anyLong());
     }
 
@@ -112,6 +117,7 @@ class InvestmentRealtimeQuoteWorkerTest {
         InvestmentProduct product = new InvestmentProduct();
         product.setId(id);
         product.setProductType(type);
+        product.setMarket("STOCK".equals(type) ? "SSE" : "FUND_CN");
         return product;
     }
 }

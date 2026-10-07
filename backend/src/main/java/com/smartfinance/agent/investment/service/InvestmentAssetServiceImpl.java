@@ -21,6 +21,7 @@ import java.time.LocalTime;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -49,6 +50,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
     private final InvestmentSyncWorker syncWorker;
+    private InvestmentQuoteAvailabilityService availability;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAvailability(InvestmentQuoteAvailabilityService availability) { this.availability = availability; }
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -90,14 +94,25 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
 
     @Override
     public AnalysisServiceClient.ResolvedProduct resolve(Long userId, String productType, String code) {
-        return analysisClient.resolveProduct(normalizeType(productType), normalizeCode(code));
+        String type = normalizeType(productType);
+        String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+        if ("STOCK".equals(type) && normalized.matches("[A-Z][A-Z0-9.-]{0,39}")) {
+            InvestmentProduct product = catalogStock(normalized);
+            ProductDailyQuote quote = latestQuote(product.getId());
+            return new AnalysisServiceClient.ResolvedProduct(type, product.getCode(), product.getName(),
+                    product.getMarket(), product.getCurrency(), "LOCAL_CATALOG",
+                    quote == null ? null : quote.getTradeDate(), quote == null ? null : quote.getClosePrice(), List.of());
+        }
+        return analysisClient.resolveProduct(type, normalizeCode(code));
     }
 
     @Override
     @Transactional
     public InvestmentAssetView create(Long userId, InvestmentAssetCreateRequest request) {
-        AnalysisServiceClient.ResolvedProduct resolved = resolve(userId, request.getProductType(), request.getCode());
-        InvestmentProduct product = upsertProduct(resolved);
+        InvestmentProduct product = selectedProduct(request);
+        AnalysisServiceClient.ResolvedProduct resolved = product == null
+                ? resolve(userId, request.getProductType(), request.getCode()) : null;
+        if (product == null) product = upsertProduct(resolved);
         Long duplicate = assetMapper.selectCount(new LambdaQueryWrapper<InvestmentAsset>()
                 .eq(InvestmentAsset::getUserId, userId)
                 .eq(InvestmentAsset::getProductId, product.getId()));
@@ -110,17 +125,18 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         asset.setQuantity(request.getQuantity());
         asset.setAverageCost(request.getAverageCost());
         asset.setNote(blankToNull(request.getNote()));
-        asset.setSyncStatus(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS");
-        asset.setSyncError(resolved.warnings().isEmpty() ? null : String.join("；", resolved.warnings()));
+        asset.setSyncStatus(resolved == null || resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS");
+        asset.setSyncError(resolved == null ? null : joinWarnings(resolved.warnings()));
         asset.setDeleted(0);
         assetMapper.insert(asset);
-        saveResolvedQuote(product, resolved);
-        refreshAsset(asset, true, resolved);
+        if (resolved != null) saveResolvedQuote(product, resolved);
+        // Foreign stocks acquire their daily history through the existing owned demand.
+        if (!"STOCK".equals(product.getProductType()) || usesRealtimeQuote(product)) refreshAsset(asset, true, resolved);
         if (request.getQuantity() != null || request.getAverageCost() != null) {
             replaceHolding(userId, asset, request.getQuantity(), request.getAverageCost(), asset.getNote());
         }
         dataJobService.ensureQueued(userId, asset.getId(), product.getId(), product.getProductType(), false);
-        if (resolved.benchmarkCode() != null) {
+        if (resolved != null && resolved.benchmarkCode() != null) {
             dataJobService.ensureBenchmarkQueued(userId, asset.getId(), product.getId());
         }
         return toView(asset);
@@ -262,7 +278,20 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                        AnalysisServiceClient.ResolvedProduct alreadyResolved,
                                        boolean force) {
         try {
-            if ("STOCK".equals(product.getProductType())) {
+            if ("STOCK".equals(product.getProductType()) && !usesRealtimeQuote(product)) {
+                LocalDate today = LocalDate.now(runtimeProperties.getMarket().getZone());
+                LocalDate end = availability == null ? today.minusDays(1)
+                        : availability.target(product, today, Instant.now());
+                LocalDate start = end.minusDays(runtimeProperties.getMarket().getDailyQuoteLookbackDays());
+                Map<String, Object> response = analysisClient.marketDailyQuotes(product, start, end, "NONE");
+                Set<LocalDate> dates = InvestmentHistoryPreparationService.recordDates(response);
+                if (dates.isEmpty() || dates.stream().anyMatch(date -> date.isBefore(start) || date.isAfter(end))) {
+                    throw new IllegalStateException("日线行情未返回请求区间内的有效记录");
+                }
+                syncWorker.persistDailyQuotes(product, response, "NONE");
+                return new RefreshOutcome("SUCCESS", null);
+            }
+            if (usesRealtimeQuote(product)) {
                 InvestmentQuoteCacheService.Entry cached = force ? null
                         : quoteCache.get(product.getMarket(), product.getCode());
                 if (cached != null) {
@@ -279,8 +308,11 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             }
             AnalysisServiceClient.ResolvedProduct resolved = alreadyResolved != null
                     ? alreadyResolved
-                    : analysisClient.resolveProduct(product.getProductType(), product.getCode());
-            InvestmentProduct resolvedProduct = upsertProduct(resolved);
+                    : analysisClient.resolveProduct(normalizeType(product.getProductType()), product.getCode());
+            if (!normalizeType(product.getProductType()).equals(normalizeType(resolved.productType()))
+                    || !product.getCode().equals(resolved.code()) || !product.getMarket().equals(resolved.market()))
+                throw new IllegalStateException("返回行情与所选证券不一致");
+            InvestmentProduct resolvedProduct = saveProductMetadata(product, resolved);
             saveResolvedQuote(resolvedProduct, resolved);
             return new RefreshOutcome(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS",
                     joinWarnings(resolved.warnings()));
@@ -315,9 +347,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
 
     private boolean canReuse(InvestmentProduct product, CachedRefreshOutcome cached, LocalDateTime now) {
         if (cached == null || "FAILED".equals(cached.outcome().status())) return false;
-        if ("STOCK".equals(product.getProductType()) && !isStockMarketOpen(now)) return true;
+        if (usesRealtimeQuote(product) && !isStockMarketOpen(now)) return true;
         if (cached.outcome().validUntil() != null && !now.isBefore(cached.outcome().validUntil())) return false;
-        long freshnessMs = "STOCK".equals(product.getProductType())
+        long freshnessMs = usesRealtimeQuote(product)
                 ? runtimeProperties.getMarket().getStockActiveFreshnessMs()
                 : runtimeProperties.getMarket().getFundActiveFreshnessMs();
         return Duration.between(cached.refreshedAt(), now).toMillis() < freshnessMs;
@@ -328,6 +360,51 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         return tradingCalendar.isTradingDay(now.toLocalDate())
                 && !time.isBefore(runtimeProperties.getMarket().getStockRefreshStart())
                 && !time.isAfter(runtimeProperties.getMarket().getStockRefreshEnd());
+    }
+
+    private boolean usesRealtimeQuote(InvestmentProduct product) {
+        return "STOCK".equals(product.getProductType())
+                && runtimeProperties.getMarket().getRealtimeStockMarkets().contains(product.getMarket());
+    }
+
+    private InvestmentProduct selectedProduct(InvestmentAssetCreateRequest request) {
+        String type = normalizeType(request.getProductType());
+        String code = request.getCode() == null ? "" : request.getCode().trim().toUpperCase(Locale.ROOT);
+        if (request.getProductId() == null) {
+            return "STOCK".equals(type) && code.matches("[A-Z][A-Z0-9.-]{0,39}") ? catalogStock(code) : null;
+        }
+        InvestmentProduct product = productMapper.selectById(request.getProductId());
+        if (product == null || !"ACTIVE".equals(product.getStatus())
+                || !type.equals(normalizeType(product.getProductType())) || !code.equals(product.getCode())) {
+            throw new IllegalArgumentException("证券信息已变化，请重新搜索后添加");
+        }
+        if (!type.equals(product.getProductType())) {
+            InvestmentProduct canonical = productMapper.selectOne(new LambdaQueryWrapper<InvestmentProduct>()
+                    .eq(InvestmentProduct::getProductType, type).eq(InvestmentProduct::getMarket, product.getMarket())
+                    .eq(InvestmentProduct::getCode, product.getCode()));
+            if (canonical != null) {
+                if (!"ACTIVE".equals(canonical.getStatus()))
+                    throw new IllegalArgumentException("证券信息已变化，请重新搜索后添加");
+                return canonical;
+            }
+            product.setProductType(type);
+            productMapper.updateById(product);
+        }
+        return product;
+    }
+
+    private InvestmentProduct catalogStock(String code) {
+        List<InvestmentProduct> matches = productMapper.selectList(new LambdaQueryWrapper<InvestmentProduct>()
+                .eq(InvestmentProduct::getProductType, "STOCK").eq(InvestmentProduct::getCode, code)
+                .eq(InvestmentProduct::getStatus, "ACTIVE"));
+        if (matches.size() != 1) throw new IllegalArgumentException("请从搜索结果中选择证券后添加");
+        return matches.get(0);
+    }
+
+    private ProductDailyQuote latestQuote(Long productId) {
+        return quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
+                .eq(ProductDailyQuote::getProductId, productId).eq(ProductDailyQuote::getAdjustType, "NONE")
+                .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
     }
 
     private static String joinWarnings(List<String> warnings) {
@@ -467,6 +544,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             product.setCode(resolved.code());
             product.setStatus("ACTIVE");
         }
+        return saveProductMetadata(product, resolved);
+    }
+
+    private InvestmentProduct saveProductMetadata(InvestmentProduct product, AnalysisServiceClient.ResolvedProduct resolved) {
         product.setName(resolved.name());
         product.setCurrency(resolved.currency());
         if (resolved.inceptionDate() != null) {
@@ -547,7 +628,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         view.setId(asset.getId());
         view.setAccountId(asset.getAccountId());
         view.setProductId(asset.getProductId());
-        view.setProductType(product.getProductType());
+        view.setProductType(normalizeType(product.getProductType()));
         view.setFundTypeRaw(product.getFundTypeRaw());
         view.setFundCategory(product.getFundCategory());
         view.setClassificationSource(product.getClassificationSource());
@@ -556,6 +637,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         view.setName(product.getName());
         view.setMarket(product.getMarket());
         view.setCurrency(product.getCurrency());
+        view.setQuoteFrequency(usesRealtimeQuote(product) ? "REALTIME" : "DAILY");
         view.setQuantity(asset.getQuantity());
         view.setAverageCost(asset.getAverageCost());
         BigDecimal latestPrice = quote != null ? quote.getClosePrice()
