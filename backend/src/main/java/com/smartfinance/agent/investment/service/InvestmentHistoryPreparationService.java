@@ -193,6 +193,8 @@ public class InvestmentHistoryPreparationService {
                 : availability.target(product, LocalDate.now(clock), clock.instant());
         LocalDate requestedEnd = target == null ? availableEnd
                 : availability == null ? target : earlier(target, availableEnd);
+        // Publication bounds limit acquisition; a demand receipt must prove the caller's whole window.
+        LocalDate verificationEnd = demandWindow && target != null ? target : requestedEnd;
         LocalDate requestedStart = start != null ? start
                 : fullBackfill ? initialStart(product, strict) : localLastValid.plusDays(1);
         if (fund(product)) {
@@ -201,13 +203,17 @@ public class InvestmentHistoryPreparationService {
         }
         if (requestedStart.isAfter(requestedEnd)) {
             // 本地已是最新，无需请求数据源。
-            return skipped(product, adjustType, localLastValid, requestedStart);
+            PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
+            if(demandWindow&&confirmedClosedWindow(product,requestedStart,verificationEnd))
+                return new PreparationResult(result.recordCount(),requestedStart,result.sampleStartDate(),result.sampleEndDate(),
+                        result.coverageComplete(),null,true,verificationEnd);
+            return result;
         }
         if (!fullBackfill && mainlandExchangeProduct(product)
-                && confirmedClosedWindow(requestedStart, requestedEnd)) {
+                && confirmedClosedWindow(product, requestedStart, verificationEnd)) {
             PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
             return demandWindow ? new PreparationResult(result.recordCount(),requestedStart,
-                    result.sampleStartDate(),result.sampleEndDate(),result.coverageComplete(),null,true,requestedEnd) : result;
+                    result.sampleStartDate(),result.sampleEndDate(),result.coverageComplete(),null,true,verificationEnd) : result;
         }
         // Historical chunks are acquisition windows, not evidence of freshness today.
         // An unknown inception cannot supply a valid calendar denominator for a full-history check.
@@ -267,9 +273,9 @@ public class InvestmentHistoryPreparationService {
             log.debug("增量窗口 {} 在数据源尚无记录，跳过：{}", requestedStart, exception.getMessage());
             PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
             // Funds are fetched first: a Chinese exchange holiday cannot suppress overseas NAV.
-            if(demandWindow&&domesticCalendarProduct(product)&&confirmedClosedWindow(requestedStart,requestedEnd))
+            if(demandWindow&&confirmedClosedWindow(product,requestedStart,verificationEnd))
                 return new PreparationResult(result.recordCount(),requestedStart,result.sampleStartDate(),result.sampleEndDate(),
-                        result.coverageComplete(),null,true,requestedEnd);
+                        result.coverageComplete(),null,true,verificationEnd);
             return result;
         }
         PreparedSeries primary = series.get(0);
@@ -323,7 +329,7 @@ public class InvestmentHistoryPreparationService {
                 coverageComplete,
                 primary.evaluation() == null ? null : primary.evaluation().datasetVersion(),
                 false,
-                demandWindow ? verifiedThrough(product,requestedStart,requestedEnd,series) : null);
+                demandWindow ? verifiedThrough(product,requestedStart,verificationEnd,series) : null);
     }
 
     /** null means one of the required price series still needs its initial history. */
@@ -383,23 +389,16 @@ public class InvestmentHistoryPreparationService {
 
     /** A receipt covers every expected observation, including the beginning and internal dates. */
     private LocalDate verifiedThrough(InvestmentProduct product,LocalDate start,LocalDate end,List<PreparedSeries> series) {
-        if(!domesticCalendarProduct(product))return null;
         LocalDate observed=series.stream().map(PreparedSeries::end).min(LocalDate::compareTo).orElseThrow();
         if(observed.isBefore(start))return null;
         try {
-            Set<LocalDate> calendar=new java.util.TreeSet<>();
-            for(int year=start.getYear();year<=end.getYear();year++)calendar.addAll(analysisClient.aShareTradingDates(year));
-            if(calendar.isEmpty())return null;
-            // January dates can precede the year's first session. Require a real preceding boundary.
-            if(start.isBefore(calendar.stream().min(LocalDate::compareTo).orElseThrow()))
-                calendar.addAll(analysisClient.aShareTradingDates(start.getYear()-1));
-            LocalDate first=calendar.stream().min(LocalDate::compareTo).orElseThrow();
-            LocalDate last=calendar.stream().max(LocalDate::compareTo).orElseThrow();
-            if(start.isBefore(first)||observed.isAfter(last))return null;
+            List<LocalDate> calendar=AnalysisServiceClient.expectedQuoteDates(
+                    analysisClient.quoteAvailability(product,start,end,clock.instant()),start,end);
+            if(calendar==null||calendar.isEmpty())return null;
             Set<LocalDate> expected=new java.util.HashSet<>();
-            for(LocalDate date:calendar)if(!date.isBefore(start)&&!date.isAfter(observed))expected.add(date);
+            for(LocalDate date:calendar)if(!date.isAfter(observed))expected.add(date);
             if(expected.isEmpty()||series.stream().anyMatch(item->!recordDates(item.response(),item.adjustType()).containsAll(expected)))return null;
-            boolean closedTail=!end.isAfter(last)&&calendar.stream().noneMatch(date->date.isAfter(observed)&&!date.isAfter(end));
+            boolean closedTail=calendar.stream().noneMatch(date->date.isAfter(observed));
             return closedTail ? end : observed;
         } catch(RuntimeException unavailable) {
             log.debug("未确认区间覆盖，保留已获取行情 {} 至 {}",start,end,unavailable);
@@ -409,7 +408,8 @@ public class InvestmentHistoryPreparationService {
 
     private boolean domesticCalendarProduct(InvestmentProduct product) {
         return mainlandExchangeProduct(product)||"CN_INDEX".equals(product.getMarket())
-                ||(fund(product)&&aShareCalendarFundCategories.contains(product.getFundCategory()==null?"":product.getFundCategory()));
+                ||(fund(product)&&"FUND_CN".equals(product.getMarket())
+                    &&aShareCalendarFundCategories.contains(product.getFundCategory()==null?"":product.getFundCategory()));
     }
     /** Pending classification may enter the existing job; calendar receipts still require a known supported category. */
     public boolean supportsDemandPreparation(InvestmentProduct product) {
@@ -488,20 +488,11 @@ public class InvestmentHistoryPreparationService {
                 && Set.of("SSE", "SZSE", "BSE", "SH", "SZ", "BJ", "CN").contains(product.getMarket());
     }
 
-    private boolean confirmedClosedWindow(LocalDate start, LocalDate end) {
+    private boolean confirmedClosedWindow(InvestmentProduct product,LocalDate start, LocalDate end) {
         try {
-            for (int year = start.getYear(); year <= end.getYear(); year++) {
-                List<LocalDate> dates = analysisClient.aShareTradingDates(year);
-                if (dates == null || dates.isEmpty()) return false;
-                LocalDate first = dates.stream().min(LocalDate::compareTo).orElseThrow();
-                LocalDate last = dates.stream().max(LocalDate::compareTo).orElseThrow();
-                LocalDate windowStart = start.getYear() == year ? start : LocalDate.of(year, 1, 1);
-                LocalDate windowEnd = end.getYear() == year ? end : LocalDate.of(year, 12, 31);
-                // 不把缺失年份或截断的日历当作休市证据。
-                if (windowStart.isBefore(first) || windowEnd.isAfter(last)) return false;
-                if (dates.stream().anyMatch(day -> !day.isBefore(windowStart) && !day.isAfter(windowEnd))) return false;
-            }
-            return true;
+            List<LocalDate> dates=AnalysisServiceClient.expectedQuoteDates(
+                    analysisClient.quoteAvailability(product,start,end,clock.instant()),start,end);
+            return dates!=null&&dates.isEmpty();
         } catch (RuntimeException unavailable) {
             log.debug("交易日历暂不可用，继续从价格源获取 {} 至 {}", start, end, unavailable);
             return false;
@@ -510,7 +501,7 @@ public class InvestmentHistoryPreparationService {
 
     public boolean closedAfter(InvestmentProduct product,LocalDate lastObserved,LocalDate end) {
         return lastObserved!=null&&lastObserved.isBefore(end)&&mainlandExchangeProduct(product)
-                && confirmedClosedWindow(lastObserved.plusDays(1),end);
+                && confirmedClosedWindow(product,lastObserved.plusDays(1),end);
     }
 
     private static boolean fund(InvestmentProduct product) {

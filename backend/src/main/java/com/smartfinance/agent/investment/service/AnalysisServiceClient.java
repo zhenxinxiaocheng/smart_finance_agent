@@ -478,6 +478,25 @@ public class AnalysisServiceClient {
         return postInternal("/internal/v1/market-data/availability",body,"行情发布日期规则");
     }
 
+    /** null is unknown; an empty list proves that the entire requested window has no expected observations. */
+    static List<LocalDate> expectedQuoteDates(Map<String,Object> response,LocalDate start,LocalDate end) {
+        if(response==null || !Boolean.TRUE.equals(response.get("calendarKnown"))) return null;
+        try {
+            LocalDate through=LocalDate.parse(String.valueOf(response.get("expectedThroughDate")));
+            if(through.isBefore(end) || !(response.get("expectedDates") instanceof List<?> values)) return null;
+            List<LocalDate> dates=new java.util.ArrayList<>();
+            LocalDate previous=null;
+            for(Object value:values) {
+                LocalDate day=LocalDate.parse(String.valueOf(value));
+                if(day.isBefore(start)||day.isAfter(end)||(previous!=null&&!day.isAfter(previous)))return null;
+                dates.add(day); previous=day;
+            }
+            return List.copyOf(dates);
+        } catch(RuntimeException invalid) {
+            return null;
+        }
+    }
+
     public void claimDataQuality(String datasetVersion, String qualityConfigVersion) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("datasetVersion", datasetVersion);

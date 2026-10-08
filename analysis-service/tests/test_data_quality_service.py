@@ -27,7 +27,7 @@ class DataQualityServiceTest(unittest.TestCase):
         self.addCleanup(environment.stop)
         days = [date(2026, 1, 2), date(2026, 1, 3)]
         availability = patch("app.data_quality.service.quote_availability",
-                             QuoteAvailability(lambda name, year: days if year == 2026 else []))
+                             QuoteAvailability(lambda name, year: days if year == 2026 else [date(2025, 12, 31)] if year == 2025 else []))
         availability.start()
         self.addCleanup(availability.stop)
         self.now = datetime(2026, 2, 1, 12, 30, tzinfo=timezone.utc)

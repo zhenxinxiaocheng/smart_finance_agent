@@ -27,6 +27,52 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
+    void availabilitySendsTheFullFundIdentityAndExactRequestedWindow() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        var product = new InvestmentProduct();
+        product.setProductType("MUTUAL_FUND");
+        product.setMarket("FUND_CN");
+        product.setFundCategory("QDII_INDEX_FUND");
+        product.setDelistingDate(LocalDate.of(2026, 7, 21));
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/availability"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Token", "secret-token"))
+                .andExpect(content().json("""
+                        {"productType":"MUTUAL_FUND","market":"FUND_CN","fundCategory":"QDII_INDEX_FUND",
+                         "startDate":"2026-07-20","endDate":"2026-07-22","at":"2026-07-23T08:00:00Z",
+                         "delistingDate":"2026-07-21"}
+                        """, true))
+                .andRespond(withSuccess("""
+                        {"calendarKnown":false,"targetDate":"2026-07-21","expectedDates":[],"expectedThroughDate":null}
+                        """, MediaType.APPLICATION_JSON));
+        var start=LocalDate.of(2026,7,20); var end=start.plusDays(2);
+        var response=client.quoteAvailability(product,start,end,java.time.Instant.parse("2026-07-23T08:00:00Z"));
+        assertThat(AnalysisServiceClient.expectedQuoteDates(response,start,end)).isNull();
+        assertThat(response.get("targetDate")).isEqualTo("2026-07-21");
+        server.verify();
+    }
+
+    @Test
+    void calendarProofRejectsUnknownIncompleteAndMalformedWindows() {
+        var start=LocalDate.of(2026,7,20); var end=start.plusDays(1);
+        for(var response:List.of(
+                Map.<String,Object>of("calendarKnown",false,"expectedThroughDate","2026-07-21","expectedDates",List.of()),
+                Map.<String,Object>of("calendarKnown",true,"expectedDates",List.of("2026-07-20")),
+                Map.<String,Object>of("calendarKnown",true,"expectedThroughDate","2026-07-20","expectedDates",List.of("2026-07-20")),
+                Map.<String,Object>of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of("2026-07-20","2026-07-20")),
+                Map.<String,Object>of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of("2026-07-21","2026-07-20")),
+                Map.<String,Object>of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of("2026-07-22")),
+                Map.<String,Object>of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of("invalid")))) {
+            assertThat(AnalysisServiceClient.expectedQuoteDates(response,start,end)).isNull();
+        }
+        assertThat(AnalysisServiceClient.expectedQuoteDates(Map.of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of()),start,end)).isEmpty();
+        assertThat(AnalysisServiceClient.expectedQuoteDates(Map.of("calendarKnown",true,"expectedThroughDate","2026-07-21","expectedDates",List.of("2026-07-20","2026-07-21")),start,end))
+                .containsExactly(start,end);
+    }
+
+    @Test
     void optionalProductNamesHaveABoundedHttpReadTimeout() throws Exception {
         var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/internal/v1/market-data/product-names", exchange -> {

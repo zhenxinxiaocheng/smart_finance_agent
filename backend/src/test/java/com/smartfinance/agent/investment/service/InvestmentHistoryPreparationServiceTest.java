@@ -83,7 +83,7 @@ class InvestmentHistoryPreparationServiceTest {
         LocalDate lastQuote = LocalDate.of(2026, 9, 30);
         LocalDate target = LocalDate.of(2026, 10, 4);
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(lastQuote);
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(lastQuote, target.plusDays(4)));
+        policyCalendar(lastQuote.plusDays(1),target,List.of());
         org.mockito.Mockito.doThrow(new IllegalStateException("price source unavailable"))
                 .when(dataQualityService).resolve(any(), any(), any(), anyString(), anyBoolean());
 
@@ -152,12 +152,44 @@ class InvestmentHistoryPreparationServiceTest {
         verify(analysisClient, never()).marketDailyQuotes(any(), any(), any(), anyString());
     }
     @Test
+    void usDemandCanFinishOnItsOwnCalendarDuringAChinaHoliday() {
+        var product = product(); product.setMarket("NASDAQ");
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        service = new InvestmentHistoryPreparationService(productMapper,quoteMapper,dataQualityService,quoteService,
+                classificationService,analysisClient,Clock.fixed(Instant.parse("2026-10-08T08:00:00Z"),SHANGHAI));
+        var start = LocalDate.of(2026, 10, 1); var end = start.plusDays(1);
+        when(analysisClient.quoteAvailability(eq(product), eq(start), eq(end), any())).thenReturn(Map.of(
+                "calendarKnown", true, "expectedThroughDate", end.toString(), "targetDate", end.toString(),
+                "expectedDates", List.of("2026-10-01", "2026-10-02"), "ruleProfile", "US_CLOSE", "ruleVersion", "quote-availability-v1"));
+        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).verifiedThrough()).isEqualTo(end);
+        assertThat(service.supportsDemandPreparation(product)).isFalse();
+        verify(analysisClient, never()).aShareTradingDates(org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void usDemandWithAnInternalTradingGapDoesNotReceiveAReceipt() {
+        var product = product(); product.setMarket("NASDAQ");
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        var start = LocalDate.of(2026, 7, 20); var end = start.plusDays(2);
+        when(analysisClient.quoteAvailability(eq(product), eq(start), eq(end), any())).thenReturn(Map.of(
+                "calendarKnown", true, "expectedThroughDate", end.toString(), "targetDate", end.toString(),
+                "expectedDates", List.of("2026-07-20", "2026-07-21", "2026-07-22"), "ruleProfile", "US_CLOSE", "ruleVersion", "quote-availability-v1"));
+        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).verifiedThrough()).isNull();
+    }
+
+    @Test
+    void foreignFundClassificationDoesNotEnableDomesticWorkbenchPreparation() {
+        var product = product(); product.setProductType("MUTUAL_FUND"); product.setMarket("HKEX"); product.setFundCategory("INDEX_FUND");
+        assertThat(service.supportsDemandPreparation(product)).isFalse();
+    }
+
+    @Test
     void demandWindowCannotBeConfirmedFromOnlyItsLastObservation() {
         var product=product();
         LocalDate start=LocalDate.of(2026,7,20),end=LocalDate.of(2026,7,24);
         when(dataQualityService.resolve(any(),any(),any(),anyString(),eq(true)))
                 .thenReturn(evaluation(end,end));
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(start,start.plusDays(1),end,end.plusDays(10)));
+        policyCalendar(start,end,List.of(start.toString(),start.plusDays(1).toString(),end.toString()));
         var result=service.prepareDemandProduct(product,"STOCK_HISTORY",true,start,end);
         assertThat(result.verifiedThrough()).isNull();
     }
@@ -166,12 +198,52 @@ class InvestmentHistoryPreparationServiceTest {
         var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         LocalDate friday=LocalDate.of(2026,7,24),sunday=friday.plusDays(2);
+        var availability=mock(InvestmentQuoteAvailabilityService.class);
+        when(availability.target(any(),any(),any())).thenReturn(friday);
+        service.setAvailability(availability);
         var response=new java.util.LinkedHashMap<>(evaluation(friday,friday).response());
         response.put("records",List.of(Map.of("data_date",friday.toString(),"nav",1.2,"total_return_index",1.2)));
         var evaluated=new InvestmentDataQualityService.Evaluation(evaluation(friday,friday).snapshot(),response,List.of(),List.of());
         when(dataQualityService.resolve(any(),any(),any(),anyString(),eq(true))).thenReturn(evaluated);
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(friday,friday.plusDays(3)));
+        policyCalendar(friday,sunday,List.of(friday.toString()));
         assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isEqualTo(sunday);
+        verify(dataQualityService).resolve(product,friday,friday,"NONE",true);
+    }
+
+    @Test
+    void publicationClippingCannotCompleteAnUnpublishedSession() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
+        when(dataQualityService.adjustType(any())).thenReturn("NONE");
+        var monday=LocalDate.of(2026,7,27); var tuesday=monday.plusDays(1);
+        var availability=mock(InvestmentQuoteAvailabilityService.class);
+        when(availability.target(any(),any(),any())).thenReturn(monday);
+        service.setAvailability(availability);
+        when(analysisClient.quoteAvailability(eq(product),eq(monday),eq(tuesday),any()))
+                .thenReturn(calendarResponse(monday,List.of(monday.toString())));
+
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,monday,tuesday).verifiedThrough()).isNull();
+        verify(dataQualityService).resolve(product,monday,monday,"NONE",true);
+        verify(analysisClient).quoteAvailability(eq(product),eq(monday),eq(tuesday),any());
+    }
+
+    @Test
+    void closedWeekendBeyondPublicationRequiresTheFullOriginalWindowProof() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
+        when(dataQualityService.adjustType(any())).thenReturn("NONE");
+        var friday=LocalDate.of(2026,7,24); var saturday=friday.plusDays(1); var sunday=friday.plusDays(2);
+        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(friday);
+        var availability=mock(InvestmentQuoteAvailabilityService.class);
+        when(availability.target(any(),any(),any())).thenReturn(friday);
+        service.setAvailability(availability);
+        when(analysisClient.quoteAvailability(eq(product),eq(saturday),eq(sunday),any())).thenAnswer(call ->
+                "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of())
+                        : Map.of("calendarKnown",false,"expectedDates",List.of()));
+
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).verifiedThrough()).isEqualTo(sunday);
+        product.setFundCategory("QDII_FUND");
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).verifiedThrough()).isNull();
+        verify(dataQualityService,never()).resolve(any(),any(),any(),anyString(),anyBoolean());
+        verify(analysisClient,never()).marketDailyQuotes(any(),any(),any(),anyString());
     }
 
     @Test
@@ -184,7 +256,9 @@ class InvestmentHistoryPreparationServiceTest {
         response.put("records",List.of(Map.of("data_date",friday.toString(),"nav",1.2,"total_return_index",1.2)));
         when(dataQualityService.resolve(any(),any(),any(),anyString(),eq(true))).thenReturn(
                 new InvestmentDataQualityService.Evaluation(evaluation(friday,friday).snapshot(),response,List.of(),List.of()));
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(friday,friday.plusDays(3)));
+        when(analysisClient.quoteAvailability(eq(product),eq(friday),eq(sunday),any())).thenAnswer(call ->
+                "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of(friday.toString()))
+                        : Map.of("calendarKnown",false,"expectedDates",List.of(),"targetDate",friday.toString(),"ruleProfile","UNKNOWN","ruleVersion","quote-availability-v1"));
         assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isNull();
         when(classificationService.enrichIfMissing(product)).thenAnswer(call->{product.setFundCategory("INDEX_FUND");return product;});
         assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isEqualTo(sunday);
@@ -196,7 +270,9 @@ class InvestmentHistoryPreparationServiceTest {
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         LocalDate friday=LocalDate.of(2026,7,24),sunday=friday.plusDays(2);
         when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(friday);
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(friday,friday.plusDays(3)));
+        when(analysisClient.quoteAvailability(eq(product),eq(friday.plusDays(1)),eq(sunday),any())).thenAnswer(call ->
+                "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of())
+                        : Map.of("calendarKnown",false,"expectedDates",List.of(),"targetDate",friday.toString(),"ruleProfile","UNKNOWN","ruleVersion","quote-availability-v1"));
         org.mockito.Mockito.doThrow(new AnalysisServiceClient.SourceEmptyException("not published"))
                 .when(dataQualityService).resolve(any(),any(),any(),anyString(),eq(true));
         assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,friday.plusDays(1),sunday).verifiedThrough()).isEqualTo(sunday);
@@ -213,7 +289,7 @@ class InvestmentHistoryPreparationServiceTest {
         LocalDate lastQuote = LocalDate.of(2026, 9, 30);
         LocalDate target = LocalDate.of(2026, 10, 4);
         when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(lastQuote);
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(lastQuote, target.plusDays(4)));
+        policyCalendar(lastQuote.plusDays(1),target,List.of());
         org.mockito.Mockito.doThrow(new IllegalStateException("price source unavailable"))
                 .when(analysisClient).marketDailyQuotes(any(), any(), any(), anyString());
 
@@ -231,7 +307,7 @@ class InvestmentHistoryPreparationServiceTest {
         LocalDate lastQuote = LocalDate.of(2026, 9, 30);
         LocalDate target = LocalDate.of(2026, 10, 4);
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(lastQuote);
-        when(analysisClient.aShareTradingDates(2026)).thenReturn(List.of(lastQuote.minusDays(1), lastQuote));
+        when(analysisClient.quoteAvailability(any(),any(),any(),any())).thenReturn(calendarResponse(lastQuote,List.of()));
         org.mockito.Mockito.doThrow(new IllegalStateException("price source unavailable"))
                 .when(dataQualityService).resolve(any(), any(), any(), anyString(), anyBoolean());
 
@@ -245,7 +321,7 @@ class InvestmentHistoryPreparationServiceTest {
         InvestmentProduct product = product();
         LocalDate lastQuote = TODAY.minusDays(2);
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(lastQuote);
-        when(analysisClient.aShareTradingDates(2026)).thenThrow(new IllegalStateException("calendar unavailable"));
+        when(analysisClient.quoteAvailability(any(),any(),any(),any())).thenThrow(new IllegalStateException("calendar unavailable"));
 
         var result = service.prepareProduct(product, "STOCK_HISTORY", false, lastQuote.plusDays(1), TODAY);
 
@@ -886,6 +962,15 @@ class InvestmentHistoryPreparationServiceTest {
         product.setCode("600000");
         product.setHistoryCoverageComplete(false);
         return product;
+    }
+
+    private void policyCalendar(LocalDate start,LocalDate end,List<String> expected) {
+        when(analysisClient.quoteAvailability(any(),eq(start),eq(end),any())).thenReturn(calendarResponse(end,expected));
+    }
+
+    private static Map<String,Object> calendarResponse(LocalDate through,List<String> expected) {
+        return Map.of("calendarKnown",true,"expectedThroughDate",through.toString(),"targetDate",through.toString(),
+                "expectedDates",expected,"ruleProfile","CN_CLOSE","ruleVersion","quote-availability-v1");
     }
 
     private static InvestmentDataQualityService.Evaluation evaluation(

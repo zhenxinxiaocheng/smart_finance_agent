@@ -149,12 +149,41 @@ class MarketDataInfrastructureTest {
     }
 
     @Test
+    void usCoverageUsesTheProductCalendarAndReportsMissingTradingDates() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) VALUES(199,'STOCK','NASDAQ','NVDA','test','USD','ACTIVE')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) VALUES(199,'2026-07-20','NONE',10,'TEST'),(199,'2026-07-21','NONE',0,'TEST'),(199,'2026-07-22','NONE',11,'TEST')");
+        when(analysis.quoteAvailability(any(), eq(LocalDate.of(2026,7,20)), eq(LocalDate.of(2026,7,22)), any())).thenReturn(Map.of(
+                "calendarKnown",true,"expectedThroughDate","2026-07-22","targetDate","2026-07-22",
+                "expectedDates",List.of("2026-07-20","2026-07-21","2026-07-22"),"ruleProfile","US_CLOSE","ruleVersion","quote-availability-v1"));
+        var coverage = new MarketDataService(db,analysis,mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).coverage(199L,"NONE");
+        assertThat(coverage).containsEntry("coverageStatus","GAPS").containsEntry("missingTradingDays",1L).containsEntry("coverageRatio",2.0/3);
+        var product = org.mockito.ArgumentCaptor.forClass(InvestmentProduct.class);
+        verify(analysis).quoteAvailability(product.capture(),eq(LocalDate.of(2026,7,20)),eq(LocalDate.of(2026,7,22)),any());
+        assertThat(product.getValue().getMarket()).isEqualTo("NASDAQ");
+        assertThat(product.getValue().getProductType()).isEqualTo("STOCK");
+        verify(analysis,never()).aShareTradingDates(org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void unknownCalendarOrUnpublishedTailCannotClaimCompleteCoverage() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status,fund_category) VALUES(198,'MUTUAL_FUND','FUND_CN','QDII','test','CNY','ACTIVE','QDII_INDEX_FUND')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) VALUES(198,'2026-07-20','NONE',1,'TEST'),(198,'2026-07-21','NONE',2,'TEST')");
+        var reader = new MarketDataService(db,analysis,mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
+        when(analysis.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of("calendarKnown",false,"expectedDates",List.of(),"targetDate","2026-07-20","ruleProfile","QDII_NAV","ruleVersion","quote-availability-v1"));
+        assertThat(reader.coverage(198L,"NONE")).containsEntry("coverageStatus","CALENDAR_UNAVAILABLE").containsEntry("coverageRatio",null);
+        when(analysis.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of("calendarKnown",true,"expectedThroughDate","2026-07-20","expectedDates",List.of("2026-07-20"),"targetDate","2026-07-20","ruleProfile","CN_NAV","ruleVersion","quote-availability-v1"));
+        assertThat(reader.coverage(198L,"NONE")).containsEntry("coverageStatus","CALENDAR_UNAVAILABLE").containsEntry("coverageRatio",null);
+    }
+
+    @Test
     void singleObservedQuoteDoesNotClaimFullHistoryCoverage() {
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
                 + "VALUES(99,'STOCK','SSE','600000','测试','CNY','ACTIVE')");
         db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) "
                 + "VALUES(99,'2026-07-17','NONE',10,'TEST')");
-        when(analysis.aShareTradingDates(2026)).thenReturn(List.of(LocalDate.of(2026, 7, 17)));
+        when(analysis.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of("calendarKnown",true,
+                "expectedThroughDate","2026-07-17","targetDate","2026-07-17","expectedDates",List.of("2026-07-17"),
+                "ruleProfile","CN_CLOSE","ruleVersion","quote-availability-v1"));
 
         Map<String, Object> coverage = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).coverage(99L, "NONE");
 

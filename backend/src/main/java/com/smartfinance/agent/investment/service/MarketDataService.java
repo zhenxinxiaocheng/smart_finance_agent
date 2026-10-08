@@ -1,6 +1,7 @@
 package com.smartfinance.agent.investment.service;
 
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
 
 import org.springframework.http.HttpStatus;
@@ -145,7 +146,7 @@ public class MarketDataService {
     public Map<String, Object> coverage(long productId, String adjustType) {
         String adjust = adjustment(adjustType);
         List<Map<String, Object>> products = db.queryForList(
-                "SELECT id,market,product_type,history_coverage_complete FROM investment_product WHERE id=?", productId);
+                "SELECT id,market,product_type,fund_category,delisting_date,history_coverage_complete FROM investment_product WHERE id=?", productId);
         if (products.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "产品不存在");
         Map<String, Object> product = products.get(0);
         Map<String, Object> stats = db.queryForMap(
@@ -159,25 +160,24 @@ public class MarketDataService {
         LocalDate end = date(stats.get("history_end_date"));
         Long missing = null;
         Double ratio = null;
-        if (start != null && end != null && Set.of("SSE", "SZSE", "BSE", "CN_INDEX").contains(product.get("market"))) {
+        if (start != null && end != null) {
             try {
-                long expected = 0;
-                long observed = 0;
-                Set<LocalDate> storedDates = db.queryForList(
-                        "SELECT trade_date FROM product_daily_quote WHERE product_id=? AND adjust_type=?",
-                        String.class, productId, adjust).stream().map(MarketDataService::date)
-                        .collect(java.util.stream.Collectors.toSet());
-                for (int year = start.getYear(); year <= end.getYear(); year++) {
-                    for (LocalDate tradingDate : analysis.aShareTradingDates(year)) {
-                        if (!tradingDate.isBefore(start) && !tradingDate.isAfter(end)) {
-                            expected++;
-                            if (storedDates.contains(tradingDate)) observed++;
-                        }
-                    }
-                }
-                if (expected > 0) {
-                    missing = expected - observed;
-                    ratio = (double) observed / expected;
+                var identity=new InvestmentProduct(); identity.setId(productId);
+                identity.setProductType(String.valueOf(product.get("product_type")));
+                identity.setMarket(String.valueOf(product.get("market")));
+                identity.setFundCategory(product.get("fund_category")==null?null:String.valueOf(product.get("fund_category")));
+                identity.setDelistingDate(date(product.get("delisting_date")));
+                List<LocalDate> expected=AnalysisServiceClient.expectedQuoteDates(
+                        analysis.quoteAvailability(identity,start,end,java.time.Instant.now()),start,end);
+                if (expected!=null&&!expected.isEmpty()) {
+                    Set<LocalDate> storedDates = db.queryForList(
+                            "SELECT trade_date FROM product_daily_quote WHERE product_id=? AND adjust_type=? AND close_price IS NOT NULL"
+                                    +("QFQ".equals(adjust)?"":" AND close_price>0"),
+                            String.class, productId, adjust).stream().map(MarketDataService::date)
+                            .collect(java.util.stream.Collectors.toSet());
+                    long observed=expected.stream().filter(storedDates::contains).count();
+                    missing = expected.size() - observed;
+                    ratio = (double) observed / expected.size();
                 }
             } catch (RuntimeException unavailable) {
                 // No weekday estimate when the provider calendar is unavailable.
