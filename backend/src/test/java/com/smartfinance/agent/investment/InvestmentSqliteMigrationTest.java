@@ -52,8 +52,11 @@ class InvestmentSqliteMigrationTest {
             statement.executeUpdate("INSERT INTO investment_product(product_type,market,code,name,currency) "
                     + "VALUES ('STOCK','NASDAQ','EXISTING_FIXTURE','Existing product before upgrade','USD')");
         }
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("9");
+        var pending=flyway.info().pending();
+        assertThat(pending).isNotEmpty();
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(pending.length);
+        assertThat(flyway.info().current().getVersion()).isEqualTo(pending[pending.length-1].getVersion());
+        assertThat(flyway.info().pending()).isEmpty();
         String longName = "Long official security name ".repeat(8);
         try (var connection = DriverManager.getConnection(url, user, password);
              var insert = connection.prepareStatement("INSERT INTO investment_product(product_type,market,code,name,currency) "

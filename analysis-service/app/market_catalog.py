@@ -412,7 +412,8 @@ def daily_history(code: str, market: str, product_type: str,
             if frame.empty:
                 empty_response = True
                 continue
-            records = [record for record in _frame_to_quotes(frame, code, market, source["name"])
+            records = [record for record in _frame_to_quotes(frame, code, market, source["name"],
+                       source_function=source["function"], adjust_type=adjust_type)
                        if start_date <= record.data_date <= end_date]
             if records:
                 return records

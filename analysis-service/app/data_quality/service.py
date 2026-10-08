@@ -62,7 +62,7 @@ class DataQualityService:
         manifests: list[DataQualityManifest] = []
         rows_by_version: dict[str, list[dict[str, Any]]] = {}
         for batch in batches:
-            manifest = store.write(batch.to_snapshot_rows(), batch.snapshot_context(start_date, end_date))
+            manifest = store.write(batch.to_snapshot_rows(config.schema_version), batch.snapshot_context(start_date, end_date))
             manifest = store.read_manifest(manifest.dataset_version)
             manifests.append(manifest)
             rows_by_version[manifest.dataset_version] = store.read(manifest.dataset_version)

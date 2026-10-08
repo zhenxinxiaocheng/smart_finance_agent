@@ -1,6 +1,7 @@
 package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.smartfinance.agent.investment.domain.FundClassificationPolicy;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
@@ -30,7 +31,7 @@ import java.util.Set;
  *   MarketCatalog / UserPosition
  *     → 本服务（区间决策 + 质量校验 + 落库 + 覆盖标记）
  *       → InvestmentDataQualityService.resolve  （Provider + Normalize + Quality）
- *         → InvestmentSyncWorker.persistDailyQuotes （Persistence）
+ *         → ProductDailyQuoteService.persistDailyQuotes （Persistence）
  *           → product_daily_quote
  * </pre>
  *
@@ -71,7 +72,7 @@ public class InvestmentHistoryPreparationService {
     private final InvestmentProductMapper productMapper;
     private final ProductDailyQuoteMapper quoteMapper;
     private final InvestmentDataQualityService dataQualityService;
-    private final InvestmentSyncWorker syncWorker;
+    private final ProductDailyQuoteService quoteService;
     private final FundClassificationService classificationService;
     private final AnalysisServiceClient analysisClient;
     private final Clock clock;
@@ -91,11 +92,11 @@ public class InvestmentHistoryPreparationService {
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker,
+            ProductDailyQuoteService quoteService,
             FundClassificationService classificationService,
             AnalysisServiceClient analysisClient,
             PlatformTransactionManager transactionManager) {
-        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService, analysisClient,
+        this(productMapper, quoteMapper, dataQualityService, quoteService, classificationService, analysisClient,
                 Clock.system(RUNTIME_ZONE), new TransactionTemplate(transactionManager));
     }
 
@@ -103,11 +104,11 @@ public class InvestmentHistoryPreparationService {
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker,
+            ProductDailyQuoteService quoteService,
             FundClassificationService classificationService,
             AnalysisServiceClient analysisClient,
             Clock clock) {
-        this(productMapper, quoteMapper, dataQualityService, syncWorker, classificationService, analysisClient,
+        this(productMapper, quoteMapper, dataQualityService, quoteService, classificationService, analysisClient,
                 clock, transactionTemplate(null));
     }
 
@@ -120,7 +121,7 @@ public class InvestmentHistoryPreparationService {
             InvestmentProductMapper productMapper,
             ProductDailyQuoteMapper quoteMapper,
             InvestmentDataQualityService dataQualityService,
-            InvestmentSyncWorker syncWorker,
+            ProductDailyQuoteService quoteService,
             FundClassificationService classificationService,
             AnalysisServiceClient analysisClient,
             Clock clock,
@@ -128,7 +129,7 @@ public class InvestmentHistoryPreparationService {
         this.productMapper = productMapper;
         this.quoteMapper = quoteMapper;
         this.dataQualityService = dataQualityService;
-        this.syncWorker = syncWorker;
+        this.quoteService = quoteService;
         this.classificationService = classificationService;
         this.analysisClient = analysisClient;
         this.clock = clock;
@@ -248,7 +249,7 @@ public class InvestmentHistoryPreparationService {
                     requestedEnd = later(requestedEnd,anchor.getTradeDate());
                     fullBackfill = true;
                     primary = fetch(product, requestedStart, requestedEnd, adjustType, useQuality);
-                    Set<LocalDate> refreshed=recordDates(primary.response());
+                    Set<LocalDate> refreshed=recordDates(primary.response(),primary.adjustType());
                     for(var existing:quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
                             .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType)))
                         if(!refreshed.contains(existing.getTradeDate()))
@@ -285,8 +286,8 @@ public class InvestmentHistoryPreparationService {
                 throw new QualityBlockedException();
             }
             // Every research date must have an executable raw price before either series is written.
-            Set<LocalDate> rawDates = recordDates(raw.response());
-            if (!rawDates.containsAll(recordDates(primary.response()))) {
+            Set<LocalDate> rawDates = recordDates(raw.response(),raw.adjustType());
+            if (!rawDates.containsAll(recordDates(primary.response(),primary.adjustType()))) {
                 throw new IllegalStateException("原始价格未覆盖研究价格日期，等待补齐后重试");
             }
             series.add(raw);
@@ -304,7 +305,7 @@ public class InvestmentHistoryPreparationService {
                 : Boolean.TRUE.equals(product.getHistoryCoverageComplete());
         write(writeTransaction, () -> {
             for (PreparedSeries item : series) {
-                syncWorker.persistDailyQuotes(product, item.response(), item.adjustType());
+                quoteService.persistDailyQuotes(product, item.response(), item.adjustType());
             }
             product.setHistoryStartDate(
                     earlier(product.getHistoryStartDate(), sampleStart));
@@ -364,7 +365,7 @@ public class InvestmentHistoryPreparationService {
         if (records.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回新记录");
         Map<String, Object> response = new java.util.LinkedHashMap<>(series.response());
         response.put("records", records);
-        Set<LocalDate> dates = recordDates(response);
+        Set<LocalDate> dates = recordDates(response,series.adjustType());
         return new PreparedSeries(series.adjustType(), response, series.evaluation(),
                 dates.stream().min(LocalDate::compareTo).orElseThrow(), dates.stream().max(LocalDate::compareTo).orElseThrow());
     }
@@ -375,7 +376,7 @@ public class InvestmentHistoryPreparationService {
                 .filter(row->!LocalDate.parse(String.valueOf(row.get("data_date")).substring(0,10)).isAfter(end)).toList();
         if(records.isEmpty())throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回新记录");
         Map<String,Object> response=new java.util.LinkedHashMap<>(series.response());response.put("records",records);
-        Set<LocalDate> dates=recordDates(response);
+        Set<LocalDate> dates=recordDates(response,series.adjustType());
         return new PreparedSeries(series.adjustType(),response,series.evaluation(),
                 dates.stream().min(LocalDate::compareTo).orElseThrow(),dates.stream().max(LocalDate::compareTo).orElseThrow());
     }
@@ -397,7 +398,7 @@ public class InvestmentHistoryPreparationService {
             if(start.isBefore(first)||observed.isAfter(last))return null;
             Set<LocalDate> expected=new java.util.HashSet<>();
             for(LocalDate date:calendar)if(!date.isBefore(start)&&!date.isAfter(observed))expected.add(date);
-            if(expected.isEmpty()||series.stream().anyMatch(item->!recordDates(item.response()).containsAll(expected)))return null;
+            if(expected.isEmpty()||series.stream().anyMatch(item->!recordDates(item.response(),item.adjustType()).containsAll(expected)))return null;
             boolean closedTail=!end.isAfter(last)&&calendar.stream().noneMatch(date->date.isAfter(observed)&&!date.isAfter(end));
             return closedTail ? end : observed;
         } catch(RuntimeException unavailable) {
@@ -410,6 +411,11 @@ public class InvestmentHistoryPreparationService {
         return mainlandExchangeProduct(product)||"CN_INDEX".equals(product.getMarket())
                 ||(fund(product)&&aShareCalendarFundCategories.contains(product.getFundCategory()==null?"":product.getFundCategory()));
     }
+    /** Pending classification may enter the existing job; calendar receipts still require a known supported category. */
+    public boolean supportsDemandPreparation(InvestmentProduct product) {
+        return domesticCalendarProduct(product) || (fund(product) && "FUND_CN".equals(product.getMarket())
+                && !FundClassificationPolicy.known(product.getFundCategory()));
+    }
     private InvestmentProduct classifyDemandFund(InvestmentProduct product) {
         try{return classificationService.enrichIfMissing(product);}
         catch(RuntimeException unavailable){log.debug("基金分类暂未取得，仍保留可获取的净值 {}",product.getId(),unavailable);return product;}
@@ -421,7 +427,7 @@ public class InvestmentHistoryPreparationService {
                 ? dataQualityService.resolve(product, start, end, adjustType, true) : null;
         Map<String, Object> response = evaluation == null
                 ? analysisClient.marketDailyQuotes(product, start, end, adjustType) : evaluation.response();
-        Set<LocalDate> dates = recordDates(response);
+        Set<LocalDate> dates = recordDates(response,adjustType);
         if (dates.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录");
         if (fund(product) && hasInvalidFundReturns(response)) {
             throw new IllegalStateException("基金历史缺少有效累计收益，保留已有数据并等待重试");
@@ -451,6 +457,11 @@ public class InvestmentHistoryPreparationService {
 
     @SuppressWarnings("unchecked")
     static Set<LocalDate> recordDates(Map<String, Object> response) {
+        return recordDates(response,"NONE");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<LocalDate> recordDates(Map<String, Object> response,String adjustType) {
         if (response == null || !(response.get("records") instanceof List<?>)) {
             throw new IllegalStateException("日线响应缺少records");
         }
@@ -458,7 +469,9 @@ public class InvestmentHistoryPreparationService {
         for (Map<String, Object> row : (List<Map<String, Object>>) response.get("records")) {
             LocalDate day = LocalDate.parse(String.valueOf(row.get("data_date")).substring(0, 10));
             Object close = row.get("close") == null ? row.get("nav") : row.get("close");
-            if (close == null || new BigDecimal(String.valueOf(close)).signum() <= 0 || !dates.add(day)) {
+            if (close == null) throw new IllegalStateException("日线存在无效价格或重复日期");
+            BigDecimal price=new BigDecimal(String.valueOf(close));
+            if ((!"QFQ".equals(adjustType) && price.signum() <= 0) || !dates.add(day)) {
                 throw new IllegalStateException("日线存在无效价格或重复日期");
             }
         }

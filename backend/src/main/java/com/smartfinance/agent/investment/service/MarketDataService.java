@@ -1,5 +1,8 @@
 package com.smartfinance.agent.investment.service;
 
+import com.smartfinance.agent.investment.entity.ProductDailyQuote;
+import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,8 +23,11 @@ import java.util.Set;
 @Service
 public class MarketDataService {
     private static final Set<String> ADJUST_TYPES = Set.of("NONE", "QFQ", "HFQ");
+    private static final int MAX_SERIES_PRODUCTS = 100;
+    private static final int SUMMARY_QUERY_BATCH_SIZE = 500;
     private final JdbcTemplate db;
     private final AnalysisServiceClient analysis;
+    private final ProductDailyQuoteMapper quoteMapper;
     private InvestmentResearchDataService research;
     private InvestmentProductNameService productNames;
     @Autowired public void setProductNames(InvestmentProductNameService productNames) { this.productNames = productNames; }
@@ -50,9 +56,10 @@ public class MarketDataService {
         catch (IllegalArgumentException error) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "研究读取参数无效"); }
     }
 
-    public MarketDataService(JdbcTemplate db, AnalysisServiceClient analysis) {
+    public MarketDataService(JdbcTemplate db, AnalysisServiceClient analysis, ProductDailyQuoteMapper quoteMapper) {
         this.db = db;
         this.analysis = analysis;
+        this.quoteMapper = quoteMapper;
     }
 
     public Map<String, Object> products(String search, String market, String marketGroup, String assetType,
@@ -199,24 +206,110 @@ public class MarketDataService {
         return result;
     }
 
+    public Map<Long, List<ProductDailyQuote>> readDailyQuotes(List<Long> productIds,
+                    LocalDate startDate, LocalDate endDate, Set<String> adjustTypes) {
+        List<Long> ids = quoteProductIds(productIds);
+        if (ids.isEmpty()) return Map.of();
+        if (ids.size() > MAX_SERIES_PRODUCTS || endDate == null
+                || startDate != null && startDate.isAfter(endDate)) bad("日线查询范围无效");
+        if (adjustTypes == null || adjustTypes.isEmpty()) bad("复权类型无效");
+        Set<String> adjustments = new java.util.LinkedHashSet<>();
+        for (String value : adjustTypes) {
+            if (value == null) bad("复权类型无效");
+            adjustments.add(adjustment(value));
+        }
+        Map<Long, List<ProductDailyQuote>> result = new LinkedHashMap<>();
+        ids.forEach(id -> result.put(id, new ArrayList<>()));
+        for (ProductDailyQuote quote : quoteMapper.selectSeries(ids, startDate, endDate, adjustments)) {
+            result.get(quote.getProductId()).add(quote);
+        }
+        return result;
+    }
+
+    public Map<Long, Map<String, Object>> getQuoteSummaries(List<Long> productIds) {
+        List<Long> ids = quoteProductIds(productIds);
+        Map<Long, Map<String, Object>> result = new LinkedHashMap<>();
+        for (Long id : ids) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("history_start_date", null);
+            empty.put("history_end_date", null);
+            empty.put("observations", 0L);
+            result.put(id, empty);
+        }
+        for (int start = 0; start < ids.size(); start += SUMMARY_QUERY_BATCH_SIZE) {
+            List<Long> batch = ids.subList(start, Math.min(start + SUMMARY_QUERY_BATCH_SIZE, ids.size()));
+            String marks = String.join(",", Collections.nCopies(batch.size(), "?"));
+            for (Map<String, Object> row : db.queryForList(
+                    "SELECT product_id,MIN(trade_date) AS history_start_date,MAX(trade_date) AS history_end_date,"
+                            + "COUNT(*) AS observations FROM product_daily_quote WHERE adjust_type='NONE' AND product_id IN ("
+                            + marks + ") GROUP BY product_id", batch.toArray())) {
+                long id = ((Number) row.remove("product_id")).longValue();
+                result.put(id, row);
+            }
+        }
+        return result;
+    }
+
+    public List<LocalDate> commonObservedDates(Map<Long, String> researchAdjustments,
+                    Set<Long> fundProductIds, LocalDate endDate) {
+        if (researchAdjustments == null || researchAdjustments.isEmpty() || endDate == null
+                || fundProductIds == null) bad("共同日期查询范围无效");
+        List<Long> ids = quoteProductIds(new ArrayList<>(researchAdjustments.keySet()));
+        if (ids.size() > MAX_SERIES_PRODUCTS || !researchAdjustments.keySet().containsAll(fundProductIds)) {
+            bad("共同日期查询范围无效");
+        }
+        StringBuilder basis = new StringBuilder("CASE raw.product_id ");
+        List<Object> args = new ArrayList<>();
+        for (Long id : ids) {
+            String value = researchAdjustments.get(id);
+            if (value == null) bad("复权类型无效");
+            basis.append("WHEN ? THEN ? ");
+            args.add(id); args.add(adjustment(value));
+        }
+        basis.append("END");
+        String marks = String.join(",", Collections.nCopies(ids.size(), "?"));
+        args.addAll(ids); args.add(endDate);
+        String validResearch = "research.close_price>0";
+        if (!fundProductIds.isEmpty()) {
+            validResearch = "CASE WHEN raw.product_id IN ("
+                    + String.join(",", Collections.nCopies(fundProductIds.size(), "?"))
+                    + ") THEN research.total_return_index ELSE research.close_price END>0";
+            args.addAll(fundProductIds);
+        }
+        args.add(ids.size());
+        return db.query("SELECT raw.trade_date FROM product_daily_quote raw "
+                + "JOIN product_daily_quote research ON research.product_id=raw.product_id "
+                + "AND research.trade_date=raw.trade_date AND research.adjust_type=" + basis
+                + " WHERE raw.product_id IN (" + marks + ") AND raw.adjust_type='NONE' "
+                + "AND raw.trade_date<=? AND raw.close_price>0 AND " + validResearch
+                + " GROUP BY raw.trade_date HAVING COUNT(DISTINCT raw.product_id)=? ORDER BY raw.trade_date DESC",
+                args.toArray(), (row, index) -> LocalDate.parse(row.getString(1)));
+    }
+
+    private static List<Long> quoteProductIds(List<Long> productIds) {
+        if (productIds == null || productIds.stream().anyMatch(id -> id == null || id <= 0)) bad("行情产品ID无效");
+        return productIds.stream().distinct().toList();
+    }
+
     public Map<Long, List<Map<String, Object>>> getDailySeries(List<Long> productIds,
                     LocalDate startDate, LocalDate endDate, String adjustType) {
-        if (productIds == null || productIds.isEmpty() || productIds.size() > 100
+        if (productIds == null || productIds.isEmpty() || productIds.size() > MAX_SERIES_PRODUCTS
                 || startDate == null || endDate == null || startDate.isAfter(endDate)) bad("日线查询范围无效");
-        String adjust = adjustment(adjustType);
-        String marks = String.join(",", Collections.nCopies(productIds.size(), "?"));
-        List<Object> args = new ArrayList<>(productIds);
-        args.add(startDate); args.add(endDate); args.add(adjust);
         Map<Long, List<Map<String, Object>>> result = new LinkedHashMap<>();
-        productIds.forEach(id -> result.put(id, new ArrayList<>()));
-        for (Map<String, Object> row : db.queryForList(
-                "SELECT product_id,trade_date,open_price,high_price,low_price,close_price,previous_close,"
-                        + "volume,amount,total_return_index,source,adjust_type FROM product_daily_quote WHERE product_id IN ("
-                        + marks + ") AND trade_date>=? AND trade_date<=? AND adjust_type=? "
-                        + "ORDER BY product_id,trade_date", args.toArray())) {
-            long id = ((Number) row.get("product_id")).longValue();
-            result.get(id).add(camel(row));
-        }
+        readDailyQuotes(productIds, startDate, endDate, Set.of(adjustment(adjustType))).forEach((id, quotes) -> {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (ProductDailyQuote quote : quotes) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("productId", quote.getProductId()); row.put("tradeDate", quote.getTradeDate().toString());
+                row.put("openPrice", quote.getOpenPrice()); row.put("highPrice", quote.getHighPrice());
+                row.put("lowPrice", quote.getLowPrice()); row.put("closePrice", quote.getClosePrice());
+                row.put("previousClose", quote.getPreviousClose()); row.put("volume", quote.getVolume());
+                row.put("amount", quote.getAmount()); row.put("totalReturnIndex", quote.getTotalReturnIndex());
+                row.put("source", quote.getSource()); row.put("adjustType", quote.getAdjustType());
+                rows.add(row);
+            }
+            result.put(id, rows);
+        });
         return result;
     }
 

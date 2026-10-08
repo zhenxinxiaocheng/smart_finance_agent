@@ -110,6 +110,7 @@ class StockQualityThresholds(StrictContract):
     corporate_action_evidence_return_ratio: Ratio = Field(alias="corporateActionEvidenceReturnRatio")
     extreme_volume_multiplier: PositiveCount = Field(alias="extremeVolumeMultiplier")
     require_adjustment_factor: StrictBool = Field(default=True, alias="requireAdjustmentFactor")
+    allow_signed_qfq: StrictBool = Field(default=False, alias="allowSignedQfq")
 
 
 class FundQualityThresholds(StrictContract):

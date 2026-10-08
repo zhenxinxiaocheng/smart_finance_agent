@@ -210,10 +210,14 @@ class DataQualityEngine:
     def _positive_values(self, manifest: DataQualityManifest, records: tuple[Record, ...]) -> DataQualityIssue:
         affected: list[date] = []
         invalid_fields: list[str] = []
+        signed_qfq = self._signed_qfq(manifest)
+        expected = ({"finiteQfqPrices": True, "positiveVolumeUnlessSuspended": True}
+                    if signed_qfq else {"minimumExclusive": "0"})
         for row in records:
             if manifest.product_type is ProductType.STOCK:
+                valid_price = _is_finite_decimal if signed_qfq else _is_positive
                 row_invalid = [field for field in ("open", "high", "low", "close")
-                               if not _is_positive(row.get(field))]
+                               if not valid_price(row.get(field))]
                 volume = row.get("volume")
                 suspended_zero = row.get("trading_status") == "SUSPENDED" and _is_zero(volume)
                 if not _is_positive(volume) and not suspended_zero:
@@ -227,11 +231,19 @@ class DataQualityEngine:
                     affected.append(day)
         if invalid_fields:
             return self._issue("COMMON_POSITIVE_VALUES", IssueOutcome.FAIL,
-                               "product numeric values must be positive",
-                               observed={"invalidValueCount": len(invalid_fields)}, expected={"minimumExclusive": "0"},
+                               "invalid numeric values for the declared adjustment" if signed_qfq else "product numeric values must be positive",
+                               observed={"invalidValueCount": len(invalid_fields)}, expected=expected,
                                affected_dates=affected)
-        return self._issue("COMMON_POSITIVE_VALUES", IssueOutcome.PASS, "product numeric values are positive",
-                           observed={"recordCount": len(records)}, expected={"minimumExclusive": "0"})
+        return self._issue("COMMON_POSITIVE_VALUES", IssueOutcome.PASS,
+                           "numeric values match the declared adjustment" if signed_qfq else "product numeric values are positive",
+                           observed={"recordCount": len(records)}, expected=expected)
+
+    def _signed_qfq(self, manifest: DataQualityManifest) -> bool:
+        return (self._config.stock.allow_signed_qfq and manifest.product_type is ProductType.STOCK
+                and manifest.adjust_type is AdjustType.QFQ)
+
+    def _nonpositive_qfq(self, manifest: DataQualityManifest, records: tuple[Record, ...]) -> bool:
+        return self._signed_qfq(manifest) and any(not _is_positive(row.get("close")) for row in records)
 
     def _manifest_integrity(self, integrity_verified: bool) -> DataQualityIssue:
         outcome = IssueOutcome.PASS if integrity_verified else IssueOutcome.FAIL
@@ -325,6 +337,9 @@ class DataQualityEngine:
                            expected={"maximumMissingRatio": str(maximum_ratio)}, affected_dates=missing)
 
     def _stock_extreme_returns(self, manifest: DataQualityManifest, records: tuple[Record, ...]) -> DataQualityIssue:
+        if self._nonpositive_qfq(manifest, records):
+            return self._issue("STOCK_EXTREME_RETURN", IssueOutcome.NOT_APPLICABLE,
+                               "nonpositive QFQ levels cannot verify percentage returns")
         if self._config.evidence_aware_rules and manifest.adjust_type is not AdjustType.NONE and any(
             not _is_positive(row.get("adjustment_factor")) for row in records
         ):
@@ -358,6 +373,9 @@ class DataQualityEngine:
 
     def _corporate_action_evidence(self, manifest: DataQualityManifest,
                                    records: tuple[Record, ...]) -> DataQualityIssue:
+        if self._nonpositive_qfq(manifest, records):
+            return self._issue("STOCK_CORPORATE_ACTION_EVIDENCE", IssueOutcome.NOT_APPLICABLE,
+                               "nonpositive QFQ levels cannot verify corporate-action return ratios")
         if self._config.evidence_aware_rules and manifest.adjust_type is not AdjustType.NONE and any(
             not _is_positive(row.get("adjustment_factor")) for row in records
         ) and not any(_nonblank(row.get("corporate_action_reference")) for row in records):
@@ -422,6 +440,9 @@ class DataQualityEngine:
         if secondary is None:
             return self._issue(code, IssueOutcome.NOT_APPLICABLE, "secondary-source batch was not supplied",
                                observed={"secondaryBatch": False}, expected={"secondaryBatch": True})
+        if self._nonpositive_qfq(manifest, records + secondary):
+            return self._issue(code, IssueOutcome.NOT_APPLICABLE,
+                               "nonpositive QFQ levels cannot verify relative price deviations")
         identity = ("product_code", "product_type", "market", "frequency")
         expected_identity = (manifest.code, manifest.product_type.value, manifest.market, manifest.frequency)
         if any(tuple(row.get(field) for field in identity) != expected_identity for row in secondary):

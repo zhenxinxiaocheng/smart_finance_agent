@@ -155,12 +155,15 @@ class NormalizedQuote:
     adapter_version: str
     fetched_at: datetime
     total_return_index: Decimal | None = None
+    amount: Decimal | None = None
+    turnover_rate: Decimal | None = None
+    trading_status: str | None = None
 
     def json_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["data_date"] = self.data_date.isoformat()
         value["fetched_at"] = self.fetched_at.isoformat()
-        for key in ("open", "high", "low", "close", "volume", "total_return_index"):
+        for key in ("open", "high", "low", "close", "volume", "total_return_index", "amount", "turnover_rate"):
             value[key] = None if value[key] is None else str(value[key])
         return value
 
@@ -225,7 +228,9 @@ class ProviderBatch:
                 if value is not None and (isinstance(value, bool) or not isinstance(value, Decimal) or not value.is_finite()):
                     raise ValueError(f"record {field_name} must be a finite decimal")
 
-    def to_snapshot_rows(self) -> list[dict[str, Any]]:
+    def to_snapshot_rows(self, schema_version: str = "market-data-schema-v1") -> list[dict[str, Any]]:
+        if schema_version not in {"market-data-schema-v1", "market-data-schema-v2"}:
+            raise ValueError("unsupported snapshot schema_version")
         rows: list[dict[str, Any]] = []
         for record in self.records:
             is_fund = self.product_type is ProductType.MUTUAL_FUND
@@ -245,7 +250,7 @@ class ProviderBatch:
                 "close": None if is_fund else record.close,
                 "volume": None if is_fund else record.volume,
                 "nav": record.close if is_fund else None,
-                "trading_status": None,
+                "trading_status": record.trading_status,
                 # Keep UNIT_NAV unchanged; the factor carries reinvested returns.
                 "adjustment_factor": ((record.total_return_index / record.close).quantize(Decimal("0.0000000001"))
                                       if is_fund and record.total_return_index is not None else None),
@@ -253,6 +258,8 @@ class ProviderBatch:
                 "nav_type": "UNIT_NAV" if is_fund else None,
                 "estimated": False if is_fund else None,
             })
+            if schema_version == "market-data-schema-v2":
+                rows[-1].update(amount=record.amount, turnover_rate=record.turnover_rate)
         return rows
 
     def snapshot_context(self, start_date: date, end_date: date) -> DataSnapshotContext:
@@ -277,13 +284,17 @@ def normalize_quote(
     trade_date: str | date,
     raw: dict[str, Any],
     provider: str,
-    adapter_version: str = "1",
+    adapter_version: str | None = None,
     fetched_at: datetime | None = None,
+    adjust_type: AdjustType | str = AdjustType.NONE,
 ) -> NormalizedQuote:
     data_date = trade_date if isinstance(trade_date, date) else date.fromisoformat(str(trade_date))
     close = _decimal(raw.get("close"))
-    if close is None or close <= 0:
-        raise ValueError("close must be a positive decimal")
+    if close is None or not close.is_finite() or (_adjust_type(adjust_type) is not AdjustType.QFQ and close <= 0):
+        raise ValueError("close must be a finite decimal and positive for unadjusted prices")
+    status = raw.get("trading_status")
+    if status is None and raw.get("tradestatus") is not None:
+        status = {"0": "SUSPENDED", "1": "TRADING"}.get(str(raw["tradestatus"]))
     return NormalizedQuote(
         product_code=product_code.strip().upper(),
         market=market.strip().upper(),
@@ -294,9 +305,12 @@ def normalize_quote(
         close=close,
         volume=_decimal(raw.get("volume")),
         provider=provider.strip().upper(),
-        adapter_version=adapter_version,
+        adapter_version=adapter_version if adapter_version is not None else str(STRATEGY.value("providers.history_adapter_version")),
         fetched_at=fetched_at if fetched_at is not None else datetime.now(timezone.utc),
         total_return_index=_decimal(raw.get("total_return_index")),
+        amount=_decimal(raw.get("amount")),
+        turnover_rate=_decimal(raw.get("turnover_rate", raw.get("turn"))),
+        trading_status=status,
     )
 
 
@@ -836,7 +850,8 @@ def resolve_product_metadata(
                 end_date=date.today().strftime("%Y%m%d"),
                 adjust="qfq",
             )
-            quotes = _frame_to_quotes(frame, normalized_code, market, "AKSHARE")
+            quotes = _frame_to_quotes(frame, normalized_code, market, "AKSHARE",
+                                      source_function="stock_zh_a_hist", adjust_type=AdjustType.QFQ)
         except Exception as exc:
             quotes = []
             warnings.append(f"AKSHARE 行情获取失败: {exc}")
@@ -1167,7 +1182,7 @@ class TencentHistoryProvider(MarketDataProvider):
                     "volume": str(Decimal(str(volume)) * Decimal(
                         _provider_integer("tencent_volume_lot_size"))),
                 },
-                provider=self.name,
+                provider=self.name, adjust_type=AdjustType.QFQ,
             ))
         return [item for item in records if start_date <= item.data_date <= end_date]
 
@@ -1199,7 +1214,7 @@ class TencentHistoryProvider(MarketDataProvider):
                 raw={"open": open_price, "high": high_price, "low": low_price,
                      "close": close_price,
                      "volume": str(Decimal(str(volume)) * Decimal(_provider_integer("tencent_volume_lot_size")))},
-                provider=self.name, fetched_at=fetched_at,
+                provider=self.name, fetched_at=fetched_at, adjust_type=adjustment,
             ))
         return _provider_batch(product, code, market, adjustment, self.name, fetched_at,
                                [item for item in records if start_date <= item.data_date <= end_date])
@@ -1219,9 +1234,12 @@ class AkshareProvider(MarketDataProvider):
         market = market.upper()
         start = start_date.strftime("%Y%m%d")
         end = end_date.strftime("%Y%m%d")
+        source_function = None
         if product_type.upper() == "ETF" and market in {"SSE", "SZSE", "BSE"}:
+            source_function = "fund_etf_hist_em"
             frame = _ak_frame(ak, "fund_etf_hist_em", symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
         elif market in {"SSE", "SZSE", "BSE"}:
+            source_function = "stock_zh_a_hist"
             frame = _ak_frame(ak, "stock_zh_a_hist",
                 symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq",
                 timeout=_provider_integer("history_http_timeout_seconds"),
@@ -1232,7 +1250,8 @@ class AkshareProvider(MarketDataProvider):
             frame = _ak_frame(ak, "stock_us_hist", symbol=akshare_us_symbol(code, market), period="daily", start_date=start, end_date=end, adjust="")
         else:
             frame = _ak_frame(ak, "fund_open_fund_info_em", symbol=code, indicator="单位净值走势")
-        return [item for item in _frame_to_quotes(frame, code, market, self.name)
+        return [item for item in _frame_to_quotes(frame, code, market, self.name, source_function=source_function,
+                adjust_type=AdjustType.QFQ if source_function else AdjustType.NONE)
                 if start_date <= item.data_date <= end_date]
 
     def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
@@ -1264,7 +1283,8 @@ class AkshareProvider(MarketDataProvider):
                                          start_date=start, end_date=end, adjust=argument)
             else:
                 raise ProviderUnavailable(f"AKSHARE: unsupported market: {market}")
-        records = [item for item in _frame_to_quotes(frame, code, market, self.name, fetched_at=fetched_at)
+        records = [item for item in _frame_to_quotes(frame, code, market, self.name, fetched_at=fetched_at,
+                   source_function="stock_zh_a_hist" if market in {"SSE", "SZSE", "BSE"} else None, adjust_type=adjustment)
                    if start_date <= item.data_date <= end_date]
         return _provider_batch(product, code, market, adjustment, self.name, fetched_at, records)
 
@@ -1286,13 +1306,14 @@ class BaostockProvider(MarketDataProvider):
             raise ProviderUnavailable(login.error_msg)
         try:
             result = bs.query_history_k_data_plus(
-                f"{prefix}.{code}", "date,open,high,low,close,volume",
+                f"{prefix}.{code}", "date,open,high,low,close,volume,amount,turn,tradestatus",
                 start_date=start_date.isoformat(), end_date=end_date.isoformat(), frequency="d", adjustflag="2"
             )
             rows = []
             while result.error_code == "0" and result.next():
                 rows.append(dict(zip(result.fields, result.get_row_data())))
-            return [normalize_quote(product_code=code, market=market, trade_date=row["date"], raw=row, provider=self.name)
+            return [normalize_quote(product_code=code, market=market, trade_date=row["date"], raw=row,
+                                    provider=self.name, adjust_type=AdjustType.QFQ)
                     for row in rows]
         finally:
             bs.logout()
@@ -1315,7 +1336,7 @@ class BaostockProvider(MarketDataProvider):
             raise ProviderUnavailable(login.error_msg)
         try:
             result = bs.query_history_k_data_plus(
-                f"{prefix}.{code}", "date,open,high,low,close,volume",
+                f"{prefix}.{code}", "date,open,high,low,close,volume,amount,turn,tradestatus",
                 start_date=start_date.isoformat(), end_date=end_date.isoformat(), frequency="d",
                 adjustflag={AdjustType.HFQ: "1", AdjustType.QFQ: "2", AdjustType.NONE: "3"}[adjustment],
             )
@@ -1323,7 +1344,7 @@ class BaostockProvider(MarketDataProvider):
             while result.error_code == "0" and result.next():
                 rows.append(dict(zip(result.fields, result.get_row_data())))
             records = [_quality_quote(code=code, market=market, trade_date=row["date"], raw=row,
-                                      provider=self.name, fetched_at=fetched_at) for row in rows]
+                                      provider=self.name, fetched_at=fetched_at, adjust_type=adjustment) for row in rows]
             return _provider_batch(product, code, market, adjustment, self.name, fetched_at, records)
         finally:
             bs.logout()
@@ -1353,7 +1374,8 @@ class TushareProvider(MarketDataProvider):
             frame = pro.us_daily(ts_code=code, start_date=kwargs["start_date"], end_date=kwargs["end_date"])
         else:
             frame = pro.daily(**kwargs)
-        return _frame_to_quotes(frame, code, market, self.name)
+        return _frame_to_quotes(frame, code, market, self.name,
+                                source_function="tushare_daily" if market in {"SSE","SZSE","BSE"} else None)
 
     def daily_quality_batch(self, code: str, market: str, product_type: ProductType | str,
                             start_date: date, end_date: date, adjust_type: AdjustType | str,
@@ -1383,7 +1405,8 @@ class TushareProvider(MarketDataProvider):
             frame = pro.us_daily(ts_code=code, start_date=kwargs["start_date"], end_date=kwargs["end_date"])
         else:
             frame = pro.daily(**kwargs)
-        records = _frame_to_quotes(frame, code, normalized_market, self.name, fetched_at=fetched_at)
+        records = _frame_to_quotes(frame, code, normalized_market, self.name, fetched_at=fetched_at,
+                                  source_function="tushare_daily" if normalized_market in {"SSE","SZSE","BSE"} else None)
         return _provider_batch(product, code, normalized_market, AdjustType.NONE, self.name, fetched_at, records)
 
 
@@ -2002,11 +2025,13 @@ def akshare_us_symbol(code: str, market: str) -> str:
 
 
 def _frame_to_quotes(frame: Any, code: str, market: str, provider: str,
-                     fetched_at: datetime | None = None) -> list[NormalizedQuote]:
+                     fetched_at: datetime | None = None, *, source_function: str | None = None,
+                     adjust_type: AdjustType | str = AdjustType.NONE) -> list[NormalizedQuote]:
     aliases = {
         "日期": "date", "净值日期": "date", "trade_date": "date",
         "开盘": "open", "最高": "high", "最低": "low", "收盘": "close",
         "单位净值": "close", "nav": "close", "成交量": "volume", "vol": "volume",
+        "成交额": "amount", "换手率": "turnover_rate", "turnover": "turnover_rate",
     }
     records: list[NormalizedQuote] = []
     originals = frame.to_dict("records")
@@ -2014,16 +2039,24 @@ def _frame_to_quotes(frame: Any, code: str, market: str, provider: str,
         originals = attach_fund_returns(originals)
     for original in originals:
         row = {aliases.get(str(key), str(key).lower()): value for key, value in original.items()}
+        # AKShare 1.18.40's six-column TX frame calls lot volume "amount".
+        # Only this exact function/shape uses the legacy contract; other amounts stay untouched.
+        if source_function == "stock_zh_a_hist_tx" and set(row) == {"date", "open", "close", "high", "low", "amount"}:
+            row["volume"] = _multiply(_decimal(row.pop("amount")), Decimal(_provider_integer("tencent_volume_lot_size")))
+        units = STRATEGY.value("providers.history_units").get(source_function, {})
+        for field in ("volume", "amount", "turnover_rate"):
+            if field in row:
+                row[field] = _multiply(_decimal(row[field]), Decimal(str(units.get(field, 1))))
         records.append(normalize_quote(product_code=code, market=market, trade_date=str(row["date"])[:10],
-                                       raw=row, provider=provider, fetched_at=fetched_at))
+                                       raw=row, provider=provider, fetched_at=fetched_at, adjust_type=adjust_type))
     return records
 
 
 def _quality_quote(*, code: str, market: str, trade_date: str | date, raw: dict[str, Any],
-                   provider: str, fetched_at: datetime) -> NormalizedQuote:
+                   provider: str, fetched_at: datetime, adjust_type: AdjustType = AdjustType.NONE) -> NormalizedQuote:
     return normalize_quote(
         product_code=code, market=market, trade_date=trade_date, raw=raw,
-        provider=provider, fetched_at=fetched_at,
+        provider=provider, fetched_at=fetched_at, adjust_type=adjust_type,
     )
 
 
@@ -2040,7 +2073,7 @@ def _provider_batch(product_type: ProductType, code: str, market: str, adjust_ty
         frequency="DAY",
         adjust_type=adjust_type,
         provider=provider,
-        adapter_version="1",
+        adapter_version=str(STRATEGY.value("providers.history_adapter_version")),
         fetched_at=fetched_at,
         records=values,
         warnings=(),

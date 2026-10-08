@@ -181,6 +181,20 @@ class DataQualityRuleEngineTest(unittest.TestCase):
         for code in RULE_CODES[-4:]:
             self.assertEqual(IssueOutcome.NOT_APPLICABLE, self._issue(report, code).outcome)
 
+    def test_signed_qfq_is_an_acquisition_level_without_percentage_return_evidence(self):
+        config=self.config.model_copy(update={'stock':self.config.stock.model_copy(
+            update={'allow_signed_qfq':True,'require_adjustment_factor':False})})
+        rows=[self._stock_row(date(2026,1,2),'-314',high=Decimal('-313'),low=Decimal('-315')),
+              self._stock_row(date(2026,1,5),'10')]
+        report=self._evaluate(rows,ProductType.STOCK,tuple(row['data_date'] for row in rows),config=config,
+                              secondary_records=[dict(row,provider='secondary') for row in rows])
+        self.assertEqual(IssueOutcome.PASS,self._issue(report,'COMMON_POSITIVE_VALUES').outcome)
+        self.assertEqual(IssueOutcome.PASS,self._issue(report,'STOCK_OHLC_RELATION').outcome)
+        for code in ('STOCK_EXTREME_RETURN','STOCK_CORPORATE_ACTION_EVIDENCE','STOCK_CROSS_SOURCE_RECONCILIATION'):
+            self.assertEqual(IssueOutcome.NOT_APPLICABLE,self._issue(report,code).outcome)
+        legacy=self._evaluate(rows,ProductType.STOCK,tuple(row['data_date'] for row in rows))
+        self.assertEqual(IssueOutcome.FAIL,self._issue(legacy,'COMMON_POSITIVE_VALUES').outcome)
+
     def test_valid_fund_emits_stock_rules_as_not_applicable(self):
         records = [self._fund_row(date(2026, 1, 2)), self._fund_row(date(2026, 1, 5), "1.01")]
 

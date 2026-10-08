@@ -1,6 +1,7 @@
 {
   "version": "technical-strategy-v5",
   "providers": {
+    "history_adapter_version": "2",
     "realtime_http_timeout_seconds": 5,
     "history_http_timeout_seconds": 8,
     "history_call_timeout_seconds": 30,
@@ -12,7 +13,14 @@
     "tencent_history_max_records": 1000,
     "tencent_history_chunk_calendar_days": 720,
     "tencent_volume_lot_size": 100,
-    "tencent_amount_unit": 10000
+    "tencent_amount_unit": 10000,
+    "history_units": {
+      "tushare_daily": {"volume": 100, "amount": 1000},
+      "stock_zh_a_hist": {"volume": 100},
+      "fund_etf_hist_em": {"volume": 100},
+      "stock_zh_a_daily": {"turnover_rate": 100},
+      "stock_zh_a_hist_tx": {"turnover_rate": 100}
+    }
   },
   "score": {
     "minimum": 0,

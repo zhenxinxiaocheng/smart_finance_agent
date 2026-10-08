@@ -53,12 +53,14 @@ import static org.mockito.Mockito.when;
 @Import({com.smartfinance.agent.investment.service.InvestmentAssetServiceImpl.class,
         com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
         com.smartfinance.agent.investment.service.FundClassificationService.class,
-        com.smartfinance.agent.investment.service.InvestmentSyncWorker.class,
+        com.smartfinance.agent.investment.service.ProductDailyQuoteService.class,
         com.smartfinance.agent.investment.service.InvestmentHorizonServiceImpl.class,
         com.smartfinance.agent.investment.config.InvestmentHorizonProperties.class})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 class InvestmentAssetServiceIntegrationTest {
     @MockBean private com.smartfinance.agent.investment.service.MarketDataDemandService demand;
+    @org.springframework.boot.test.mock.mockito.SpyBean
+    private com.smartfinance.agent.investment.service.InvestmentDataJobService dataJobService;
 
     @Autowired
     private InvestmentAssetService assetService;
@@ -583,6 +585,48 @@ class InvestmentAssetServiceIntegrationTest {
                 .filter(job -> assetId.equals(job.getAssetId()))
                 .findFirst()
                 .orElse(null);
+    }
+
+    @Test
+    void displayQuoteAndAnalysisQueueRollBackTogetherWhenEnqueueFails() {
+        var asset = createFundWithDisplayQuote();
+        org.mockito.Mockito.clearInvocations(dataJobService);
+        org.mockito.Mockito.doThrow(new IllegalStateException("enqueue failed"))
+                .when(dataJobService).queueAnalysisForProduct(asset.getProductId());
+        when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "010736"))
+                .thenReturn(resolvedFundProduct("010736","fund","FUND_CN","1.50","指数型-股票","CN_EQUITY_INDEX_FUND"));
+
+        var refreshed = assetService.refresh(7L, asset.getId(), true);
+
+        assertThat(refreshed.getSyncStatus()).isEqualTo("FAILED");
+        assertThat(refreshed.getSyncError()).contains("enqueue failed");
+        assertThat(jdbc.queryForObject("SELECT close_price FROM product_daily_quote WHERE product_id=? AND trade_date='2026-07-22' AND adjust_type='NONE'",
+                BigDecimal.class,asset.getProductId())).isEqualByComparingTo("1.23");
+        verify(dataJobService,times(1)).queueAnalysisForProduct(asset.getProductId());
+    }
+
+    @Test
+    void completedFundReturnSnapshotDoesNotQueueAnalysis() {
+        var asset = createFundWithDisplayQuote();
+        jdbc.update("UPDATE product_daily_quote SET total_return_index=1.40 WHERE product_id=?",asset.getProductId());
+        org.mockito.Mockito.clearInvocations(dataJobService);
+        when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "010736"))
+                .thenReturn(resolvedFundProduct("010736","fund","FUND_CN","1.50","指数型-股票","CN_EQUITY_INDEX_FUND"));
+
+        assertThat(assetService.refresh(7L,asset.getId(),true).getSyncStatus()).isEqualTo("SUCCESS");
+        assertThat(jdbc.queryForObject("SELECT close_price FROM product_daily_quote WHERE product_id=? AND adjust_type='NONE'",
+                BigDecimal.class,asset.getProductId())).isEqualByComparingTo("1.23");
+        verify(dataJobService,org.mockito.Mockito.never()).queueAnalysisForProduct(any());
+    }
+
+    private com.smartfinance.agent.investment.dto.InvestmentAssetView createFundWithDisplayQuote() {
+        when(analysisServiceClient.resolveProduct("MUTUAL_FUND", "010736"))
+                .thenReturn(resolvedFundProduct("010736","fund","FUND_CN","1.23","指数型-股票","CN_EQUITY_INDEX_FUND"));
+        var asset = assetService.create(7L,createRequest("MUTUAL_FUND","010736"));
+        verify(dataJobService,org.mockito.Mockito.atLeastOnce()).queueAnalysisForProduct(asset.getProductId());
+        assertThat(jdbc.queryForObject("SELECT total_return_index FROM product_daily_quote WHERE product_id=? AND adjust_type='NONE'",
+                BigDecimal.class,asset.getProductId())).isNull();
+        return asset;
     }
 
     private static InvestmentAssetCreateRequest createRequest(String type, String code) {

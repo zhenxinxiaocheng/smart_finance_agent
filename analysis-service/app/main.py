@@ -513,12 +513,15 @@ def technical_analysis(request: TechnicalAnalysisRequest):
         if request.market_snapshot is not None
         else None
     )
-    return analyze_technical(
-        request.records,
-        request.horizons,
-        request.primary_horizon,
-        market_snapshot,
-    )
+    try:
+        return analyze_technical(
+            request.records,
+            request.horizons,
+            request.primary_horizon,
+            market_snapshot,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400,detail=str(error)) from error
 
 
 @app.post("/internal/v1/analysis/fundamental", dependencies=[Depends(internal_auth)])
@@ -538,15 +541,21 @@ def fundamental_analysis(request: FundamentalAnalysisRequest):
 
 @app.post("/internal/v1/analysis/fund", dependencies=[Depends(internal_auth)])
 def fund_analysis(request: FundAnalysisRequest):
-    return analyze_fund(
-        request.records,
-        request.horizons,
-        request.primary_horizon,
-        request.fund_category,
-        request.benchmark,
-    )
+    try:
+        return analyze_fund(
+            request.records,
+            request.horizons,
+            request.primary_horizon,
+            request.fund_category,
+            request.benchmark,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400,detail=str(error)) from error
 
 
 @app.post("/internal/v1/analysis/backtest", dependencies=[Depends(internal_auth)])
 def backtest_analysis(request: BacktestRequest):
-    return backtest_horizons(request.records, request.horizons)
+    try:
+        return backtest_horizons(request.records, request.horizons)
+    except ValueError as error:
+        raise HTTPException(status_code=400,detail=str(error)) from error

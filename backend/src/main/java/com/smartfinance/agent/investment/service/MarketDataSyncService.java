@@ -416,7 +416,8 @@ public class MarketDataSyncService {
         if (ACTIVE_JOBS.contains(value(row, "status"))) return false;
         if ("FAILED".equals(value(row, "status")) && !explicitRepair
                 && timestamp(row.get("updated_at")).plusHours(Math.max(1, failedRetryHours)).isAfter(now)) return false;
-        if (Set.of("NO_NEW_DATA","UNVERIFIED_WINDOW").contains(value(row,"last_error")) && !explicitRepair
+        String lastError = value(row, "last_error");
+        if (("NO_NEW_DATA".equals(lastError) || "UNVERIFIED_WINDOW".equals(lastError)) && !explicitRepair
                 && timestamp(row.get("updated_at")).plusHours(Math.max(1,failedRetryHours)).isAfter(now)) return false;
         boolean resume = "FAILED".equals(value(row, "status"))
                 && !"NO_HISTORY_DATA".equals(value(row, "last_error"))

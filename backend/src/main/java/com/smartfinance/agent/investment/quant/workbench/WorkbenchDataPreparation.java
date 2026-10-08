@@ -1,6 +1,8 @@
 package com.smartfinance.agent.investment.quant.workbench;
 
 import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
+import com.smartfinance.agent.investment.entity.InvestmentProduct;
+import com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService;
 import com.smartfinance.agent.investment.service.MarketDataDemandService;
 import com.smartfinance.agent.investment.service.MarketDataRequirementService;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,15 +17,18 @@ public class WorkbenchDataPreparation {
     private final MarketDataDemandService demand;
     private final WorkbenchAnalysisClient client;
     private final InvestmentHorizonProperties properties;
+    private final InvestmentHistoryPreparationService history;
     @Value("${market-data.demand.preparation-check-ms:15000}") private long checkMs=15000;
     @Value("${market-data.demand.preparation-timeout:24h}") private Duration timeout=Duration.ofHours(24);
 
     public WorkbenchDataPreparation(MarketDataRequirementService requirements,MarketDataDemandService demand,
-                                    WorkbenchAnalysisClient client,InvestmentHorizonProperties properties) {
-        this.requirements=requirements;this.demand=demand;this.client=client;this.properties=properties;
+                                    WorkbenchAnalysisClient client,InvestmentHorizonProperties properties,
+                                    InvestmentHistoryPreparationService history) {
+        this.requirements=requirements;this.demand=demand;this.client=client;this.properties=properties;this.history=history;
     }
     public void initialize(Map<String,Object> request,List<Map<String,Object>> members) {
         require(!members.isEmpty()&&members.size()<=100,"当前任务需包含1至100个标的");
+        validatePreparation(members);
         var dependency=client.dataRequirements(map(request.get("config")));
         require(List.of("PRICE").equals(dependency.get("datasets")),"当前数据依赖尚不支持自动准备");
         request.put("config",dependency.get("config"));
@@ -34,6 +39,21 @@ public class WorkbenchDataPreparation {
         request.put("preparedMembers",members);
         request.put("dataPreparation",true);
         request.put("assets",List.of());
+    }
+    private void validatePreparation(Collection<Map<String,Object>> members) {
+        for(var member:members) {
+            require(DOMESTIC_MARKETS.contains(str(member.get("market")).toUpperCase(Locale.ROOT)),"首版仅支持国内市场标的");
+            var product=new InvestmentProduct();
+            product.setProductType(str(member.get("product_type")));product.setMarket(str(member.get("market")));
+            product.setFundCategory(str(member.get("fund_category")));
+            require(history.supportsDemandPreparation(product),"该标的当前不支持完整区间准备，请先核对基金分类或调整资产池");
+        }
+    }
+    private void validateCurrentMembers(WorkbenchService service,List<Map<String,Object>> members) {
+        var ids=members.stream().map(row->((Number)row.get("product_id")).longValue()).distinct().toList();
+        var current=service.productsById(ids);
+        require(current.size()==ids.size(),"资产池中有市场证券已不存在");
+        validatePreparation(current.values());
     }
     @SuppressWarnings("unchecked")
     List<Map<String,Object>> members(Map<String,Object> request) {
@@ -55,6 +75,7 @@ public class WorkbenchDataPreparation {
     public boolean prepare(WorkbenchService service,Map<String,Object> task,String claim) {
         var request=service.decode(task.get("request_json"));
         if(!Boolean.TRUE.equals(request.get("dataPreparation")))return true;
+        validateCurrentMembers(service,members(request));
         long user=((Number)task.get("user_id")).longValue();String identity=str(task.get("id"));
         if(Instant.parse(str(task.get("created_at"))).plus(timeout).isBefore(Instant.now()))
             throw new WorkbenchWorker.EngineFailure("DATA_PREPARATION_TIMEOUT","数据准备暂未完成，可稍后重试");
@@ -101,6 +122,7 @@ public class WorkbenchDataPreparation {
         if(!last.isBlank()&&LocalDate.parse(last).isBefore(start))start=LocalDate.parse(last);
         request.put("dataStartDate",start.toString());
         var selected=deploymentMembers(request,state,str(deployment.get("status")));
+        validateCurrentMembers(service,selected);
         Boolean owned=service.tx.execute(tx->{
             if(service.db.update("UPDATE quant_v2_deployment SET claim_token=claim_token WHERE id=? AND claim_token=? AND revision=? AND lease_until>?",
                     identity,claim,deployment.get("revision"),System.currentTimeMillis())!=1)return false;

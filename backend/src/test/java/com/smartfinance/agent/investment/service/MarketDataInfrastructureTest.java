@@ -83,6 +83,45 @@ class MarketDataInfrastructureTest {
     }
 
     @Test
+    void quoteSummaryKeepsMissingProductsAndUsesBoundedQueries() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency) VALUES(91,'STOCK','SSE','TEST','stock','CNY')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) VALUES "
+                + "(91,'2026-01-05','NONE',10,'TEST'),(91,'2026-01-06','NONE',11,'TEST'),(91,'2026-01-04','QFQ',5,'TEST')");
+        var observed=spy(db);
+        var reader=new MarketDataService(observed,analysis,mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
+        var ids=java.util.stream.LongStream.rangeClosed(1,501).boxed().toList();
+        var summaries=reader.getQuoteSummaries(ids);
+        assertThat(summaries).hasSize(501);
+        assertThat(summaries.get(91L)).containsEntry("history_start_date","2026-01-05").containsEntry("history_end_date","2026-01-06");
+        assertThat(((Number)summaries.get(91L).get("observations")).longValue()).isEqualTo(2);
+        assertThat(summaries.get(501L)).containsEntry("history_start_date",null).containsEntry("history_end_date",null).containsEntry("observations",0L);
+        verify(observed,times(2)).queryForList(org.mockito.ArgumentMatchers.contains("MIN(trade_date)"),any(Object[].class));
+        org.mockito.Mockito.verifyNoInteractions(analysis);
+    }
+
+    @Test
+    void commonDatesRespectPassedPriceBasisAndValidFundReturns() {
+        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency) VALUES "
+                + "(91,'STOCK','SSE','STOCK','stock','CNY'),(92,'ETF','SSE','ETF','etf','CNY'),(93,'MUTUAL_FUND','FUND_CN','FUND','fund','CNY')");
+        for(int day=5;day<=9;day++) {
+            String date=LocalDate.of(2026,1,day).toString();
+            for(long id:List.of(91L,92L,93L))db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,total_return_index,source) VALUES(?,?,'NONE',10,?,'TEST')",
+                    id,date,id==93 && day!=8?new java.math.BigDecimal("12"):null);
+            if(day!=6)db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) VALUES(91,?,'QFQ',?,'TEST')",date,day==7?0:5);
+        }
+        var reader=new MarketDataService(db,analysis,mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
+        var basis=Map.of(91L,"QFQ",92L,"NONE",93L,"NONE");
+        assertThat(reader.commonObservedDates(basis,java.util.Set.of(93L),LocalDate.of(2026,1,8)))
+                .containsExactly(LocalDate.of(2026,1,5));
+        for(var invalid:List.of(Map.<Long,String>of(),Map.of(0L,"NONE"),Map.of(91L,"BAD")))
+            org.assertj.core.api.Assertions.assertThatThrownBy(()->reader.commonObservedDates(invalid,java.util.Set.of(),LocalDate.of(2026,1,8)))
+                    .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->reader.commonObservedDates(basis,java.util.Set.of(999L),LocalDate.of(2026,1,8)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        org.mockito.Mockito.verifyNoInteractions(analysis);
+    }
+
+    @Test
     void overviewCountsSyncedProductsOnceAcrossDaysAndAdjustments() {
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
                 + "VALUES(91,'STOCK','SSE','600091','股票','CNY','ACTIVE'),"
@@ -98,7 +137,7 @@ class MarketDataInfrastructureTest {
                 + "(93,'2026-01-06','NONE',2,'TEST',?)",
                 today, today.plusHours(12), today, today, today.minusSeconds(1), today.plusDays(1));
 
-        var overview = new MarketDataService(db, analysis).overview();
+        var overview = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).overview();
 
         var stocks = overview.stream().filter(row -> "STOCK".equals(row.get("productType"))).findFirst().orElseThrow();
         var etfs = overview.stream().filter(row -> "ETF".equals(row.get("productType"))).findFirst().orElseThrow();
@@ -117,7 +156,7 @@ class MarketDataInfrastructureTest {
                 + "VALUES(99,'2026-07-17','NONE',10,'TEST')");
         when(analysis.aShareTradingDates(2026)).thenReturn(List.of(LocalDate.of(2026, 7, 17)));
 
-        Map<String, Object> coverage = new MarketDataService(db, analysis).coverage(99L, "NONE");
+        Map<String, Object> coverage = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).coverage(99L, "NONE");
 
         assertThat(coverage).containsEntry("coverageScope", "OBSERVED_RANGE")
                 .containsEntry("coverageStatus", "SAMPLE_COMPLETE")
@@ -131,7 +170,7 @@ class MarketDataInfrastructureTest {
                 + "(992,'MUTUAL_FUND','FUND_CN','010736','易方达基金','CNY','ACTIVE'),"
                 + "(993,'INDEX','US_INDEX','NDX','纳斯达克','USD','ACTIVE'),"
                 + "(994,'ETF','NYSE','SPY','SPDR ETF','USD','ACTIVE')");
-        var result = new MarketDataService(db, analysis).products(null, null, null, "STOCK,FUND", "ACTIVE", 1, 25);
+        var result = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).products(null, null, null, "STOCK,FUND", "ACTIVE", 1, 25);
         assertThat(((Number) result.get("total")).longValue()).isEqualTo(2);
         assertThat((List<Map<String,Object>>) result.get("items"))
                 .extracting(row -> row.get("code")).containsExactlyInAnyOrder("NVDA", "010736");
@@ -145,7 +184,7 @@ class MarketDataInfrastructureTest {
                 Map.of("code", "NVDA", "aliases", List.of("英伟达", "NVIDIA")),
                 Map.of("code", "MISSING", "aliases", List.of("虚构证券"))));
         var names = new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper());
-        var service = new MarketDataService(db, analysis);
+        var service = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
         service.setProductNames(names);
 
         var result = service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25);
@@ -162,7 +201,7 @@ class MarketDataInfrastructureTest {
     void cachedSourceNamesCanBeAppliedAfterCatalogInitialization() {
         when(analysis.marketProductNames("英伟达")).thenReturn(List.of(
                 Map.of("code", "NVDA", "aliases", List.of("英伟达"))));
-        var service = new MarketDataService(db, analysis);
+        var service = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
         service.setProductNames(new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper()));
         assertThat(service.products("英伟达", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(0L);
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
@@ -176,7 +215,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
                 + "VALUES(991,'STOCK','SSE','600001','测试股票','CNY','ACTIVE')");
         when(analysis.marketProductNames("测试")).thenThrow(new IllegalStateException("provider unavailable"));
-        var service = new MarketDataService(db, analysis);
+        var service = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
         service.setProductNames(new InvestmentProductNameService(db, analysis, new com.fasterxml.jackson.databind.ObjectMapper()));
         assertThat(service.products("测试", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(1L);
         assertThat(service.products("测试", null, null, "STOCK,FUND", "ACTIVE", 1, 25).get("total")).isEqualTo(1L);
@@ -275,6 +314,56 @@ class MarketDataInfrastructureTest {
     }
 
     @Test
+    void successfulJobsWithNullErrorsCanQueueNewDemandWithoutBlockingLaterProducts() {
+        var requirements = new MarketDataRequirementService(db);
+        sync.setRequirements(requirements);
+        var end = requirements.now().toLocalDate().minusDays(2);
+        var start = end.minusDays(10);
+        var markets = Map.of(991L, "NASDAQ", 992L, "NYSE", 993L, "FUND_CN");
+        for (long id : List.of(991L, 992L, 993L)) {
+            workerProduct(id, id == 993L ? "MUTUAL_FUND" : "STOCK", markets.get(id));
+            requirements.save(1, "DETAIL", String.valueOf(id), id, "PRICE", "REQUIRED",
+                    start, end, false, requirements.now().plusHours(1));
+            db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,last_error,updated_at) "
+                    + "VALUES(?,'BACKFILL','SUCCEEDED',?,?,?,NULL,?)", id, start.minusDays(1), end.minusDays(1), end.minusDays(1), requirements.now());
+        }
+
+        assertThat(sync.reconcileDemand()).isEqualTo(3);
+
+        for (long id : List.of(991L, 992L, 993L)) {
+            assertThat(db.queryForMap("SELECT status,start_date,target_date,checkpoint_date,last_error FROM market_data_job WHERE product_id=?", id))
+                    .containsEntry("status", "QUEUED").containsEntry("start_date", start.toString())
+                    .containsEntry("target_date", end.toString()).containsEntry("checkpoint_date", null).containsEntry("last_error", null);
+        }
+    }
+
+    @Test
+    void noNewDataAndUnverifiedWindowKeepCooldownButExplicitRepairCanRetry() {
+        var requirements = new MarketDataRequirementService(db);
+        sync.setRequirements(requirements);
+        var end = requirements.now().toLocalDate().minusDays(2);
+        var start = end.minusDays(10);
+        var errors = Map.of(994L, "NO_NEW_DATA", 995L, "UNVERIFIED_WINDOW");
+        for (long id : List.of(994L, 995L)) {
+            workerProduct(id, "STOCK", "NASDAQ");
+            db.update("UPDATE investment_product SET code=? WHERE id=?", "TEST" + id, id);
+            requirements.save(1, "DETAIL", String.valueOf(id), id, "PRICE", "REQUIRED",
+                    start, end, false, requirements.now().plusHours(1));
+            db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,last_error,updated_at) "
+                    + "VALUES(?,'BACKFILL','SUCCEEDED',?,?,?,?)", id, start, end, errors.get(id), requirements.now());
+        }
+
+        assertThat(sync.reconcileDemand()).isZero();
+        for (long id : List.of(994L, 995L)) {
+            assertThat(db.queryForMap("SELECT status,last_error FROM market_data_job WHERE product_id=?", id))
+                    .containsEntry("status", "SUCCEEDED").containsEntry("last_error", errors.get(id));
+            sync.queueBackfill(id);
+            assertThat(db.queryForMap("SELECT status,last_error FROM market_data_job WHERE product_id=?", id))
+                    .containsEntry("status", "QUEUED").containsEntry("last_error", null);
+        }
+    }
+
+    @Test
     void unverifiedHistoryDoesNotAcknowledgeDemandOrSpinOnTheSameChunk() {
         sync.setFullLibraryEnabled(false);var requirements=new MarketDataRequirementService(db);sync.setRequirements(requirements);
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status,catalog_market) VALUES(903,'STOCK','SSE','600903','test','CNY','ACTIVE','CN_A')");
@@ -309,7 +398,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,updated_at) VALUES(906,'BACKFILL','QUEUED','2020-01-01','2026-10-01','2026-10-01'),(907,'BACKFILL','QUEUED','2020-01-01','2026-10-01','2026-10-01')");
         var requirements=new MarketDataRequirementService(db);
         requirements.save(1,"DETAIL","907",907,"PRICE","REQUIRED",LocalDate.now().minusDays(10),LocalDate.now(),false,requirements.now().plusHours(1));
-        var market=new MarketDataService(db,analysis);
+        var market=new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
         var group=market.overview().get(0);
         assertThat(group).containsEntry("activeJobs",1L).containsEntry("pausedJobs",1L);
         assertThat(market.jobs().stream().filter(row->"600906".equals(row.get("code"))).findFirst().orElseThrow()).containsEntry("scopeState","PAUSED_BY_SCOPE");

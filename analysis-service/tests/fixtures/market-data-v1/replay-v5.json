@@ -1,0 +1,303 @@
+{
+  "datasetVersion": "0eb57a6f2ab62d24c8e6d596d81d72a2fdb7a827bae3988932e27b7c80513f33",
+  "manifest": {
+    "adapterVersion": "v2",
+    "adjustType": "QFQ",
+    "code": "000001",
+    "contentHash": "e037c0978cc051982793d92515ac51a8daede85fdab3f3dceb86c7b10556e9de",
+    "datasetVersion": "0eb57a6f2ab62d24c8e6d596d81d72a2fdb7a827bae3988932e27b7c80513f33",
+    "fetchedAt": "2026-02-01T12:30:00Z",
+    "frequency": "DAY",
+    "market": "CN",
+    "parquetFileHash": "257ee42da51366a3a9cf04dbf652a5b6874a1d9579cf418139bc8ec850c0a73c",
+    "productType": "STOCK",
+    "provider": "tencent",
+    "recordCount": 2,
+    "requestedEndDate": "2026-01-31",
+    "requestedStartDate": "2026-01-01",
+    "sampleEndDate": "2026-01-03",
+    "sampleStartDate": "2026-01-02",
+    "schemaVersion": "market-data-schema-v1",
+    "storageFormat": "PARQUET",
+    "storageUri": "snapshots/0e/0eb57a6f2ab62d24c8e6d596d81d72a2fdb7a827bae3988932e27b7c80513f33.parquet"
+  },
+  "qualityReport": {
+    "datasetVersion": "0eb57a6f2ab62d24c8e6d596d81d72a2fdb7a827bae3988932e27b7c80513f33",
+    "decision": "ALLOW",
+    "enforcementMode": "ENFORCE",
+    "evaluatedAt": "2026-02-01T12:30:00Z",
+    "evidenceEligibility": null,
+    "issues": [
+      {
+        "affectedDates": [],
+        "expected": {
+          "missingCount": 0
+        },
+        "message": "all required canonical fields are present",
+        "observed": {
+          "recordCount": 2
+        },
+        "outcome": "PASS",
+        "ruleCode": "COMMON_REQUIRED_FIELDS",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "uniqueAndOrdered": true
+        },
+        "message": "record dates are unique and strictly ascending",
+        "observed": {
+          "recordCount": 2
+        },
+        "outcome": "PASS",
+        "ruleCode": "COMMON_UNIQUE_ORDERED_DATES",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "minimumExclusive": "0"
+        },
+        "message": "product numeric values are positive",
+        "observed": {
+          "recordCount": 2
+        },
+        "outcome": "PASS",
+        "ruleCode": "COMMON_POSITIVE_VALUES",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "integrityVerified": true
+        },
+        "message": "snapshot manifest integrity was verified",
+        "observed": {
+          "integrityVerified": true
+        },
+        "outcome": "PASS",
+        "ruleCode": "MANIFEST_CONTENT_INTEGRITY",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "relation": "low <= open,close <= high"
+        },
+        "message": "OHLC relations are valid",
+        "observed": {
+          "invalidBarCount": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_OHLC_RELATION",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "adjustType": "QFQ",
+          "positiveFactorRequired": false
+        },
+        "message": "adjustment data is consistent",
+        "observed": {
+          "adjustType": "QFQ",
+          "invalidRecordCount": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_ADJUSTMENT_CONSISTENCY",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "maximumTradingDays": 1
+        },
+        "message": "stock data is current for the supplied calendar",
+        "observed": {
+          "latestDate": "2026-01-03",
+          "staleTradingDays": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_STALENESS",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "maximumMissingRatio": "0.02"
+        },
+        "message": "date coverage is within the configured ratio",
+        "observed": {
+          "expectedDateCount": 2,
+          "missingDateCount": 0,
+          "missingRatio": "0"
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_UNEXPLAINED_TRADING_GAPS",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "maximumAbsoluteReturnRatio": "0.20"
+        },
+        "message": "stock returns are within the configured ratio",
+        "observed": {
+          "extremeReturnCount": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_EXTREME_RETURN",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "maximumMultiplier": 20
+        },
+        "message": "stock volumes are within the configured multiplier",
+        "observed": {
+          "extremeVolumeCount": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_EXTREME_VOLUME",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "evidenceReturnRatio": "0.30"
+        },
+        "message": "corporate-action evidence requirements are satisfied",
+        "observed": {
+          "missingEvidenceCount": 0
+        },
+        "outcome": "PASS",
+        "ruleCode": "STOCK_CORPORATE_ACTION_EVIDENCE",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "secondaryBatch": true
+        },
+        "message": "secondary market-data source is unavailable",
+        "observed": {
+          "secondaryBatch": false
+        },
+        "outcome": "FAIL",
+        "ruleCode": "STOCK_SECONDARY_SOURCE_AVAILABILITY",
+        "severity": "INFO"
+      },
+      {
+        "affectedDates": [],
+        "expected": {
+          "secondaryBatch": true
+        },
+        "message": "secondary-source batch was not supplied",
+        "observed": {
+          "secondaryBatch": false
+        },
+        "outcome": "NOT_APPLICABLE",
+        "ruleCode": "STOCK_CROSS_SOURCE_RECONCILIATION",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": null,
+        "message": "FUND_NAV_TYPE_CONSISTENCY does not apply to STOCK",
+        "observed": null,
+        "outcome": "NOT_APPLICABLE",
+        "ruleCode": "FUND_NAV_TYPE_CONSISTENCY",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": null,
+        "message": "FUND_ESTIMATED_NAV_FORBIDDEN does not apply to STOCK",
+        "observed": null,
+        "outcome": "NOT_APPLICABLE",
+        "ruleCode": "FUND_ESTIMATED_NAV_FORBIDDEN",
+        "severity": "CRITICAL"
+      },
+      {
+        "affectedDates": [],
+        "expected": null,
+        "message": "FUND_STALENESS does not apply to STOCK",
+        "observed": null,
+        "outcome": "NOT_APPLICABLE",
+        "ruleCode": "FUND_STALENESS",
+        "severity": "WARNING"
+      },
+      {
+        "affectedDates": [],
+        "expected": null,
+        "message": "FUND_UNEXPLAINED_NAV_GAPS does not apply to STOCK",
+        "observed": null,
+        "outcome": "NOT_APPLICABLE",
+        "ruleCode": "FUND_UNEXPLAINED_NAV_GAPS",
+        "severity": "WARNING"
+      }
+    ],
+    "qualityRuleSetVersion": "data-quality-v5",
+    "status": "PASS",
+    "summary": {
+      "blockingWarningGroups": 0,
+      "criticalFailures": 0,
+      "failedRules": 0,
+      "notApplicableRules": 5,
+      "passedRules": 11,
+      "totalRules": 17,
+      "warningFailures": 0
+    }
+  },
+  "records": [
+    {
+      "adapter_version": "v2",
+      "adjust_type": "QFQ",
+      "adjustment_factor": "1",
+      "close": "10.1",
+      "corporate_action_reference": null,
+      "data_date": "2026-01-02",
+      "estimated": false,
+      "frequency": "DAY",
+      "high": "10.3",
+      "low": "9.9",
+      "market": "CN",
+      "nav": null,
+      "nav_type": null,
+      "observed_at": "2026-01-02T07:00:00Z",
+      "open": "10",
+      "product_code": "000001",
+      "product_type": "STOCK",
+      "provider": "tencent",
+      "trading_status": "NORMAL",
+      "volume": "1000"
+    },
+    {
+      "adapter_version": "v2",
+      "adjust_type": "QFQ",
+      "adjustment_factor": "1",
+      "close": "10.3",
+      "corporate_action_reference": null,
+      "data_date": "2026-01-03",
+      "estimated": false,
+      "frequency": "DAY",
+      "high": "10.5",
+      "low": "10",
+      "market": "CN",
+      "nav": null,
+      "nav_type": null,
+      "observed_at": "2026-01-03T07:00:00Z",
+      "open": "10.1",
+      "product_code": "000001",
+      "product_type": "STOCK",
+      "provider": "tencent",
+      "trading_status": "NORMAL",
+      "volume": "1200"
+    }
+  ],
+  "secondaryDatasetVersions": [],
+  "secondaryManifests": [],
+  "warnings": []
+}

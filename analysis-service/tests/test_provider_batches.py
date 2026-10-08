@@ -5,7 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
@@ -83,6 +83,21 @@ def batch(*, provider="TENCENT", adjust_type=AdjustType.QFQ, records=None,
 
 
 class ProviderBatchContractTest(unittest.TestCase):
+    def test_v2_snapshot_rows_keep_liquidity_while_v1_fields_stay_unchanged(self):
+        source = replace(quote(), amount=Decimal("194300000"), turnover_rate=Decimal("3.79"))
+        value = batch(records=[source])
+        legacy = value.to_snapshot_rows()
+        current = value.to_snapshot_rows("market-data-schema-v2")
+
+        self.assertNotIn("amount", legacy[0])
+        self.assertNotIn("turnover_rate", legacy[0])
+        self.assertEqual(Decimal("194300000"), current[0]["amount"])
+        self.assertEqual(Decimal("3.79"), current[0]["turnover_rate"])
+        self.assertEqual(legacy[0], {key: value for key, value in current[0].items()
+                                    if key not in {"amount", "turnover_rate"}})
+        with self.assertRaises(ValueError):
+            value.to_snapshot_rows("market-data-schema-v999")
+
     def test_stock_batch_maps_exact_snapshot_rows_without_mutating_quotes_or_fabricating_factor(self):
         source = quote()
         original = source
@@ -145,6 +160,86 @@ class ProviderBatchContractTest(unittest.TestCase):
 
 
 class ProviderAdjustmentContractTest(unittest.TestCase):
+    def test_akshare_quality_batch_uses_the_same_eastmoney_units_as_market_history(self):
+        class Source:
+            def stock_zh_a_hist(self, **kwargs):
+                return FakeFrame([{'日期': '2026-07-17', '开盘': '10', '最高': '11', '最低': '9',
+                                   '收盘': '10', '成交量': '100', '成交额': '100000', '换手率': '1'}])
+        with patch.dict(sys.modules, {'akshare': Source()}):
+            value = AkshareProvider().daily_quality_batch('000001', 'SZSE', 'STOCK', date(2026, 7, 17),
+                                                        date(2026, 7, 17), AdjustType.NONE, FETCHED_AT)
+        self.assertEqual(Decimal('10000'), value.records[0].volume)
+        self.assertEqual('100000', value.records[0].json_dict()['amount'])
+
+    def test_legacy_akshare_daily_entry_uses_the_same_source_units(self):
+        from types import SimpleNamespace
+        frame=FakeFrame([{'日期':'2026-07-17','开盘':10,'最高':11,'最低':9,'收盘':10,
+                          '成交量':100,'成交额':100000,'换手率':1}])
+        fake=SimpleNamespace(stock_zh_a_hist=lambda **kwargs:frame,fund_etf_hist_em=lambda **kwargs:frame)
+        with patch.dict(sys.modules, {'akshare':fake}):
+            for product in ('STOCK','ETF'):
+                row=AkshareProvider().daily_quotes('000001','SZSE',product,date(2026,7,17),date(2026,7,17))[0]
+                self.assertEqual(Decimal('10000'),row.volume)
+                self.assertEqual(Decimal('100000'),row.amount)
+                self.assertEqual(Decimal('1'),row.turnover_rate)
+                self.assertEqual('2',row.adapter_version)
+            value=AkshareProvider().daily_quality_batch('000001','SZSE','STOCK',date(2026,7,17),date(2026,7,17),AdjustType.NONE,FETCHED_AT)
+            self.assertEqual('2',value.adapter_version)
+            self.assertEqual(value.adapter_version,value.records[0].adapter_version)
+
+    def test_legacy_baostock_qfq_accepts_finite_signed_prices(self):
+        from types import SimpleNamespace
+        observed = {"date": "2026-07-17", "open": "-1", "high": "0", "low": "-2", "close": "-1",
+                    "volume": "100", "amount": "1000", "turn": "2", "tradestatus": "1"}
+        calls = []
+
+        def query(symbol, fields, **kwargs):
+            calls.append(kwargs)
+            names = fields.split(",")
+            rows = iter([True, False])
+            return SimpleNamespace(error_code="0", fields=names, next=lambda: next(rows),
+                                   get_row_data=lambda: [observed[name] for name in names])
+
+        provider = SimpleNamespace(login=lambda: SimpleNamespace(error_code="0"), logout=lambda: None,
+                                   query_history_k_data_plus=query)
+        with patch.dict(sys.modules, {"baostock": provider}):
+            result = BaostockProvider().daily_quotes("000001", "SZSE", "STOCK", date(2026, 7, 17), date(2026, 7, 17))
+        self.assertEqual("2", calls[0]["adjustflag"])
+        self.assertEqual(Decimal("-1"), result[0].close)
+        self.assertEqual(Decimal("100"), result[0].volume)
+        self.assertEqual(Decimal("1000"), result[0].amount)
+
+    def test_baostock_requests_and_preserves_explicit_suspension_evidence(self):
+        from types import SimpleNamespace
+        observed = {'date': '2026-07-17', 'open': '10', 'high': '10', 'low': '10', 'close': '10',
+                    'volume': '0', 'amount': '0', 'turn': '', 'tradestatus': '0'}
+        def query(symbol, fields, **kwargs):
+            names = fields.split(',')
+            rows = iter([True, False])
+            return SimpleNamespace(error_code='0', fields=names, next=lambda: next(rows),
+                                   get_row_data=lambda: [observed[name] for name in names])
+        provider = SimpleNamespace(login=lambda: SimpleNamespace(error_code='0'), logout=lambda: None,
+                                   query_history_k_data_plus=query)
+        with patch.dict(sys.modules, {'baostock': provider}):
+            result = BaostockProvider().daily_quality_batch('000001', 'SZSE', 'STOCK', date(2026, 7, 17),
+                                                          date(2026, 7, 17), AdjustType.NONE, FETCHED_AT)
+        self.assertEqual('SUSPENDED', result.to_snapshot_rows()[0]['trading_status'])
+        self.assertEqual(Decimal('0'), result.records[0].amount)
+        self.assertIsNone(result.records[0].turnover_rate)
+
+    def test_tushare_domestic_units_do_not_change_overseas_units(self):
+        from types import SimpleNamespace
+        frame=FakeFrame([{'trade_date':'20260717','open':10,'high':11,'low':9,'close':10,'vol':12,'amount':100}])
+        pro=SimpleNamespace(daily=lambda **kwargs:frame,hk_daily=lambda **kwargs:frame,us_daily=lambda **kwargs:frame)
+        fake=SimpleNamespace(pro_api=lambda token:pro)
+        with patch.dict(sys.modules,{'tushare':fake}),patch.dict('os.environ',{'TUSHARE_TOKEN':'fixture'}):
+            for market,volume,amount in (('SZSE','1200','100000'),('HKEX','12','100'),('NASDAQ','12','100')):
+                provider=TushareProvider()
+                legacy=provider.daily_quotes('000001',market,'STOCK',date(2026,7,17),date(2026,7,17))[0]
+                strict=provider.daily_quality_batch('000001',market,'STOCK',date(2026,7,17),date(2026,7,17),AdjustType.NONE,FETCHED_AT).records[0]
+                for quote in (legacy,strict):
+                    self.assertEqual(Decimal(volume),quote.volume);self.assertEqual(Decimal(amount),quote.amount)
+
     def test_tencent_query_and_payload_key_match_each_declared_adjustment(self):
         for adjust_type, token, payload_key in (
             (AdjustType.QFQ, "qfq", "qfqday"),

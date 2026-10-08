@@ -982,7 +982,7 @@ class InvestmentDataJobWorkerTest {
 
         fixture.service().refresh(7L, 11L);
 
-        verifyNoInteractions(fixture.syncWorker());
+        verifyNoInteractions(fixture.quoteService());
     }
 
     @Test
@@ -1164,7 +1164,7 @@ class InvestmentDataJobWorkerTest {
         InvestmentAnalysisSnapshotMapper snapshotMapper = mock(InvestmentAnalysisSnapshotMapper.class);
         AnalysisServiceClient analysisClient = mock(AnalysisServiceClient.class);
         InvestmentDataQualityService dataQualityService = mock(InvestmentDataQualityService.class);
-        InvestmentSyncWorker syncWorker = mock(InvestmentSyncWorker.class);
+        ProductDailyQuoteService quoteService = mock(ProductDailyQuoteService.class);
         WealthService wealthService = mock(WealthService.class);
         FinancialProfileMapper financialProfileMapper = mock(FinancialProfileMapper.class);
         InvestmentDataJobService jobService = mock(InvestmentDataJobService.class);
@@ -1240,7 +1240,7 @@ class InvestmentDataJobWorkerTest {
 
         InvestmentAnalysisServiceImpl service = new InvestmentAnalysisServiceImpl(
                 assetService, productMapper, quoteMapper, horizonService, horizonProperties,
-                runtimeProperties, snapshotMapper, analysisClient, dataQualityService, syncWorker,
+                runtimeProperties, snapshotMapper, analysisClient, dataQualityService, quoteService,
                 wealthService, financialProfileMapper,
                 new ObjectMapper().findAndRegisterModules(), jobService,
                 warningEngine,
@@ -1249,7 +1249,7 @@ class InvestmentDataJobWorkerTest {
                 service,
                 jobService,
                 analysisClient,
-                syncWorker,
+                quoteService,
                 snapshotMapper,
                 dataQualityService,
                 benchmarkProfileService, detailCache, assetService, assetMapper, quoteMapper, horizonService
@@ -1344,7 +1344,7 @@ class InvestmentDataJobWorkerTest {
     private record ReadOnlyFixture(InvestmentAnalysisServiceImpl service,
                                    InvestmentDataJobService jobService,
                                    AnalysisServiceClient analysisClient,
-                                   InvestmentSyncWorker syncWorker,
+                                   ProductDailyQuoteService quoteService,
                                    InvestmentAnalysisSnapshotMapper snapshotMapper,
                                    InvestmentDataQualityService dataQualityService,
                                    QuantBenchmarkProfileService benchmarkProfileService,

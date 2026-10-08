@@ -34,6 +34,7 @@ _IDENTITY_FIELDS = (
     "product_code", "product_type", "market", "frequency", "adjust_type", "provider", "adapter_version",
 )
 _DECIMAL_FIELDS = ("open", "high", "low", "close", "volume", "nav", "adjustment_factor")
+_LIQUIDITY_FIELDS = ("amount", "turnover_rate")
 _OPTIONAL_STRING_FIELDS = ("trading_status", "corporate_action_reference", "nav_type")
 _FIELDS = (*_IDENTITY_FIELDS, "data_date", "observed_at", *_DECIMAL_FIELDS, *_OPTIONAL_STRING_FIELDS, "estimated")
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
@@ -65,6 +66,14 @@ CANONICAL_SCHEMA = pa.schema([
     ("estimated", pa.bool_()),
 ])
 
+# Keep the v1 schema and canonical rows unchanged so stored hashes remain valid.
+_SCHEMAS = {
+    "market-data-schema-v1": CANONICAL_SCHEMA,
+    "market-data-schema-v2": pa.schema(list(CANONICAL_SCHEMA) + [
+        pa.field(name, pa.decimal128(38, 10)) for name in _LIQUIDITY_FIELDS
+    ]),
+}
+
 
 class SnapshotStore:
     def __init__(self, root: Path, schema_version: str):
@@ -72,12 +81,14 @@ class SnapshotStore:
             raise ValueError("root must be a Path")
         if not isinstance(schema_version, str) or not schema_version.strip():
             raise ValueError("schema_version must be non-blank")
+        if schema_version not in _SCHEMAS:
+            raise ValueError("unsupported snapshot schema_version")
         self.root = root.resolve()
         self.schema_version = schema_version
 
     def write(self, records: list[dict[str, Any]], context: DataSnapshotContext) -> DataQualityManifest:
         rows = self._canonicalize_records(records, context)
-        table = pa.Table.from_pylist(rows, schema=CANONICAL_SCHEMA)
+        table = pa.Table.from_pylist(rows, schema=_SCHEMAS[self.schema_version])
         content_hash = _content_hash(rows)
         dataset_dir = self.root / "snapshots"
         dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -187,19 +198,23 @@ class SnapshotStore:
                     removed += 2
         return removed
 
-    def _canonicalize_records(self, records: list[dict[str, Any]], context: DataSnapshotContext) -> list[dict[str, Any]]:
+    def _canonicalize_records(self, records: list[dict[str, Any]], context: DataSnapshotContext,
+                              schema_version: str | None = None) -> list[dict[str, Any]]:
         if not isinstance(records, list) or not records:
             raise ValueError("records must be a non-empty list")
         if not isinstance(context, DataSnapshotContext):
             raise ValueError("context must be a DataSnapshotContext")
-        rows = [_canonicalize_record(record, context) for record in records]
+        schema = _SCHEMAS[self.schema_version if schema_version is None else schema_version]
+        extra_fields = tuple(schema.names[len(CANONICAL_SCHEMA):])
+        rows = [_canonicalize_record(record, context, extra_fields) for record in records]
         rows.sort(key=lambda row: (row["product_code"], row["market"], row["frequency"], row["adjust_type"], row["data_date"]))
         keys = [(row["product_code"], row["market"], row["frequency"], row["adjust_type"], row["data_date"]) for row in rows]
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate canonical record identity")
         return rows
 
-    def _build_manifest(self, rows: list[dict[str, Any]], context: DataSnapshotContext, content_hash: str, parquet_hash: str) -> DataQualityManifest:
+    def _build_manifest(self, rows: list[dict[str, Any]], context: DataSnapshotContext, content_hash: str,
+                        parquet_hash: str, schema_version: str | None = None) -> DataQualityManifest:
         payload = {
             "productType": context.product_type.value,
             "market": context.market,
@@ -217,7 +232,7 @@ class SnapshotStore:
             "contentHash": content_hash,
             "parquetFileHash": parquet_hash,
             "storageFormat": "PARQUET",
-            "schemaVersion": self.schema_version,
+            "schemaVersion": self.schema_version if schema_version is None else schema_version,
         }
         dataset_version = _sha256_json(payload)
         storage_uri = f"snapshots/{dataset_version[:2]}/{dataset_version}.parquet"
@@ -233,23 +248,27 @@ class SnapshotStore:
         except (OSError, ValueError, ValidationError) as error:
             raise SnapshotIntegrityError("invalid snapshot manifest") from error
         expected_uri = f"snapshots/{dataset_version[:2]}/{dataset_version}.parquet"
-        if manifest.dataset_version != dataset_version or manifest.storage_uri != expected_uri or manifest.schema_version != self.schema_version:
+        if manifest.dataset_version != dataset_version or manifest.storage_uri != expected_uri:
             raise SnapshotIntegrityError("manifest identity does not match snapshot location")
+        schema = _SCHEMAS.get(manifest.schema_version)
+        if schema is None or (self.schema_version == "market-data-schema-v1" and manifest.schema_version != self.schema_version):
+            raise SnapshotIntegrityError("unsupported snapshot schema version")
         if _sha256_file(parquet_path) != manifest.parquet_file_hash:
             raise SnapshotIntegrityError("Parquet file hash mismatch")
         try:
             table = pq.read_table(parquet_path)
         except Exception as error:
             raise SnapshotIntegrityError("unreadable Parquet snapshot") from error
-        if table.schema != CANONICAL_SCHEMA:
+        if table.schema != schema:
             raise SnapshotIntegrityError("unexpected Parquet schema")
         try:
-            rows = self._canonicalize_records(table.to_pylist(), _context_from_manifest(manifest))
+            rows = self._canonicalize_records(table.to_pylist(), _context_from_manifest(manifest), manifest.schema_version)
         except (TypeError, ValueError) as error:
             raise SnapshotIntegrityError("non-canonical Parquet rows") from error
         if _content_hash(rows) != manifest.content_hash:
             raise SnapshotIntegrityError("snapshot content hash mismatch")
-        rebuilt = self._build_manifest(rows, _context_from_manifest(manifest), manifest.content_hash, manifest.parquet_file_hash)
+        rebuilt = self._build_manifest(rows, _context_from_manifest(manifest), manifest.content_hash,
+                                       manifest.parquet_file_hash, manifest.schema_version)
         if rebuilt.model_dump(mode="json", by_alias=True) != manifest.model_dump(mode="json", by_alias=True):
             raise SnapshotIntegrityError("manifest identity hash mismatch")
         return manifest, rows
@@ -327,10 +346,11 @@ class SnapshotStore:
             raise ValueError("dataset_version must be a lowercase SHA-256 hex string")
 
 
-def _canonicalize_record(record: dict[str, Any], context: DataSnapshotContext) -> dict[str, Any]:
+def _canonicalize_record(record: dict[str, Any], context: DataSnapshotContext,
+                         extra_decimal_fields: tuple[str, ...] = ()) -> dict[str, Any]:
     if not isinstance(record, dict):
         raise ValueError("record must be a mapping")
-    unknown = set(record) - set(_FIELDS)
+    unknown = set(record) - set((*_FIELDS, *extra_decimal_fields))
     if unknown:
         raise ValueError("record contains unknown fields")
     missing = (set(_IDENTITY_FIELDS) | {"data_date", "observed_at"}) - set(record)
@@ -366,6 +386,8 @@ def _canonicalize_record(record: dict[str, Any], context: DataSnapshotContext) -
     if estimated is not None and type(estimated) is not bool:
         raise ValueError("estimated must be a boolean when provided")
     row["estimated"] = estimated
+    for field in extra_decimal_fields:
+        row[field] = _parse_decimal(record.get(field), field)
     return row
 
 
@@ -420,8 +442,8 @@ def _api_row(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["data_date"] = row["data_date"].isoformat()
     result["observed_at"] = _utc_iso(row["observed_at"])
-    for field in _DECIMAL_FIELDS:
-        if row[field] is not None:
+    for field in (*_DECIMAL_FIELDS, *_LIQUIDITY_FIELDS):
+        if row.get(field) is not None:
             result[field] = _decimal_text(row[field])
     return result
 

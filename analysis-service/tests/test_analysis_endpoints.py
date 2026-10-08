@@ -27,6 +27,20 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_nonpositive_research_prices_return_controlled_input_errors(self):
+        records=price_records(320);records[160]['close']='-1'
+        requests=(
+            (technical_analysis,TechnicalAnalysisRequest(records=records,horizons={'SHORT':[5,20]},primaryHorizon='SHORT')),
+            (backtest_analysis,BacktestRequest(records=records,horizons={'SHORT':[5,20]})),
+            (fund_analysis,FundAnalysisRequest(records=records,fundCategory='INDEX_FUND')),
+        )
+        for endpoint,request in requests:
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(HTTPException) as error:
+                    endpoint(request)
+                self.assertEqual(400,error.exception.status_code)
+                self.assertIn('非正价格',str(error.exception.detail))
+
     def test_market_empty_window_is_structured_and_transport_failure_is_not_empty(self):
         request = QuoteRequest(code="SPY", market="AMEX", product_type="ETF",
                                start_date="2026-07-17", end_date="2026-07-18", adjust_type="NONE")

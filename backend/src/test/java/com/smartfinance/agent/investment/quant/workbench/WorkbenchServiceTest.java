@@ -37,8 +37,8 @@ class WorkbenchServiceTest {
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
         new ResourceDatabasePopulator(new ClassPathResource("schema-h2.sql")).execute(source);
-        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
-                + "VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN',FALSE)");
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,fund_category,history_coverage_complete) "
+                + "VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN','INDEX_FUND',FALSE)");
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(1,1,1,1,0),(2,2,2,1,0)");
         for (int index = 0; index < 60; index++) {
             db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) "
@@ -47,16 +47,96 @@ class WorkbenchServiceTest {
         }
         tracking = org.mockito.Mockito.mock(WorkbenchTrackingIndex.class);
         service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
-                tracking, null, qualityService());
+                tracking, null, qualityService(), marketData());
+    }
+
+    private com.smartfinance.agent.investment.service.MarketDataService marketData() {
+        return new com.smartfinance.agent.investment.service.MarketDataService(db,
+                org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class),
+                com.smartfinance.agent.investment.service.QuoteMapperTestSupport.create(source));
     }
 
     private Map<String,Object> universe() {
         return service.save(1L, "universes", null,
                 Map.of("name", "基金池", "assetClass", "FUND", "assetIds", List.of(1)));
     }
+    private com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService historyPreparation() {
+        return new com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService(
+                null,null,null,null,null,null,new DataSourceTransactionManager(source));
+    }
+
+    @Test void marketPoolRejectsUnsupportedMarketsBeforeDataPreparation() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'foreign','AAPL','STOCK','NASDAQ')");
+        assertThatThrownBy(() -> service.save(1L,"universes",null,
+                Map.of("name","foreign pool","assetClass","STOCK","productIds",List.of(3))))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("国内市场");
+        assertThatThrownBy(() -> service.members(1L,Map.of("productIds",List.of(3))))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("国内市场");
+    }
+
+    @Test void preparationMembersRetainTheProductClassificationForBothPoolKinds() {
+        db.update("UPDATE investment_product SET fund_category='INDEX_FUND' WHERE id=1");
+        assertThat(service.members(1L,Map.of("productIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
+        assertThat(service.members(1L,Map.of("assetIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"QDII_INDEX_FUND","QDII_FUND"})
+    void unsupportedFundCategoryFailsBeforeCreatingWaitingTask(String category) {
+        db.update("UPDATE investment_product SET fund_category=? WHERE id=1",category);
+        var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
+        var demand=org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.MarketDataDemandService.class);
+        org.mockito.Mockito.when(demand.boundedStart(org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call->call.getArgument(1));
+        var client=org.mockito.Mockito.mock(WorkbenchAnalysisClient.class);
+        org.mockito.Mockito.when(client.dataRequirements(org.mockito.ArgumentMatchers.anyMap()))
+                .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
+        var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
+        properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
+        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
+        var pool=universe();var strategy=strategy((String)pool.get("id"));
+        assertThatThrownBy(() -> service.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),
+                "startDate","2023-01-01","endDate","2023-03-02")))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("完整区间准备");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM quant_v2_task",Integer.class)).isZero();
+        assertThat(requirements.active()).isEmpty();
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings={"UNKNOWN"})
+    void unclassifiedFundCanPrepareAndResumeAfterClassification(String category) {
+        db.update("UPDATE investment_product SET fund_category=? WHERE id=1",category);
+        var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
+        var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
+        properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
+        var demand=new com.smartfinance.agent.investment.service.MarketDataDemandService(db,requirements,null,properties);
+        var client=org.mockito.Mockito.mock(WorkbenchAnalysisClient.class);
+        org.mockito.Mockito.when(client.leaseMillis()).thenReturn(60000L);
+        org.mockito.Mockito.when(client.dataRequirements(org.mockito.ArgumentMatchers.anyMap()))
+                .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
+        org.mockito.Mockito.when(client.execute(org.mockito.ArgumentMatchers.anyMap())).thenReturn(Map.of("status","SUCCEEDED"));
+        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
+        var pool=service.save(1L,"universes",null,Map.of("name","catalog fund","assetClass","FUND","productIds",List.of(1)));
+        var strategy=strategy(pool.get("id").toString());
+        var task=service.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),"startDate","2023-01-01","endDate","2023-03-02"));
+        assertThat(task).containsEntry("stage","DATA_PREPARING");
+        assertThat(requirements.active()).hasSize(1);
+        var worker=new WorkbenchWorker(service,client);
+        worker.tasks();
+        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","QUEUED");
+        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).execute(org.mockito.ArgumentMatchers.anyMap());
+        // The existing market worker classifies the product and issues the calendar receipt.
+        db.update("UPDATE investment_product SET fund_category='INDEX_FUND' WHERE id=1");
+        requirements.recordPrepared(1,"PRICE",LocalDate.of(2022,1,1),LocalDate.of(2023,3,2));
+        db.update("UPDATE quant_v2_task SET preparation_next_check_at=0 WHERE id=?",task.get("id"));
+        worker.tasks();
+        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","SUCCEEDED");
+        org.mockito.Mockito.verify(client).execute(org.mockito.ArgumentMatchers.anyMap());
+    }
+
     private void assertPublishedDeploymentScope(String status,boolean onlyHeld) {
         LocalDate today=LocalDate.now(),published=today.minusDays(1),start=today.minusDays(10);
-        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'未持有基金','unused','MUTUAL_FUND','FUND_CN')");
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,fund_category) VALUES(3,'未持有基金','unused','MUTUAL_FUND','FUND_CN','INDEX_FUND')");
         for(long product:List.of(1L,3L))db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) VALUES(?,?,1.2,1.2,'NONE','TEST')",product,published.toString());
         var selected=List.of(Map.<String,Object>of("id",1,"product_id",1,"code","fixture","name","held","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"),
                 Map.<String,Object>of("id",3,"product_id",3,"code","unused","name","unused","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"));
@@ -68,7 +148,7 @@ class WorkbenchServiceTest {
         var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         var demand=new com.smartfinance.agent.investment.service.MarketDataDemandService(db,requirements,null,properties);
-        var preparation=new WorkbenchDataPreparation(requirements,demand,null,properties);
+        var preparation=new WorkbenchDataPreparation(requirements,demand,null,properties,historyPreparation());
         requirements.save(1,"DEPLOYMENT","deployment",3,"PRICE","REQUIRED",start,today,true,null);
         var deployment=db.queryForMap("SELECT * FROM quant_v2_deployment WHERE id='deployment'");
         assertThat(preparation.prepareDeployment(service,deployment,"claim")).isFalse();
@@ -99,7 +179,9 @@ class WorkbenchServiceTest {
         db.update("UPDATE investment_asset SET deleted=1 WHERE id=42");
         assertThat(requirements.active()).isEmpty();
     }
-    @Test void missingHistoryQueuesPreparationWithFrozenMembersAndCancellationReleasesDemand() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void missingHistoryQueuesPreparationWithFrozenMembersAndCancellationReleasesDemand(boolean sameProductAcrossAccounts) {
         var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
         var demand=org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.MarketDataDemandService.class);
         org.mockito.Mockito.when(demand.boundedStart(org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any()))
@@ -109,18 +191,26 @@ class WorkbenchServiceTest {
                 .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
-        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties));
+        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
         db.update("DELETE FROM product_daily_quote");
-        String pool=(String)universe().get("id"), strategy=(String)strategy(pool).get("id");
+        if(sameProductAcrossAccounts)db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,2,1,0)");
+        var selected=sameProductAcrossAccounts
+                ? service.save(1L,"universes",null,Map.of("name","multiple accounts","assetClass","FUND","assetIds",List.of(1,3))) : universe();
+        String pool=(String)selected.get("id"), strategy=(String)strategy(pool).get("id");
         var task=service.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
         assertThat(task).containsEntry("stage","DATA_PREPARING");
         assertThat(requirements.active()).hasSize(1);
         var request=service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
-        assertThat((List<?>)request.get("preparedMembers")).hasSize(1);
+        assertThat((List<?>)request.get("preparedMembers")).hasSize(sameProductAcrossAccounts?2:1);
         var worker=new WorkbenchWorker(service,client);
         worker.tasks();
         assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("stage","DATA_PREPARING").containsEntry("status","QUEUED");
         org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).execute(org.mockito.ArgumentMatchers.anyMap());
+        db.update("UPDATE investment_product SET fund_category='QDII_INDEX_FUND' WHERE id=1");
+        db.update("UPDATE quant_v2_task SET preparation_next_check_at=0 WHERE id=?",task.get("id"));
+        worker.tasks();
+        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","FAILED");
+        assertThat(requirements.active()).isEmpty();
         db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,request_json,created_at,updated_at) VALUES('ready',1,'factor-runs','ready','QUEUED','QUEUED','{}',?,?)",WorkbenchService.now(),WorkbenchService.now());
         org.mockito.Mockito.when(client.execute(org.mockito.ArgumentMatchers.anyMap())).thenReturn(Map.of("status","SUCCEEDED"));
         worker.tasks();
@@ -144,13 +234,44 @@ class WorkbenchServiceTest {
     }
 
     @Test
+    void snapshotWithoutStartPreservesMemberOrderAndResearchPrices() throws Exception {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'stock','600003','STOCK','SSE')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,open_price,high_price,low_price,close_price,previous_close,volume,amount,adjust_type,source) "
+                + "VALUES(3,'2024-01-02',10,12,9,11,10,100,1100,'NONE','TEST'),(3,'2024-01-02',5,6,4.5,5.5,5,100,1100,'QFQ','TEST')");
+        var first = Map.<String,Object>of("id",42,"product_id",3L,"name","stock","code","600003","product_type","STOCK","market","SSE","assetClass","STOCK");
+        var second = new java.util.LinkedHashMap<>(first);
+        second.put("id",7);
+        var expected = new ObjectMapper().readTree("""
+                [{"id":"42","name":"stock","code":"600003","assetClass":"STOCK","corporateActionsVerified":false,
+                  "bars":[{"date":"2024-01-02","open":10.0,"close":11.0,"high":12.0,"low":9.0,"previousClose":10.0,
+                           "researchClose":5.5,"volume":100.0,"amount":1100.0,"adjustType":"NONE","source":"TEST"}]},
+                 {"id":"7","name":"stock","code":"600003","assetClass":"STOCK","corporateActionsVerified":false,
+                  "bars":[{"date":"2024-01-02","open":10.0,"close":11.0,"high":12.0,"low":9.0,"previousClose":10.0,
+                           "researchClose":5.5,"volume":100.0,"amount":1100.0,"adjustType":"NONE","source":"TEST"}]}]
+                """);
+        assertThat(new ObjectMapper().readTree(service.encode(service.snapshot(List.of(first,second),null,"2024-01-03"))))
+                .isEqualTo(expected);
+    }
+
+    @Test
+    void snapshotFailsOnAnUnpairedRawDate() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'stock','600003','STOCK','SSE')");
+        db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(3,'2024-01-02',10,'NONE','TEST'),(3,'2024-01-02',5,'QFQ','TEST'),(3,'2024-01-03',11,'NONE','TEST')");
+        var member = Map.<String,Object>of("product_id",3L,"code","600003","product_type","STOCK","market","SSE","assetClass","STOCK");
+        assertThatThrownBy(() -> service.snapshot(List.of(member),null,"2024-01-03"))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("600003 2024-01-03");
+    }
+
+    @Test
     void marketProductUniverseDoesNotRequirePersonalAssetAndKeepsDatedMembership() {
         db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
                 + "VALUES(3,'未持有股票','600001','STOCK','SSE',FALSE)");
         var pool = service.save(1L, "universes", null,
                 Map.of("name", "研究池", "assetClass", "STOCK", "productIds", List.of(3)));
         var market = new com.smartfinance.agent.investment.service.MarketDataService(
-                db, org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class));
+                db, org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class),
+                org.mockito.Mockito.mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class));
         String id = String.valueOf(pool.get("id"));
         assertThat(market.getUniverseMembers(1L, id, LocalDate.now()).get("productIds"))
                 .isEqualTo(List.of(3L));
@@ -282,7 +403,7 @@ class WorkbenchServiceTest {
         service.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
         var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
-                org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, qualityService());
+                org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, qualityService(), marketData());
         assertThat(restarted.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id")))
                 .isEqualTo(snapshot);
@@ -412,5 +533,39 @@ class WorkbenchServiceTest {
                 "strategyId", strategy, "startDate", "2025-01-02", "endDate", "2025-03-01")))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("有效评估日期不足");
+    }
+
+    @Test
+    void etfEvaluationWindowUsesUnadjustedHistory() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'ETF','510003','ETF','SSE')");
+        LocalDate first=LocalDate.of(2026,1,5),last=first.plusDays(59);
+        for(int index=0;index<60;index++)db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) VALUES(3,?,10,'NONE','TEST')",
+                first.plusDays(index).toString());
+        var pool=service.save(1L,"universes",null,Map.of("name","ETF pool","assetClass","ETF","productIds",List.of(3)));
+        assertThat(service.evaluationWindow(1L,pool.get("id").toString(),first.toString(),last.toString()))
+                .containsEntry("availableEvaluationDays",60).containsEntry("selectedEvaluationDays",60).containsEntry("selectedRangeReady",true);
+    }
+
+    @Test
+    void assetSummariesKeepOwnershipAndMissingHistory() {
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'empty','600003','STOCK','SSE'),(4,'foreign','PRIVATE','STOCK','SSE')");
+        db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,1,3,0),(4,2,2,4,0),(5,1,1,4,1)");
+        var assets=service.assets(1L);
+        assertThat(assets).hasSize(2);
+        var empty=assets.stream().filter(row->((Number)row.get("productId")).longValue()==3).findFirst().orElseThrow();
+        assertThat(empty).containsEntry("historyStartDate",null).containsEntry("historyEndDate",null);
+        assertThat(((Number)empty.get("observations")).longValue()).isZero();
+        var complete=assets.stream().filter(row->((Number)row.get("productId")).longValue()==1).findFirst().orElseThrow();
+        assertThat(complete.get("historyStartDate").toString()).isEqualTo("2023-01-02");
+        assertThat(((Number)complete.get("observations")).longValue()).isEqualTo(60);
+    }
+
+    @Test
+    void snapshotPreservesBothAccountMembersForOneProduct() {
+        db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,2,1,0)");
+        var selected=service.snapshot(1L,Map.of("assetIds",List.of(3,1)),"2023-03-02");
+        assertThat(selected).extracting(row->row.get("id")).containsExactlyInAnyOrder("1","3");
+        assertThat(selected.get(0).get("bars")).isEqualTo(selected.get(1).get("bars"));
+        assertThat((List<?>)selected.get(0).get("bars")).hasSize(60);
     }
 }

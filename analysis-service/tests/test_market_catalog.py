@@ -9,6 +9,7 @@ from app.market_catalog import catalog, current_members
 from app.market_catalog import daily_history
 import app.market_catalog as market_catalog_module
 from app.providers import ProviderUnavailable
+from decimal import Decimal
 
 
 NASDAQ_LISTED = (
@@ -27,6 +28,33 @@ OTHER_LISTED = (
     "BATSF|A Cboe Listed ETF|Z|BATSF|Y|100|N|BATSF\n"
     "File Creation Time: 1002202617:00|||||||\n"
 )
+
+
+@pytest.mark.parametrize('function,frame,volume,amount,turnover', [
+    ('stock_zh_a_hist_tx', {'amount': 100}, '10000', None, None),
+    ('stock_zh_a_hist_tx', {'volume': 10000, 'amount': 100000, 'turnover': .01}, '10000', '100000', '1'),
+    ('stock_zh_a_daily', {'volume': 10000, 'amount': 100000, 'turnover': .01}, '10000', '100000', '1'),
+    ('stock_zh_a_hist', {'成交量': 100, '成交额': 100000, '换手率': 1}, '10000', '100000', '1'),
+])
+def test_history_source_contract_preserves_shares_yuan_and_percentage(function, frame, volume, amount, turnover):
+    provider = SimpleNamespace(**{function: lambda **kwargs: pd.DataFrame([
+        dict(date='2024-01-02', open=10, high=11, low=9, close=10, **frame)])})
+    quote = daily_history('600000', 'SSE', 'STOCK', date(2024, 1, 2), date(2024, 1, 2), 'NONE', provider)[0]
+    assert quote.volume == Decimal(volume)
+    assert getattr(quote, 'amount', None) == (Decimal(amount) if amount is not None else None)
+    assert getattr(quote, 'turnover_rate', None) == (Decimal(turnover) if turnover is not None else None)
+
+
+def test_qfq_acquisition_preserves_signed_prices_without_allowing_negative_raw_prices():
+    provider = SimpleNamespace(stock_zh_a_hist_tx=lambda **kwargs: pd.DataFrame([
+        {'date': '2002-08-26', 'open': -315, 'high': -313, 'low': -316, 'close': -314, 'amount': 100}]))
+    try:
+        quote = daily_history('600519', 'SSE', 'STOCK', date(2002, 8, 26), date(2002, 8, 26), 'QFQ', provider)[0]
+    except ProviderUnavailable as exc:
+        pytest.fail(f'legitimate signed QFQ acquisition was rejected: {exc}')
+    assert quote.close == Decimal('-314')
+    with pytest.raises(ProviderUnavailable):
+        daily_history('600519', 'SSE', 'STOCK', date(2002, 8, 26), date(2002, 8, 26), 'NONE', provider)
 
 
 def _patch_us_directory(monkeypatch, nasdaq=NASDAQ_LISTED, other=OTHER_LISTED):

@@ -53,6 +53,22 @@ class FakeFrame:
         return self.records
 
 
+def test_explicit_suspension_survives_normalization_and_snapshot():
+    from app.providers import _provider_batch
+    from app.data_quality.models import AdjustType, ProductType
+    observed = datetime.now(ZoneInfo('UTC'))
+    quote = normalize_quote(product_code='600000', market='SSE', trade_date='2024-01-02',
+                            raw={'close': '10', 'volume': '0', 'tradestatus': '0'}, provider='BAOSTOCK', fetched_at=observed)
+    batch = _provider_batch(ProductType.STOCK, '600000', 'SSE', AdjustType.NONE, 'BAOSTOCK', observed, [quote])
+    assert batch.to_snapshot_rows()[0]['trading_status'] == 'SUSPENDED'
+
+
+def test_zero_volume_does_not_invent_suspension_evidence():
+    quote = normalize_quote(product_code='600000', market='SSE', trade_date='2024-01-02',
+                            raw={'close': '10', 'volume': '0'}, provider='TENCENT')
+    assert getattr(quote, 'trading_status', None) is None
+
+
 class FakeAkshare:
     def __init__(self):
         self.last_hist_kwargs = None
@@ -185,6 +201,17 @@ class FakeMonotonicClock:
 
 
 class ProviderNormalizationTest(unittest.TestCase):
+    def test_resolved_stock_volume_uses_source_units(self):
+        class StockHistory(FakeAkshare):
+            def stock_zh_a_hist(self, **kwargs):
+                return FakeFrame([
+                    {"日期": "2026-07-09", "收盘": "10", "成交量": "10"},
+                    {"日期": "2026-07-10", "收盘": "11", "成交量": "12"},
+                ])
+
+        resolved = providers.resolve_product_metadata("STOCK", "600519", ak_module=StockHistory())
+        self.assertEqual(Decimal("1200"), Decimal(resolved["volume"]))
+
     def tearDown(self):
         clear_cache = getattr(providers, "_clear_fund_snapshot_cache", None)
         if clear_cache is not None:

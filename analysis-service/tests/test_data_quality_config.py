@@ -46,6 +46,18 @@ class DataQualityConfigTest(unittest.TestCase):
     def _write_config(self, payload=None, filename="data-quality-v1.json"):
         (self.config_dir / filename).write_text(json.dumps(payload or self._valid_payload()), encoding="utf-8")
 
+    def test_current_config_uses_v2_and_signed_qfq_while_legacy_contracts_stay_v1(self):
+        current=load_data_quality_config('data-quality-v6')
+        legacy=load_data_quality_config('data-quality-v5')
+        self.assertTrue(current.stock.allow_signed_qfq)
+        self.assertFalse(legacy.stock.allow_signed_qfq)
+        self.assertEqual("market-data-schema-v2", current.schema_version)
+        for version in range(1, 6):
+            with self.subTest(version=version):
+                historical = load_data_quality_config(f"data-quality-v{version}")
+                self.assertEqual("market-data-schema-v1", historical.schema_version)
+                self.assertFalse(historical.stock.allow_signed_qfq)
+
     @staticmethod
     def _valid_payload(version="data-quality-v1"):
         return {

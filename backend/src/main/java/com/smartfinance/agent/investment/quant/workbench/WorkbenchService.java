@@ -9,6 +9,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentDataQualityService;
+import com.smartfinance.agent.investment.service.MarketDataService;
+import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import java.time.*;
@@ -22,6 +24,7 @@ public class WorkbenchService {
     final WorkbenchTrackingIndex trackingIndex;
     final AnalysisServiceClient marketProvider;
     final InvestmentDataQualityService dataQualityService;
+    final MarketDataService marketData;
     WorkbenchDataPreparation preparation;
     @Autowired public void configurePreparation(WorkbenchDataPreparation preparation) { this.preparation=preparation; }
     static final Set<String> OBJECTS = Set.of("universes", "factors", "strategies");
@@ -30,11 +33,12 @@ public class WorkbenchService {
     @Autowired
     public WorkbenchService(JdbcTemplate db, ObjectMapper json, PlatformTransactionManager manager,
                              WorkbenchTrackingIndex trackingIndex, AnalysisServiceClient marketProvider,
-                             InvestmentDataQualityService dataQualityService) {
+                             InvestmentDataQualityService dataQualityService, MarketDataService marketData) {
         this.db=db; this.json=json; this.tx=new TransactionTemplate(manager);
         this.trackingIndex=trackingIndex;
         this.marketProvider=marketProvider;
         this.dataQualityService=dataQualityService;
+        this.marketData=marketData;
     }
     static String now() { return Instant.now().toString(); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -117,6 +121,7 @@ public class WorkbenchService {
                 require(!ids.isEmpty() && ids.size()<=10000,"资产池需包含1至10000个标的");
                 require(new HashSet<>(ids).size()==ids.size(),"资产不能重复");
                 var products=productsById(ids);
+                for(var product:products.values()) require(DOMESTIC_MARKETS.contains(str(product.get("market")).toUpperCase(Locale.ROOT)),"首版仅支持国内市场标的");
                 for(var product:products.values()) require(assetClass.equals(assetClass(product)),"资产池不能混合资产类别");
                 require(products.size()==ids.size(),"市场证券不存在");
                 return;
@@ -187,18 +192,23 @@ public class WorkbenchService {
         return value;
     }
     public List<Map<String,Object>> versions(Long u,String kind,String identity) { object(u,kind,identity); return db.queryForList("SELECT * FROM quant_v2_version WHERE user_id=? AND object_id=? ORDER BY version DESC",u,identity).stream().map(this::view).toList(); }
-    private static final Set<String> DOMESTIC_MARKETS = Set.of("SSE", "SZSE", "BSE", "FUND_CN");
+    static final Set<String> DOMESTIC_MARKETS = Set.of("SSE", "SZSE", "BSE", "FUND_CN");
     public List<Map<String,Object>> assets(Long u) {
-        return db.queryForList("SELECT a.id,a.product_id,p.name,p.code,p.product_type,p.market,"
-                + "COALESCE(p.history_coverage_complete,0) AS history_coverage_complete,"
-                + "(SELECT MIN(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_start_date,"
-                + "(SELECT MAX(q.trade_date) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS history_end_date,"
-                + "(SELECT COUNT(*) FROM product_daily_quote q WHERE q.product_id=p.id AND q.adjust_type='NONE') AS observations "
+        var owned=db.queryForList("SELECT a.id,a.product_id,p.name,p.code,p.product_type,p.market,"
+                + "COALESCE(p.history_coverage_complete,0) AS history_coverage_complete "
                 + "FROM investment_asset a JOIN investment_product p ON p.id=a.product_id "
-                + "WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name", u)
-                .stream().filter(r -> DOMESTIC_MARKETS.contains(str(r.get("market")).toUpperCase(Locale.ROOT)))
-                .map(r -> { Map<String,Object> out=new LinkedHashMap<>(); r.forEach((k,v)->out.put(camel(k),v));
-                    out.put("assetClass",assetClass(r)); return out; }).toList();
+                + "WHERE a.user_id=? AND a.deleted=0 ORDER BY p.name",u).stream()
+                .filter(row->DOMESTIC_MARKETS.contains(str(row.get("market")).toUpperCase(Locale.ROOT))).toList();
+        var summaries=marketData.getQuoteSummaries(owned.stream()
+                .map(row->((Number)row.get("product_id")).longValue()).toList());
+        return owned.stream().map(row->{
+            Map<String,Object> complete=new LinkedHashMap<>(row);
+            complete.putAll(summaries.get(((Number)row.get("product_id")).longValue()));
+            Map<String,Object> out=new LinkedHashMap<>();
+            complete.forEach((key,value)->out.put(camel(key),value));
+            out.put("assetClass",assetClass(row));
+            return out;
+        }).toList();
     }
     String assetClass(Map<String,Object> r) {
         String type=str(r.get("product_type")).toUpperCase(Locale.ROOT);
@@ -219,7 +229,7 @@ public class WorkbenchService {
         for(int from=0;from<ids.size();from+=500) {
             List<Long> part=ids.subList(from,Math.min(from+500,ids.size()));
             String marks=String.join(",",Collections.nCopies(part.size(),"?"));
-            for(var product:db.queryForList("SELECT id AS product_id,product_type,market,name,code FROM investment_product WHERE id IN ("+marks+")",part.toArray()))
+            for(var product:db.queryForList("SELECT id AS product_id,product_type,market,fund_category,name,code FROM investment_product WHERE id IN ("+marks+")",part.toArray()))
                 result.put(((Number)product.get("product_id")).longValue(),product);
         }
         return result;
@@ -252,6 +262,7 @@ public class WorkbenchService {
             List<Long> ids=productIds(pool);
             Map<Long,Map<String,Object>> byId=productsById(ids);
             require(byId.size()==ids.size(),"资产池中有市场证券已不存在");
+            for(var product:byId.values()) require(DOMESTIC_MARKETS.contains(str(product.get("market")).toUpperCase(Locale.ROOT)),"首版仅支持国内市场标的");
             return ids.stream().map(byId::get).map(row->{Map<String,Object> result=new LinkedHashMap<>(row);
                 result.put("assetClass",assetClass(row));return result;}).toList();
         }
@@ -259,7 +270,7 @@ public class WorkbenchService {
         String marks=String.join(",",Collections.nCopies(assetIds.size(),"?"));
         List<Object> args=new ArrayList<>(assetIds); args.add(user);
         Map<String,Map<String,Object>> found=new HashMap<>();
-        for(var row:db.queryForList("SELECT a.id,a.product_id,p.product_type,p.market,p.name,p.code "
+        for(var row:db.queryForList("SELECT a.id,a.product_id,p.product_type,p.market,p.fund_category,p.name,p.code "
                 +"FROM investment_asset a JOIN investment_product p ON p.id=a.product_id "
                 +"WHERE a.id IN ("+marks+") AND a.user_id=? AND a.deleted=0",args.toArray())) {
             require(DOMESTIC_MARKETS.contains(str(row.get("market")).toUpperCase(Locale.ROOT)),"首版仅支持国内市场标的");
@@ -282,36 +293,33 @@ public class WorkbenchService {
     List<Map<String,Object>> snapshot(List<Map<String,Object>> selected,String start,String end) {
         List<Map<String,Object>> result=new ArrayList<>();
         require(selected.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
-        List<Object> ids=selected.stream().map(member->member.get("product_id")).distinct().toList();
-        String marks=String.join(",",Collections.nCopies(ids.size(),"?"));
-        List<Object> arguments=new ArrayList<>(ids); arguments.add(end);
-        if(start!=null)arguments.add(start);
-        Map<Object,List<Map<String,Object>>> quoteGroups=new HashMap<>();
-        for(var quote:db.queryForList("SELECT product_id,trade_date,open_price,high_price,low_price,close_price,previous_close,total_return_index,volume,amount,adjust_type,source "
-                +"FROM product_daily_quote WHERE product_id IN ("+marks+") AND trade_date<=? "+(start==null?"":"AND trade_date>=? ")+"ORDER BY product_id,trade_date,adjust_type",arguments.toArray()))
-            quoteGroups.computeIfAbsent(quote.get("product_id"),ignored->new ArrayList<>()).add(quote);
-        for(var a:selected) {
-            var quotes=quoteGroups.getOrDefault(a.get("product_id"),List.of());
-            Map<String,Map<String,Object>> adjusted=new HashMap<>();
-            String requiredAdjust=dataQualityService.adjustType(str(a.get("product_type")),str(a.get("market")));
-            for(var q:quotes) if(requiredAdjust.equals(str(q.get("adjust_type")))) adjusted.put(str(q.get("trade_date")),q);
+        List<Long> ids=selected.stream().map(member->Long.valueOf(str(member.get("product_id")))).distinct().toList();
+        Set<String> adjustments=new LinkedHashSet<>(Set.of("NONE"));
+        for(var member:selected) adjustments.add(dataQualityService.adjustType(str(member.get("product_type")),str(member.get("market"))));
+        var quoteGroups=marketData.readDailyQuotes(ids,start==null?null:LocalDate.parse(start),LocalDate.parse(end),adjustments);
+        for(var member:selected) {
+            var quotes=quoteGroups.getOrDefault(Long.valueOf(str(member.get("product_id"))),List.of());
+            Map<LocalDate,ProductDailyQuote> adjusted=new HashMap<>();
+            String requiredAdjust=dataQualityService.adjustType(str(member.get("product_type")),str(member.get("market")));
+            for(var quote:quotes) if(requiredAdjust.equals(quote.getAdjustType())) adjusted.put(quote.getTradeDate(),quote);
             List<Map<String,Object>> bars=new ArrayList<>();
-            for(var q:quotes) {
-                if(!"NONE".equals(str(q.get("adjust_type")))) continue;
-                String day=str(q.get("trade_date"));
-                Map<String,Object> b=new LinkedHashMap<>();
-                b.put("date",day); b.put("open",q.get("open_price")); b.put("close",q.get("close_price"));
-                b.put("high",q.get("high_price")); b.put("low",q.get("low_price")); b.put("previousClose",q.get("previous_close"));
-                Object research="FUND".equals(a.get("assetClass")) ? q.get("total_return_index")
-                        : "NONE".equals(requiredAdjust) ? q.get("close_price")
-                        : adjusted.getOrDefault(day,Map.of()).get("close_price");
-                require(research!=null,"研究行情缺少 "+requiredAdjust+" 序列或基金累计收益指数："+str(a.get("code"))+" "+day);
-                b.put("researchClose",research);
-                b.put("volume",q.get("volume")); b.put("amount",q.get("amount"));
-                b.put("adjustType","NONE"); b.put("source",q.get("source")); bars.add(b);
+            for(var quote:quotes) {
+                if(!"NONE".equals(quote.getAdjustType())) continue;
+                String day=quote.getTradeDate().toString();
+                Map<String,Object> bar=new LinkedHashMap<>();
+                bar.put("date",day); bar.put("open",quote.getOpenPrice()); bar.put("close",quote.getClosePrice());
+                bar.put("high",quote.getHighPrice()); bar.put("low",quote.getLowPrice()); bar.put("previousClose",quote.getPreviousClose());
+                var researchQuote=adjusted.get(quote.getTradeDate());
+                Object research="FUND".equals(member.get("assetClass")) ? quote.getTotalReturnIndex()
+                        : "NONE".equals(requiredAdjust) ? quote.getClosePrice()
+                        : researchQuote==null ? null : researchQuote.getClosePrice();
+                require(research!=null,"研究行情缺少 "+requiredAdjust+" 序列或基金累计收益指数："+str(member.get("code"))+" "+day);
+                bar.put("researchClose",research);
+                bar.put("volume",quote.getVolume()); bar.put("amount",quote.getAmount());
+                bar.put("adjustType","NONE"); bar.put("source",quote.getSource()); bars.add(bar);
             }
-            Map<String,Object> item=new LinkedHashMap<>(); item.put("id",str(a.get("id") == null ? a.get("product_id") : a.get("id")));
-            item.put("name",a.get("name")); item.put("code",a.get("code")); item.put("assetClass",a.get("assetClass"));
+            Map<String,Object> item=new LinkedHashMap<>(); item.put("id",str(member.get("id")==null?member.get("product_id"):member.get("id")));
+            item.put("name",member.get("name")); item.put("code",member.get("code")); item.put("assetClass",member.get("assetClass"));
             item.put("corporateActionsVerified",false); item.put("bars",bars); result.add(item);
         }
         return result;
@@ -346,28 +354,16 @@ public class WorkbenchService {
         return result;
     }
     private List<LocalDate> commonObservedDates(Long userId, Map<String,Object> pool, LocalDate end) {
-        Set<Object> distinctProductIds = new LinkedHashSet<>();
-        for (Map<String,Object> member : members(userId,pool)) distinctProductIds.add(member.get("product_id"));
-        require(distinctProductIds.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
-        List<Object> productIds = new ArrayList<>(distinctProductIds);
-        require(!productIds.isEmpty(), "资产池至少包含一个标的");
-        String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
-        List<Object> parameters = new ArrayList<>(productIds);
-        parameters.add(end.toString());
-        parameters.add(productIds.size());
-        String sql = "SELECT raw.trade_date FROM product_daily_quote raw "
-                + "JOIN investment_product p ON p.id=raw.product_id "
-                + "JOIN product_daily_quote research ON research.product_id=raw.product_id "
-                + "AND research.trade_date=raw.trade_date AND research.adjust_type=CASE "
-                + "WHEN p.product_type IN ('FUND','MUTUAL_FUND','INDEX') THEN 'NONE' ELSE ? END "
-                + "WHERE raw.product_id IN (" + placeholders + ") AND raw.adjust_type='NONE' "
-                + "AND raw.trade_date<=? AND raw.close_price>0 "
-                + "AND CASE WHEN p.product_type IN ('FUND','MUTUAL_FUND') "
-                + "THEN research.total_return_index ELSE research.close_price END>0 "
-                + "GROUP BY raw.trade_date HAVING COUNT(DISTINCT raw.product_id)=? "
-                + "ORDER BY raw.trade_date DESC";
-        parameters.add(0, dataQualityService.adjustType("STOCK", "SSE"));
-        return db.query(sql, parameters.toArray(), (row, index) -> LocalDate.parse(row.getString(1)));
+        Map<Long,String> adjustments=new LinkedHashMap<>();
+        Set<Long> fundProducts=new LinkedHashSet<>();
+        for(var member:members(userId,pool)) {
+            Long productId=Long.valueOf(str(member.get("product_id")));
+            adjustments.put(productId,dataQualityService.adjustType(str(member.get("product_type")),str(member.get("market"))));
+            if("FUND".equals(member.get("assetClass"))) fundProducts.add(productId);
+        }
+        require(adjustments.size()<=100,"当前任务最多运行100个标的；完整资产池可供后续因子研究读取");
+        require(!adjustments.isEmpty(),"资产池至少包含一个标的");
+        return marketData.commonObservedDates(adjustments,fundProducts,end);
     }
     private LocalDate dateOrToday(String value, String field) {
         if (blank(value)) return LocalDate.now();

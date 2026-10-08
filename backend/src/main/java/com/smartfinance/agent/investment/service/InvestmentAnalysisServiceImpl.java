@@ -44,7 +44,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final InvestmentAnalysisSnapshotMapper snapshotMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentDataQualityService dataQualityService;
-    private final InvestmentSyncWorker syncWorker;
+    private final ProductDailyQuoteService quoteService;
     private final WealthService wealthService;
     private final FinancialProfileMapper financialProfileMapper;
     private final ObjectMapper objectMapper;
@@ -63,7 +63,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          InvestmentAnalysisSnapshotMapper snapshotMapper,
                                          AnalysisServiceClient analysisClient,
                                          InvestmentDataQualityService dataQualityService,
-                                         InvestmentSyncWorker syncWorker,
+                                         ProductDailyQuoteService quoteService,
                                          WealthService wealthService,
                                          FinancialProfileMapper financialProfileMapper,
                                          ObjectMapper objectMapper,
@@ -81,7 +81,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.snapshotMapper = snapshotMapper;
         this.analysisClient = analysisClient;
         this.dataQualityService = dataQualityService;
-        this.syncWorker = syncWorker;
+        this.quoteService = quoteService;
         this.wealthService = wealthService;
         this.financialProfileMapper = financialProfileMapper;
         this.objectMapper = objectMapper;
@@ -430,7 +430,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                     product, qualityStartDate, qualityEndDate, adjustType, refreshQuotes);
             if (!quality.blocked()) {
                 dataQualityService.claim(quality);
-                syncWorker.persistDailyQuotes(product, quality.response(), adjustType);
+                quoteService.persistDailyQuotes(product, quality.response(), adjustType);
                 quotes = loadQuotes(product);
                 analysisQuotes = analysisReadyQuotes(product, quotes);
             }

@@ -11,6 +11,8 @@ import com.smartfinance.agent.investment.quant.QuantBenchmarkProfileService;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -49,7 +51,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final QuantBenchmarkProfileService benchmarkProfileService;
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
-    private final InvestmentSyncWorker syncWorker;
+    private final ProductDailyQuoteService quoteService;
+    private final TransactionTemplate quoteTransaction;
     private InvestmentQuoteAvailabilityService availability;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setAvailability(InvestmentQuoteAvailabilityService availability) { this.availability = availability; }
@@ -72,7 +75,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       QuantBenchmarkProfileService benchmarkProfileService,
                                       InvestmentDetailCacheService detailCache,
                                       InvestmentQuoteCacheService quoteCache,
-                                      InvestmentSyncWorker syncWorker) {
+                                      ProductDailyQuoteService quoteService,
+                                      PlatformTransactionManager transactionManager) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
         this.accountMapper = accountMapper;
@@ -88,7 +92,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.benchmarkProfileService = benchmarkProfileService;
         this.detailCache = detailCache;
         this.quoteCache = quoteCache;
-        this.syncWorker = syncWorker;
+        this.quoteService = quoteService;
+        this.quoteTransaction = new TransactionTemplate(transactionManager);
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
 
@@ -288,7 +293,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 if (dates.isEmpty() || dates.stream().anyMatch(date -> date.isBefore(start) || date.isAfter(end))) {
                     throw new IllegalStateException("日线行情未返回请求区间内的有效记录");
                 }
-                syncWorker.persistDailyQuotes(product, response, "NONE");
+                quoteService.persistDailyQuotes(product, response, "NONE");
                 return new RefreshOutcome("SUCCESS", null);
             }
             if (usesRealtimeQuote(product)) {
@@ -562,6 +567,15 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         return product;
     }
 
+    private void persistDisplayQuote(InvestmentProduct product, ProductDailyQuote quote) {
+        quoteTransaction.executeWithoutResult(status -> {
+            boolean changed = quoteService.persistDisplayQuote(product, quote);
+            if (changed && ("MUTUAL_FUND".equals(product.getProductType()) || "FUND".equals(product.getProductType()))) {
+                dataJobService.queueAnalysisForProduct(product.getId());
+            }
+        });
+    }
+
     private void saveResolvedQuote(InvestmentProduct product, AnalysisServiceClient.ResolvedProduct resolved) {
         if (resolved.latestPrice() == null || resolved.dataDate() == null) return;
         ProductDailyQuote quote = new ProductDailyQuote();
@@ -582,7 +596,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("resolve-v1");
         quote.setSyncedAt(LocalDateTime.now());
-        syncWorker.persistDisplayQuote(product, quote);
+        persistDisplayQuote(product, quote);
     }
 
     private void saveRealtimeQuote(InvestmentProduct product, AnalysisServiceClient.RealtimeQuote resolved) {
@@ -604,7 +618,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         quote.setSource(resolved.provider());
         quote.setAdapterVersion("realtime-v1");
         quote.setSyncedAt(resolved.fetchedAt());
-        syncWorker.persistDisplayQuote(product, quote);
+        persistDisplayQuote(product, quote);
     }
 
     private InvestmentAsset requireAsset(Long userId, Long assetId) {

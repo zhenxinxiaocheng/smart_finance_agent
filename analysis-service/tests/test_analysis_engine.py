@@ -32,6 +32,17 @@ def price_records(count: int = 320, *, step: float = 0.18) -> list[dict[str, str
 
 
 class AnalysisEngineTest(unittest.TestCase):
+    def test_nonpositive_prices_cannot_be_deleted_to_splice_return_observations(self):
+        for value in ('-1','0'):
+            records=price_records(320);records[160]['close']=value;records[160]['nav']='10'
+            for calculate in (
+                lambda:analyze_technical(records,{'SHORT':[5,20]},'SHORT'),
+                lambda:backtest_horizons(records,{'SHORT':[5,20]}),
+                lambda:analyze_fund(records,fund_category='INDEX_FUND'),
+            ):
+                with self.subTest(value=value,calculate=calculate),self.assertRaisesRegex(ValueError,'非正价格'):
+                    calculate()
+
     def test_technical_analysis_returns_chart_indicators_and_price_zones(self):
         records = price_records()
 

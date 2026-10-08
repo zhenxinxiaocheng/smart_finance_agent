@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { quant } from '@/api/quantWorkbench'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,8 @@ import { useOperation } from './shared'
 
 const route = useRoute()
 const { busy, error, load } = useOperation()
+const preparation = shallowRef(useOperation())
+const displayError = computed(() => error.value || preparation.value.error.value)
 const product = ref(null)
 const daily = ref([])
 const typeNames = { STOCK: '股票', ETF: 'ETF', FUND: '基金', MUTUAL_FUND: '基金', INDEX: '指数' }
@@ -42,21 +44,38 @@ async function update() {
   running = true
   try {
     const id = route.params.productId
-    if (Date.now() - renewedAt >= renewAfterMs) {
-      const state = await quant.marketData.prepare(id)
-      if (disposed || id !== route.params.productId) return
-      renewAfterMs = state.renewAfterMs
-      renewedAt = Date.now()
+    const operation = preparation.value
+    if (!operation.busy.value && Date.now() - renewedAt >= renewAfterMs) {
+      // Demand renewal runs separately so stored quotes remain readable during a slow or failed preparation.
+      void operation.load(async () => {
+        try {
+          const state = await quant.marketData.prepare(id)
+          if (disposed || id !== route.params.productId || operation !== preparation.value) return
+          renewAfterMs = state.renewAfterMs
+          renewedAt = Date.now()
+        } catch (e) {
+          if (disposed || id !== route.params.productId || operation !== preparation.value) return
+          throw e
+        }
+      })
     }
     await refresh()
   } finally {
     running = false
+    clearTimeout(timer)
     if (!disposed) timer = setTimeout(() => load(update), 15000)
   }
 }
 function resume() { clearTimeout(timer); if (!document.hidden) load(update) }
 onMounted(() => { document.addEventListener('visibilitychange', resume); load(update) })
-watch(() => route.params.productId, () => { renewedAt = 0; clearTimeout(timer); load(update) })
+watch(() => route.params.productId, () => {
+  product.value = null
+  daily.value = []
+  preparation.value = useOperation()
+  renewedAt = 0
+  clearTimeout(timer)
+  load(update)
+})
 onBeforeUnmount(() => { disposed = true; clearTimeout(timer); document.removeEventListener('visibilitychange', resume) })
 </script>
 
@@ -65,7 +84,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); document.removeEve
     <template #back><RouterLink to="/quant/data" class="text-sm text-primary hover:underline">← 返回数据中心</RouterLink></template>
     <template #actions><Button variant="outline" :disabled="busy" @click="load(refresh)">刷新</Button></template>
   </QuantPageHeader>
-  <p v-if="error" class="error" role="alert">{{ error }}</p>
+  <p v-if="displayError" class="error" role="alert">{{ displayError }}</p>
   <template v-if="product">
     <div class="grid gap-4 md:grid-cols-2 mb-5">
       <section class="panel"><h3>基础信息</h3><dl class="quant-detail-meta mt-3"><div><dt>市场 / 交易所</dt><dd>{{ product.market }} / {{ product.exchangeCode || '—' }}</dd></div><div><dt>类型</dt><dd>{{ typeNames[product.productType] || product.productType }}</dd></div><div><dt>币种</dt><dd>{{ product.currency }}</dd></div><div><dt>状态</dt><dd>{{ statusNames[product.status] || product.status }}</dd></div><div><dt>上市日期</dt><dd>{{ product.listingDate || '未知' }}</dd></div><div><dt>来源</dt><dd>{{ product.sourceMetadata || '未知' }}</dd></div></dl></section>

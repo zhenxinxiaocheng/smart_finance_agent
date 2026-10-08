@@ -1,7 +1,9 @@
 import json
+import hashlib
 import multiprocessing
 import os
 import errno
+import shutil
 import tempfile
 import threading
 import unittest
@@ -12,6 +14,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pydantic import ValidationError
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from app.data_quality import AdjustType, DataSnapshotContext, ProductType
 from app.data_quality.snapshot_store import (
@@ -19,6 +23,7 @@ from app.data_quality.snapshot_store import (
     SnapshotIntegrityError,
     SnapshotNotFoundError,
     SnapshotStore,
+    CANONICAL_SCHEMA,
 )
 
 
@@ -88,6 +93,104 @@ class SnapshotStoreTest(unittest.TestCase):
 
         self.assertEqual(4, len({baseline.dataset_version, changed_content.dataset_version,
                                  changed_identity.dataset_version, changed_schema.dataset_version}))
+
+    def test_v2_reads_verifies_and_claims_frozen_v1_without_changing_files_or_fields(self):
+        fixture = Path(__file__).parent / "fixtures" / "market-data-v1"
+        expected = json.loads((fixture / "replay-v5.json").read_text(encoding="utf-8"))
+        shutil.copytree(fixture / "snapshots", self.root / "snapshots")
+        version = expected["datasetVersion"]
+        paths = list((self.root / "snapshots").rglob("*.*"))
+        before = {path: path.read_bytes() for path in paths}
+        store = SnapshotStore(self.root, "market-data-schema-v2")
+
+        self.assertEqual(expected["records"], store.read(version))
+        manifest = store.read_manifest(version)
+        self.assertEqual(expected["manifest"], manifest.model_dump(mode="json", by_alias=True))
+        self.assertEqual(manifest, store.verify(manifest))
+        self.assertTrue(store.claim(version).is_file())
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        self.assertEqual(0, store.cleanup_unclaimed(datetime.now(timezone.utc) + timedelta(days=2), timedelta(days=1)))
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+
+    def test_v1_writer_keeps_frozen_content_hash_and_exact_parquet_field_order(self):
+        fixture = Path(__file__).parent / "fixtures" / "market-data-v1"
+        expected = json.loads((fixture / "replay-v5.json").read_text(encoding="utf-8"))
+        manifest = self.store.write(self._records(), self.context)
+
+        self.assertEqual(expected["manifest"]["contentHash"], manifest.content_hash)
+        self.assertEqual(expected["records"], self.store.read(manifest.dataset_version))
+        old_schema = pq.read_schema(fixture / expected["manifest"]["storageUri"])
+        self.assertEqual(old_schema, CANONICAL_SCHEMA)
+        self.assertEqual(old_schema, pq.read_schema(self.root / manifest.storage_uri))
+
+    def test_v2_round_trips_liquidity_and_keeps_v1_columns_in_their_original_order(self):
+        store = SnapshotStore(self.root, "market-data-schema-v2")
+        records = self._records()
+        records[0].update(amount=Decimal("12345.50"), turnover_rate=Decimal("1.25"))
+        records[1].update(amount=Decimal("0"), turnover_rate=None)
+        manifest = store.write(records, self.context)
+        rows = store.read(manifest.dataset_version)
+
+        self.assertEqual("market-data-schema-v2", manifest.schema_version)
+        self.assertEqual("0", rows[0]["amount"])
+        self.assertIsNone(rows[0]["turnover_rate"])
+        self.assertEqual("12345.5", rows[1]["amount"])
+        self.assertEqual("1.25", rows[1]["turnover_rate"])
+        schema = pq.read_schema(self.root / manifest.storage_uri)
+        self.assertEqual(CANONICAL_SCHEMA.names + ["amount", "turnover_rate"], schema.names)
+        self.assertEqual(pa.decimal128(38, 10), schema.field("amount").type)
+        self.assertEqual(pa.decimal128(38, 10), schema.field("turnover_rate").type)
+        self.assertEqual(manifest, store.write(list(reversed(records)), self.context))
+        changed = self._records()
+        changed[0].update(amount=Decimal("12346.50"), turnover_rate=Decimal("1.25"))
+        changed[1].update(amount=Decimal("0"), turnover_rate=None)
+        self.assertNotEqual(manifest.dataset_version, store.write(changed, self.context).dataset_version)
+        with self.assertRaises(SnapshotIntegrityError):
+            self.store.read(manifest.dataset_version)
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            self.store.write(records, self.context)
+
+    def test_v2_rejects_unknown_and_nonfinite_liquidity_fields(self):
+        store = SnapshotStore(self.root, "market-data-schema-v2")
+        for field, value in (("amount", Decimal("NaN")), ("turnover_rate", Decimal("Infinity")),
+                             ("amount", True), ("unknown", Decimal("1"))):
+            with self.subTest(field=field, value=value):
+                records = self._records()
+                records[0][field] = value
+                with self.assertRaises(ValueError):
+                    store.write(records, self.context)
+        with self.assertRaises(ValueError):
+            SnapshotStore(self.root, "market-data-schema-v999")
+
+    def test_both_versions_reject_schema_order_type_content_and_manifest_tampering(self):
+        for schema_version in ("market-data-schema-v1", "market-data-schema-v2"):
+            for tampering in ("order", "type", "content", "manifest"):
+                with self.subTest(schema_version=schema_version, tampering=tampering):
+                    root = self.root / schema_version / tampering
+                    store = SnapshotStore(root, schema_version)
+                    manifest = store.write(self._records(), self.context)
+                    path = root / manifest.storage_uri
+                    manifest_path = path.with_suffix(".manifest.json")
+                    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    table = pq.read_table(path)
+                    if tampering == "order":
+                        table = table.select(list(reversed(table.column_names)))
+                    elif tampering == "type":
+                        table = table.set_column(table.schema.get_field_index("close"), "close",
+                                                 table["close"].cast(pa.float64()))
+                    elif tampering == "content":
+                        table = table.set_column(table.schema.get_field_index("close"), "close",
+                                                 pa.array([Decimal("99"), Decimal("98")], pa.decimal128(38, 10)))
+                    else:
+                        payload["schemaVersion"] = "market-data-schema-v2" if schema_version.endswith("v1") else "market-data-schema-v1"
+                    pq.write_table(table, path)
+                    payload["parquetFileHash"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+                    reader = SnapshotStore(root, "market-data-schema-v2")
+                    with self.assertRaises(SnapshotIntegrityError):
+                        reader.read(manifest.dataset_version)
+                    with self.assertRaises(SnapshotIntegrityError):
+                        reader.claim(manifest.dataset_version)
 
     def test_fetched_at_requires_timezone_and_normalizes_equivalent_utc_instants(self):
         values = self.context.model_dump() | {"fetched_at": datetime(2026, 2, 1, 12, 30)}

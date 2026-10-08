@@ -4,7 +4,6 @@ export const getInvestmentOverviewAPI = () => request.get('/investment/overview'
 export const listInvestmentAccountsAPI = () => request.get('/investment/accounts')
 export const createInvestmentAccountAPI = data => request.post('/investment/accounts', data)
 export const searchInvestmentProductsAPI = params => request.get('/investment/products', { params })
-export const listInvestmentPositionsAPI = params => request.get('/investment/positions', { params })
 export const listInvestmentTransactionsAPI = params => request.get('/investment/transactions', { params })
 export const createInvestmentTransactionAPI = data => request.post('/investment/transactions', data)
 export const reverseInvestmentTransactionAPI = (id, note) => request.post(`/investment/transactions/${id}/reverse`, { note })
@@ -14,7 +13,6 @@ export const previewInvestmentImportAPI = file => {
   return request.post('/investment/imports/preview', data, { headers: { 'Content-Type': 'multipart/form-data' } })
 }
 export const commitInvestmentImportAPI = data => request.post('/investment/imports/commit', data)
-export const requestInvestmentSyncAPI = () => request.post('/investment/sync')
 export const listInvestmentPlansAPI = () => request.get('/investment/plans')
 export const createInvestmentPlanAPI = data => request.post('/investment/plans', data)
 export const updateInvestmentPlanAPI = (id, data) => request.put(`/investment/plans/${id}`, data)

@@ -131,14 +131,12 @@ def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float],
 def _normalized_quotes(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for record in records:
-        close = _number(
-            record.get("close")
-            or record.get("nav")
-            or record.get("unit_nav")
-            or record.get("unitNav")
-        )
-        if close is None or close <= 0:
+        close = _number(next((record.get(key) for key in ("close","nav","unit_nav","unitNav")
+                              if record.get(key) not in (None,"")),None))
+        if close is None:
             continue
+        if close <= 0:
+            raise ValueError("价格序列包含非正价格，无法计算收益；请调整分析区间")
         open_price = _number(record.get("open"), close) or close
         high = _number(record.get("high"), max(open_price, close)) or max(open_price, close)
         low = _number(record.get("low"), min(open_price, close)) or min(open_price, close)
