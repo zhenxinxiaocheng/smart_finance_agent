@@ -172,6 +172,10 @@ public class InvestmentHistoryPreparationService {
         return prepareProduct(product,jobType,forceRefresh,start,target,true);
     }
 
+    public boolean requiresPreparation(InvestmentProduct product, LocalDate start, LocalDate end) {
+        return supportsQuality(product) && dataQualityService.requiresPreparation(product, start, end);
+    }
+
     private PreparationResult prepareProduct(InvestmentProduct incoming,String jobType,boolean forceRefresh,
                                              LocalDate start,LocalDate target,boolean demandWindow) {
         InvestmentProduct product = start == null ? classificationService.enrichIfMissing(incoming)

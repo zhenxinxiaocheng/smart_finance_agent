@@ -17,6 +17,152 @@ import static org.mockito.Mockito.*;
 class InvestmentDataQualityServiceTest {
     @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"ALLOW,ALLOW", "BLOCK,ALLOW", "ALLOW,BLOCK", "BLOCK,BLOCK"})
+    void legacyReceiptsAreRecheckedWithoutNewQuotesAndOldReportsRemainIntact(String oldDecision, String newDecision) throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1);
+        var end = LocalDate.of(2026, 6, 30);
+        var old = saved("legacy", start, "config-v1", oldDecision, 1);
+        fixture.snapshots().insert(old);
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq(List.of("legacy")), eq(List.of()),
+                eq("config-v2"), eq(start), eq(end))).thenReturn(upgradeResponse("upgraded", start, end, newDecision));
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq("upgraded"), isNull(), eq("config-v2")))
+                .thenReturn(upgradeResponse("upgraded", start, end, newDecision));
+
+        var upgraded = fixture.service().preparedEvaluation(fixture.product(), start, end);
+
+        assertThat(upgraded).isNotNull();
+        assertThat(upgraded.blocked()).isEqualTo("BLOCK".equals(newDecision));
+        assertThat(upgraded.snapshot().getQualityConfigVersion()).isEqualTo("config-v2");
+        assertThat(upgraded.ruleSetVersion()).isEqualTo("rules-v2");
+        assertThat(fixture.snapshots().selectById(old.getId()).getDecision()).isEqualTo(oldDecision);
+        assertThat(fixture.snapshots().selectById(old.getId()).getQualityRuleSetVersion()).isEqualTo("rules-v1");
+        assertThat(fixture.snapshots().selectCount(null)).isEqualTo(2);
+        assertThat(fixture.service().analysisStatus(fixture.product(), "upgraded")).containsEntry("decision", newDecision);
+        fixture.service().preparedEvaluation(fixture.product(), start, end);
+        assertThat(fixture.snapshots().selectCount(null)).isEqualTo(2);
+        verify(fixture.client(), never()).validateDataQuality(any(), any(), any(), any(), any(), any());
+        verify(fixture.client()).claimDataQuality("upgraded", "config-v2");
+        verify(fixture.client(), never()).replayDataQuality(eq(fixture.product()), eq("legacy"), any(), anyString());
+    }
+
+    @Test
+    void legacyRecheckFailureCannotCreateANewApprovedReceipt() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1);
+        fixture.snapshots().insert(saved("legacy", start, "config-v1", "ALLOW", 1));
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq(List.of("legacy")), eq(List.of()),
+                eq("config-v2"), eq(start), eq(LocalDate.of(2026, 6, 30))))
+                .thenThrow(new IllegalStateException("原始快照完整性校验失败"));
+
+        assertThatThrownBy(() -> fixture.service().preparedEvaluation(fixture.product(), start, LocalDate.of(2026, 6, 30)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("完整性");
+        assertThat(fixture.snapshots().selectCount(null)).isEqualTo(1);
+        assertThat(fixture.service().analysisStatus(fixture.product(), "legacy")).containsEntry("status", "NOT_EVALUATED");
+        verify(fixture.client(), never()).claimDataQuality(anyString(), anyString());
+    }
+
+    @Test
+    void aCurrentBlockedReceiptCannotBeReplacedByAnOlderApprovedReport() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1);
+        fixture.snapshots().insert(saved("legacy", start, "config-v1", "ALLOW", 1));
+        var current = saved("current-blocked", start, "config-v2", "BLOCK", 2);
+        current.setQualityRuleSetVersion("rules-v2");
+        fixture.snapshots().insert(current);
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq("current-blocked"), isNull(), eq("config-v2")))
+                .thenReturn(upgradeResponse("current-blocked", start, LocalDate.of(2026, 6, 30), "BLOCK"));
+
+        assertThat(fixture.service().preparedEvaluation(fixture.product(), start, LocalDate.of(2026, 6, 30)).blocked()).isTrue();
+        verify(fixture.client(), never()).replayDataQuality(eq(fixture.product()), eq("legacy"), any(), anyString());
+    }
+
+    @Test
+    void legacyHistoryAndACurrentIncrementAreCheckedAsACompleteWindow() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1);
+        var end = LocalDate.of(2026, 6, 30);
+        var base = saved("legacy-base", start, "config-v1", "ALLOW", 1);
+        base.setRequestedEndDate(end.minusDays(1)); base.setSampleEndDate(end.minusDays(1));
+        var tail = saved("current-tail", end, "config-v2", "ALLOW", 2);
+        tail.setQualityRuleSetVersion("rules-v2");
+        fixture.snapshots().insert(base); fixture.snapshots().insert(tail);
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq("current-tail"), isNull(), eq("config-v2")))
+                .thenReturn(upgradeResponse("current-tail", end, end, "ALLOW"));
+        when(fixture.client().replayDataQuality(eq(fixture.product()), eq(List.of("legacy-base", "current-tail")), eq(List.of()),
+                eq("config-v2"), eq(start), eq(end))).thenReturn(upgradeResponse("combined", start, end, "ALLOW"));
+
+        var result = fixture.service().preparedEvaluation(fixture.product(), start, end);
+        assertThat(result).isNotNull();
+        assertThat(result.datasetVersion()).isEqualTo("combined");
+        verify(fixture.client()).replayDataQuality(eq(fixture.product()), eq(List.of("legacy-base", "current-tail")), eq(List.of()),
+                eq("config-v2"), eq(start), eq(end));
+        verify(fixture.client(), never()).validateDataQuality(any(), any(), any(), any(), any(), any());
+    }
+
+    private record UpgradeFixture(InvestmentDataQualityService service, InvestmentDataQualitySnapshotMapper snapshots,
+                                  AnalysisServiceClient client, InvestmentProduct product) { }
+
+    @Test
+    void incompatibleCollectionVersionsRequirePreparationEvenAfterLegacyRulesWereRechecked() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1); var end = LocalDate.of(2026, 6, 30);
+        var base = saved("legacy", start, "config-v1", "ALLOW", 1);
+        base.setRequestedEndDate(end.minusDays(1)); base.setAdapterVersion("1");
+        fixture.snapshots().insert(base);
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end.minusDays(1))).isFalse();
+        var tail = saved("tail", end, "config-v2", "ALLOW", 2);
+        tail.setAdapterVersion("2"); tail.setQualityRuleSetVersion("rules-v2");
+        fixture.snapshots().insert(tail);
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isTrue();
+        // Rechecking rules does not change the older collection units.
+        base.setDatasetVersion("rechecked"); base.setId(null); base.setQualityConfigVersion("config-v2");
+        base.setQualityRuleSetVersion("rules-v2"); fixture.snapshots().insert(base);
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isTrue();
+        var repaired = saved("repaired", start, "config-v2", "ALLOW", 3);
+        repaired.setAdapterVersion("2"); repaired.setQualityRuleSetVersion("rules-v2");
+        fixture.snapshots().insert(repaired);
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isFalse();
+        org.mockito.Mockito.verifyNoInteractions(fixture.client());
+    }
+
+    private UpgradeFixture upgradeFixture() throws Exception {
+        var source = new org.springframework.jdbc.datasource.DriverManagerDataSource("jdbc:sqlite:" + temporary.resolve("upgrade.db"));
+        source.setDriverClassName("org.sqlite.JDBC");
+        new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                new org.springframework.core.io.ClassPathResource("db/migration/sqlite/V1__baseline.sql")).execute(source);
+        var configuration = new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        var factory = new com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean();
+        var global = new com.baomidou.mybatisplus.core.config.GlobalConfig();
+        global.setMetaObjectHandler(new com.smartfinance.agent.config.MyBatisPlusConfig());
+        factory.setGlobalConfig(global);
+        factory.setDataSource(source); factory.setConfiguration(configuration); factory.afterPropertiesSet();
+        configuration.addMapper(InvestmentDataQualitySnapshotMapper.class); configuration.addMapper(InvestmentDataQualityIssueMapper.class);
+        var session = new org.mybatis.spring.SqlSessionTemplate(factory.getObject());
+        var snapshots = session.getMapper(InvestmentDataQualitySnapshotMapper.class);
+        var runtime = new InvestmentRuntimeProperties();
+        runtime.getDataQuality().setConfigVersion("config-v2"); runtime.getDataQuality().setStockAdjustType("NONE");
+        runtime.getDataQuality().setFrequency("DAY");
+        var client = mock(AnalysisServiceClient.class);
+        var service = new InvestmentDataQualityService(snapshots, session.getMapper(InvestmentDataQualityIssueMapper.class),
+                client, runtime, new ObjectMapper().findAndRegisterModules());
+        var product = new InvestmentProduct(); product.setProductType("STOCK"); product.setMarket("SSE"); product.setCode("600000");
+        return new UpgradeFixture(service, snapshots, client, product);
+    }
+
+    private static Map<String, Object> upgradeResponse(String dataset, LocalDate start, LocalDate end, String decision) {
+        return Map.of("datasetVersion", dataset, "manifest", Map.ofEntries(
+                Map.entry("productType", "STOCK"), Map.entry("code", "600000"), Map.entry("market", "SSE"),
+                Map.entry("frequency", "DAY"), Map.entry("adjustType", "NONE"), Map.entry("provider", "TEST"),
+                Map.entry("adapterVersion", "v1"), Map.entry("requestedStartDate", start.toString()),
+                Map.entry("requestedEndDate", end.toString()), Map.entry("sampleStartDate", start.toString()),
+                Map.entry("sampleEndDate", end.toString()), Map.entry("fetchedAt", "2026-07-01T00:00:00Z")),
+                "qualityReport", Map.of("qualityRuleSetVersion", "rules-v2", "status", "ALLOW".equals(decision) ? "PASS" : "BLOCKED",
+                        "decision", decision, "enforcementMode", "ENFORCE", "evaluatedAt", "2026-07-03T00:00:00Z"),
+                "records", List.of(Map.of("data_date", end.toString(), "close", "10")));
+    }
+
     @Test
     void analysisGateSelectsItsWindowAndConfigButStillHonorsANewerBlockInThatWindow() throws Exception {
         var source = new org.springframework.jdbc.datasource.DriverManagerDataSource(

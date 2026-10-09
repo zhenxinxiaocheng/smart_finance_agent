@@ -165,14 +165,67 @@ public class InvestmentDataQualityService {
         return toEvaluation(existing, response);
     }
 
+    /** Whether the existing collection worker must prepare this request again. */
+    public boolean requiresPreparation(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
+        startDate = preparedStart(product, startDate);
+        LocalDate target = availability == null ? endDate : availability.target(product, endDate, Instant.now());
+        if (startDate.isAfter(target)) return false;
+        var receipts = preparedReceipts(product, startDate, target);
+        if (receipts.isEmpty()) return true;
+        var first = receipts.get(0);
+        // Dates alone cannot prove that old and new collection units may be spliced.
+        // The worker refreshes this bounded request; analysis never performs acquisition.
+        return receipts.stream().anyMatch(item -> !Objects.equals(first.getProvider(), item.getProvider())
+                || !Objects.equals(first.getAdapterVersion(), item.getAdapterVersion()));
+    }
+
     /** Recheck intact preparation receipts; this method never fetches or writes quotes. */
     @Transactional
     public Evaluation preparedEvaluation(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
         String config = runtimeProperties.getDataQuality().getConfigVersion();
-        for (LocalDate origin : java.util.Arrays.asList(product.getListingDate(), product.getInceptionDate()))
-            if (origin != null && origin.isAfter(startDate)) startDate = origin;
+        startDate = preparedStart(product, startDate);
         LocalDate target = availability == null ? endDate : availability.target(product, endDate, Instant.now());
         if (startDate.isAfter(target)) return null;
+        var selected = preparedReceipts(product, startDate, target);
+        if (selected.isEmpty()) return null;
+        if (selected.size() == 1 && config.equals(selected.get(0).getQualityConfigVersion()))
+            return replay(product, selected.get(0), config);
+        List<String> versions = new ArrayList<>(), secondaryVersions = new ArrayList<>();
+        for (var receipt : selected) {
+            if (config.equals(receipt.getQualityConfigVersion())) {
+                Evaluation checked = replay(product, receipt, config);
+                if (checked.blocked()) return checked;
+            }
+            versions.add(receipt.getDatasetVersion());
+            String secondary = firstSecondary(receipt.getSecondaryDatasetVersionsJson());
+            if (secondary != null) secondaryVersions.add(secondary);
+        }
+        Map<String,Object> response = analysisClient.replayDataQuality(product, versions, secondaryVersions,
+                config, startDate, target);
+        String rules = requiredText(requiredMap(response, "qualityReport"), "qualityRuleSetVersion");
+        if (selected.stream().anyMatch(item -> config.equals(item.getQualityConfigVersion())
+                && !Objects.equals(item.getQualityRuleSetVersion(), rules)))
+            throw new IllegalStateException("数据质量规则版本发生漂移，拒绝复用旧快照");
+        Map<String,Object> manifest = new LinkedHashMap<>(requiredMap(response, "manifest"));
+        manifest.put("inputDatasetVersions", versions);
+        response = new LinkedHashMap<>(response);
+        response.put("manifest", manifest);
+        // Claim the derived immutable snapshot before persisting its existing receipt format.
+        analysisClient.claimDataQuality(requiredText(response, "datasetVersion"), config);
+        for (String secondary : stringList(response.get("secondaryDatasetVersions")))
+            analysisClient.claimDataQuality(secondary, config);
+        return toEvaluation(persist(config, response), response);
+    }
+
+    private LocalDate preparedStart(InvestmentProduct product, LocalDate start) {
+        for (LocalDate origin : java.util.Arrays.asList(product.getListingDate(), product.getInceptionDate()))
+            if (origin != null && origin.isAfter(start)) start = origin;
+        return start;
+    }
+
+    /** One receipt selection for both the analysis gate and its existing preparation worker. */
+    private List<InvestmentDataQualitySnapshot> preparedReceipts(InvestmentProduct product, LocalDate startDate, LocalDate target) {
+        String config = runtimeProperties.getDataQuality().getConfigVersion();
         Map<String, InvestmentDataQualitySnapshot> latestWindows = new LinkedHashMap<>();
         for (var receipt : snapshotMapper.selectList(contractQuery(product, adjustType(product), config)
                 .le(InvestmentDataQualitySnapshot::getRequestedStartDate, target)
@@ -189,13 +242,20 @@ public class InvestmentDataQualityService {
             LocalDate next = cursor;
             var existing = candidates.stream().filter(item -> !item.getRequestedStartDate().isAfter(next)
                     && !item.getRequestedEndDate().isBefore(next)).findFirst().orElse(null);
-            if (existing == null) return null;
             // Prefer newer validated inputs for each segment, including a full repair
             // followed by another incremental update. Wider failures stay outside this gate.
-            var receipt = candidates.stream().filter(item -> "ALLOW".equals(item.getDecision())
+            // An older config supplies immutable source data only when current evidence is missing.
+            // Its old decision never authorizes analysis; the whole window is evaluated below.
+            var receipt = existing == null ? snapshotMapper.selectOne(contractQuery(product, adjustType(product), null)
+                    .ne(InvestmentDataQualitySnapshot::getQualityConfigVersion, config)
+                    .le(InvestmentDataQualitySnapshot::getRequestedStartDate, next)
+                    .ge(InvestmentDataQualitySnapshot::getRequestedEndDate, next)
+                    .orderByDesc(InvestmentDataQualitySnapshot::getFetchedAt).last("LIMIT 1"))
+                    : candidates.stream().filter(item -> "ALLOW".equals(item.getDecision())
                     && !item.getRequestedStartDate().isAfter(next) && !item.getRequestedEndDate().isBefore(next)
                     && item.getFetchedAt().isAfter(existing.getFetchedAt()))
                     .max(Comparator.comparing(InvestmentDataQualitySnapshot::getFetchedAt)).orElse(existing);
+            if (receipt == null) return List.of();
             selected.add(receipt);
             cursor = receipt.getRequestedEndDate().plusDays(1);
         }
@@ -207,29 +267,7 @@ public class InvestmentDataQualityService {
                     && ("ALLOW".equals(receipt.getDecision()) || !receipt.getRequestedStartDate().isBefore(startDate)
                         && !receipt.getRequestedEndDate().isAfter(target)))
                 selected.add(receipt);
-        if (selected.size() == 1) return replay(product, selected.get(0), config);
-        List<String> versions = new ArrayList<>(), secondaryVersions = new ArrayList<>();
-        for (var receipt : selected) {
-            Evaluation checked = replay(product, receipt, config);
-            if (checked.blocked()) return checked;
-            versions.add(checked.datasetVersion());
-            String secondary = firstSecondary(receipt.getSecondaryDatasetVersionsJson());
-            if (secondary != null) secondaryVersions.add(secondary);
-        }
-        Map<String,Object> response = analysisClient.replayDataQuality(product, versions, secondaryVersions,
-                config, startDate, target);
-        String rules = requiredText(requiredMap(response, "qualityReport"), "qualityRuleSetVersion");
-        if (selected.stream().anyMatch(item -> !Objects.equals(item.getQualityRuleSetVersion(), rules)))
-            throw new IllegalStateException("数据质量规则版本发生漂移，拒绝复用旧快照");
-        Map<String,Object> manifest = new LinkedHashMap<>(requiredMap(response, "manifest"));
-        manifest.put("inputDatasetVersions", versions);
-        response = new LinkedHashMap<>(response);
-        response.put("manifest", manifest);
-        // Claim the derived immutable snapshot before persisting its existing receipt format.
-        analysisClient.claimDataQuality(requiredText(response, "datasetVersion"), config);
-        for (String secondary : stringList(response.get("secondaryDatasetVersions")))
-            analysisClient.claimDataQuality(secondary, config);
-        return toEvaluation(persist(config, response), response);
+        return selected;
     }
 
     /** Analysis gates use the dataset's own request contract, never an unrelated latest window. */
@@ -320,7 +358,7 @@ public class InvestmentDataQualityService {
                 .eq(InvestmentDataQualitySnapshot::getFrequency,
                         runtimeProperties.getDataQuality().getFrequency())
                 .eq(InvestmentDataQualitySnapshot::getAdjustType, adjustType)
-                .eq(InvestmentDataQualitySnapshot::getQualityConfigVersion, configVersion);
+                .eq(configVersion != null, InvestmentDataQualitySnapshot::getQualityConfigVersion, configVersion);
     }
 
     private InvestmentDataQualitySnapshot persist(String configVersion,

@@ -128,7 +128,9 @@ class DataQualityService:
             raise ValueError("prepared replay requires an ordered start/end window")
         manifests = [store.read_manifest(version) for version in versions]
         primary = manifests[0]
-        fields = ("product_type", "code", "market", "frequency", "adjust_type", "provider", "adapter_version", "schema_version")
+        # Store reads verify each supported schema and its hashes. v2 adds nullable
+        # liquidity fields to v1, so intact legacy rows can enter the current schema.
+        fields = ("product_type", "code", "market", "frequency", "adjust_type", "provider", "adapter_version")
         if any(any(getattr(item, field) != getattr(primary, field) for field in fields) for item in manifests):
             raise ValueError("prepared datasets have incompatible identity or price basis")
         cursor = start

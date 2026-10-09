@@ -99,13 +99,30 @@ class DataQualityServiceTest(unittest.TestCase):
         self.assertEqual("10.1", row["nav"])
         self.assertEqual("UNIT_NAV", row["nav_type"])
 
-    def _stored_slice(self, day, close, *, provider="TENCENT", adjust_type=AdjustType.NONE):
+    def _stored_slice(self, day, close, *, provider="TENCENT", adjust_type=AdjustType.NONE,
+                      schema_version="market-data-schema-v2", adapter_version="2"):
         batch = self._batch()
         record = replace(batch.records[0], data_date=day, open=Decimal(close), high=Decimal(close),
-                         low=Decimal(close), close=Decimal(close), provider=provider)
-        batch = replace(batch, records=(record,), adjust_type=adjust_type, provider=provider)
-        return SnapshotStore(self.root, "market-data-schema-v2").write(
-            batch.to_snapshot_rows("market-data-schema-v2"), batch.snapshot_context(day, day)).dataset_version
+                         low=Decimal(close), close=Decimal(close), provider=provider, adapter_version=adapter_version)
+        batch = replace(batch, records=(record,), adjust_type=adjust_type, provider=provider, adapter_version=adapter_version)
+        return SnapshotStore(self.root, schema_version).write(
+            batch.to_snapshot_rows(schema_version), batch.snapshot_context(day, day)).dataset_version
+
+    def test_current_rules_combine_intact_legacy_history_and_current_tail_without_refetching(self):
+        base = self._stored_slice(date(2026, 1, 2), "10", schema_version="market-data-schema-v1")
+        tail = self._stored_slice(date(2026, 1, 3), "11")
+        originals = {path: path.read_bytes() for path in (self.root / "snapshots").rglob("*.*")}
+
+        result = self.service.replay(dataset_version=base, continuation_dataset_versions=[tail],
+            start_date=date(2026, 1, 2), end_date=date(2026, 1, 3), quality_config_version="data-quality-v6")
+
+        self.assertEqual("market-data-schema-v2", result["manifest"]["schemaVersion"])
+        self.assertEqual("data-quality-v6", result["qualityReport"]["qualityRuleSetVersion"])
+        self.assertEqual(["10", "11"], [row["close"] for row in result["records"]])
+        self.assertIsNone(result["records"][0]["amount"])
+        self.assertEqual("12345.5", result["records"][1]["amount"])
+        self.assertEqual(originals, {path: path.read_bytes() for path in originals})
+        self.registry.daily_quality_batches.assert_not_called()
 
     def test_replay_rechecks_cross_slice_returns_without_fetching_quotes(self):
         first = self._stored_slice(date(2026, 1, 2), "10")
@@ -120,6 +137,16 @@ class DataQualityServiceTest(unittest.TestCase):
         self.assertEqual([first, second], result["preparedDatasetVersions"])
         replayed = self.service.replay(dataset_version=result["datasetVersion"], quality_config_version="data-quality-v6")
         self.assertEqual(result["records"], replayed["records"])
+        self.registry.daily_quality_batches.assert_not_called()
+
+    def test_upgrade_cannot_splice_legacy_collection_units_into_current_daily_quotes(self):
+        base = self._stored_slice(date(2026, 1, 2), "10", schema_version="market-data-schema-v1", adapter_version="1")
+        tail = self._stored_slice(date(2026, 1, 3), "11", adapter_version="2")
+        originals = {path: path.read_bytes() for path in (self.root / "snapshots").rglob("*.*")}
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            self.service.replay(dataset_version=base, continuation_dataset_versions=[tail],
+                start_date=date(2026, 1, 2), end_date=date(2026, 1, 3), quality_config_version="data-quality-v6")
+        self.assertEqual(originals, {path: path.read_bytes() for path in originals})
         self.registry.daily_quality_batches.assert_not_called()
 
     def test_combined_secondary_source_checks_the_new_tail_as_well(self):

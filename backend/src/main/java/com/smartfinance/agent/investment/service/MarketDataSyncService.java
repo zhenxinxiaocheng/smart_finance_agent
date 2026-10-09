@@ -380,12 +380,23 @@ public class MarketDataSyncService {
             if (rows.isEmpty()) continue;
             var product = candidateProduct(rows.get(0));
             LocalDate target = demand==null ? priceTarget(product,LocalDate.now(CN_ZONE)) : demand.target(productId);
-            var windows = requirements.missingWindows(productId, data, target);
+            var windows = preparationWindows(product, data, target);
             if (windows.isEmpty()) continue;
             var window = windows.get(0);
             if (enqueue(productId, "PRICE".equals(data) ? "BACKFILL" : data, window.start(), window.end())) queued++;
         }
         return queued;
+    }
+
+    private List<MarketDataRequirementService.Window> preparationWindows(InvestmentProduct product, String data, LocalDate target) {
+        var refresh = refreshWindows(product, data, target);
+        if (!refresh.isEmpty()) return refresh;
+        return requirements.missingWindows(product.getId(), data, target);
+    }
+
+    private List<MarketDataRequirementService.Window> refreshWindows(InvestmentProduct product, String data, LocalDate target) {
+        return "PRICE".equals(data) ? requirements.windows(product.getId(), data, target).stream()
+                .filter(window -> historyPreparation.requiresPreparation(product, window.start(), window.end())).toList() : List.of();
     }
 
     private boolean enqueue(long productId, String type, LocalDate start, LocalDate target) {
@@ -551,15 +562,23 @@ public class MarketDataSyncService {
             var product = db.queryForMap("SELECT * FROM investment_product WHERE id=?", job.get("product_id"));
             String data = dataset(value(job, "job_type"));
             boolean full=fullScope(catalog(product),data);
-            if (!full || Boolean.TRUE.equals(job.get("prefer_demand"))) {
-                LocalDate target = demand==null ? priceTarget(candidateProduct(product),LocalDate.now(CN_ZONE)) : demand.target(((Number)job.get("product_id")).longValue());
-                var windows = requirements.missingWindows(((Number) job.get("product_id")).longValue(), data, target);
+            LocalDate target = demand==null ? priceTarget(candidateProduct(product),LocalDate.now(CN_ZONE)) : demand.target(((Number)job.get("product_id")).longValue());
+            var refreshWindows = refreshWindows(candidateProduct(product), data, target);
+            if (!full || Boolean.TRUE.equals(job.get("prefer_demand")) || !refreshWindows.isEmpty()) {
+                var windows = refreshWindows.isEmpty() ? requirements.missingWindows(
+                        ((Number) job.get("product_id")).longValue(), data, target) : refreshWindows;
                 if (windows.isEmpty()) {
                     finish(((Number) job.get("id")).longValue(), token, "SKIPPED", null, "DEMAND_SATISFIED");
                     return false;
                 }
                 var window = windows.get(0);
-                if(full){job.put("resume_full",true);job.put("full_checkpoint",job.get("checkpoint_date"));}
+                boolean refresh = !refreshWindows.isEmpty();
+                job.put("refresh_prepared", refresh);
+                if(full){
+                    job.put("resume_full", !refresh || day(job.get("start_date")).isBefore(window.start())
+                            || day(job.get("target_date")).isAfter(window.end()) || job.get("checkpoint_date") != null);
+                    job.put("full_checkpoint",job.get("checkpoint_date"));
+                }
                 else db.update("UPDATE market_data_job SET start_date=?,target_date=?,checkpoint_date=NULL WHERE id=? AND lease_token=?",
                             window.start(),window.end(),job.get("id"),token);
                 job.put("scoped_demand",true);
@@ -617,10 +636,11 @@ public class MarketDataSyncService {
         boolean fund = "FUND_NAV_HISTORY".equals(jobTypeFor(product));
         boolean unknownOrigin = product.getListingDate() == null && product.getInceptionDate() == null;
         // 没有上市/成立日期时，先请求整个回补窗口，避免逐年重复请求上市前的空区间。
-        boolean wholeWindow = fund || (unknownOrigin && "BACKFILL".equals(value(job, "job_type")));
+        boolean refreshPrepared = Boolean.TRUE.equals(job.get("refresh_prepared"));
+        boolean wholeWindow = refreshPrepared || fund || (unknownOrigin && "BACKFILL".equals(value(job, "job_type")));
         LocalDate end = wholeWindow ? target : start.plusDays(chunkDays - 1L);
         if (end.isAfter(target)) end = target;
-        boolean forceRefresh = "BACKFILL".equals(value(job, "job_type")) && checkpoint == null;
+        boolean forceRefresh = !refreshPrepared && "BACKFILL".equals(value(job, "job_type")) && checkpoint == null;
         if(requirements!=null&&forceRefresh) {
             LocalDate next=historyPreparation.incrementalStart(product);
             if(next!=null&&!start.isBefore(next))forceRefresh=false;

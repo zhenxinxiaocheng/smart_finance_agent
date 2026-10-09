@@ -317,6 +317,36 @@ class MarketDataInfrastructureTest {
         assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_job",Integer.class)).isZero();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"STOCK,NASDAQ,false", "STOCK,SSE,false", "MUTUAL_FUND,FUND_CN,false", "STOCK,NASDAQ,true"})
+    void alreadyCollectedDemandIsRefreshedThroughTheExistingWorkerWhenCollectionVersionsConflict(
+            String type, String market, boolean fullLibrary) {
+        sync.setFullLibraryEnabled(fullLibrary);
+        var requirements = new MarketDataRequirementService(db); sync.setRequirements(requirements);
+        workerProduct(990L, type, market); var product = products.selectById(990L);
+        var end = requirements.now().toLocalDate().minusDays(2); var start = end.minusDays(400);
+        product.setHistoryEndDate(end); product.setHistoryCoverageComplete(true);
+        requirements.save(1, "DETAIL", "990", 990, "PRICE", "REQUIRED", start, end, false,
+                requirements.now().plusHours(1));
+        requirements.recordPrepared(990, "PRICE", start, end);
+        assertThat(requirements.missingWindows(990, "PRICE", end)).isEmpty();
+        var incompatible = new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(historyPreparation.requiresPreparation(any(), eq(start), eq(end))).thenAnswer(call -> incompatible.get());
+        doAnswer(call -> {
+            incompatible.set(false);
+            return new InvestmentHistoryPreparationService.PreparationResult(400, start, start, end, true, "adapter-2", false, end);
+        }).when(historyPreparation).prepareDemandProduct(eq(product), anyString(), anyBoolean(), eq(start), eq(end));
+
+        assertThat(sync.reconcileDemand()).isEqualTo(1);
+        sync.processNext();
+
+        verify(historyPreparation).prepareDemandProduct(eq(product), anyString(), eq(false), eq(start), eq(end));
+        verify(tasks).queueAnalysisForProduct(990L);
+        assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=990", String.class)).isEqualTo("SUCCEEDED");
+        assertThat(sync.reconcileDemand()).isZero();
+        assertThat(product.getHistoryCoverageComplete()).isTrue();
+    }
+
     @Test
     void legacyFullMarketQueueIsNotConsumedWithoutActiveDemand() {
         sync.setFullLibraryEnabled(false);
