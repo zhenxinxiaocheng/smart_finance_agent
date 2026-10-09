@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 from fastapi import HTTPException
 
@@ -27,6 +29,25 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_us_fundamentals_are_unavailable_without_querying_the_a_share_source(self):
+        def a_share_source(**kwargs):
+            self.fail('US symbols must not reach the A-share financial source')
+        with patch.dict(sys.modules, {'akshare': SimpleNamespace(stock_financial_analysis_indicator=a_share_source)}):
+            for code in ('NVDA', 'T', 'BRK.B'):
+                with self.subTest(code=code):
+                    result = fundamental_analysis(FundamentalAnalysisRequest(code=code, market='NYSE'))
+                    self.assertEqual('INSUFFICIENT', result['status'])
+                    self.assertEqual({}, result['dimensions'])
+                    self.assertIn('未接入', result['reason'])
+
+    def test_a_share_financial_source_still_rejects_non_six_digit_codes(self):
+        with patch.dict(sys.modules, {'akshare': SimpleNamespace()}):
+            for code in ('12345', 'ABCDEF'):
+                with self.subTest(code=code):
+                    with self.assertRaises(HTTPException) as error:
+                        fundamental_analysis(FundamentalAnalysisRequest(code=code, market='SSE'))
+                    self.assertEqual(400, error.exception.status_code)
+
     def test_nonpositive_research_prices_return_controlled_input_errors(self):
         records=price_records(320);records[160]['close']='-1'
         requests=(

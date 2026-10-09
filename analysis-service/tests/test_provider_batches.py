@@ -160,6 +160,27 @@ class ProviderBatchContractTest(unittest.TestCase):
 
 
 class ProviderAdjustmentContractTest(unittest.TestCase):
+    def test_us_raw_quality_reuses_history_fallback_and_keeps_the_actual_source(self):
+        from types import SimpleNamespace
+        import pandas as pd
+        captured = {}
+        def failed(**kwargs):
+            raise ConnectionError('Eastmoney unavailable')
+        def sina(**kwargs):
+            captured.update(kwargs)
+            return pd.DataFrame([{'date': '2026-07-16', 'open': 99, 'high': 101, 'low': 98, 'close': 100, 'volume': 1000},
+                                 {'date': '2026-07-17', 'open': 100, 'high': 102, 'low': 99, 'close': 101, 'volume': 2000}])
+        with patch.dict(sys.modules, {'akshare': SimpleNamespace(stock_us_hist=failed, stock_us_daily=sina)}):
+            value = AkshareProvider().daily_quality_batch('NVDA', 'NASDAQ', 'STOCK', date(2026, 7, 17),
+                                                        date(2026, 7, 17), AdjustType.NONE, FETCHED_AT)
+        self.assertEqual({'symbol': 'NVDA', 'adjust': ''}, captured)
+        self.assertEqual('AKSHARE_US_SINA', value.provider)
+        self.assertEqual(1, len(value.records))
+        self.assertEqual(date(2026, 7, 17), value.records[0].data_date)
+        self.assertEqual(Decimal('2000'), value.records[0].volume)
+        self.assertEqual(FETCHED_AT, value.records[0].fetched_at)
+        self.assertEqual('AKSHARE_US_SINA', value.to_snapshot_rows()[0]['provider'])
+
     def test_akshare_quality_batch_uses_the_same_eastmoney_units_as_market_history(self):
         class Source:
             def stock_zh_a_hist(self, **kwargs):

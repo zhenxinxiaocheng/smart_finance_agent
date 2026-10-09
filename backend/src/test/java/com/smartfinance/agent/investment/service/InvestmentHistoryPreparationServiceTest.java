@@ -354,7 +354,32 @@ class InvestmentHistoryPreparationServiceTest {
         var result = service.prepareProduct(product, "STOCK_HISTORY", false, TODAY.minusDays(1), TODAY);
 
         assertThat(result.skipped()).isFalse();
+        assertThat(result.datasetVersion()).isEqualTo("dataset-v1");
+        verify(dataQualityService).resolve(product, TODAY.minusDays(1), TODAY, "NONE", true);
+        verify(dataQualityService).claim(any());
+        verify(analysisClient, never()).marketDailyQuotes(any(), any(), any(), anyString());
         verify(analysisClient, never()).aShareTradingDates(org.mockito.ArgumentMatchers.anyInt());
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+    }
+
+    @Test
+    void explicitDemandRefreshPersistsSameDayCorrectionsWithoutResettingHistoricalCoverage() {
+        InvestmentProduct product = product();
+        product.setMarket("NASDAQ");
+        product.setHistoryStartDate(TODAY.minusYears(3));
+        product.setHistoryEndDate(TODAY);
+        product.setHistoryCoverageComplete(true);
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(TODAY);
+
+        var result = service.prepareDemandProduct(product, "STOCK_HISTORY", false, TODAY.minusDays(3), TODAY);
+
+        assertThat(result.skipped()).isFalse();
+        assertThat(result.datasetVersion()).isEqualTo("dataset-v1");
+        assertThat(result.coverageComplete()).isTrue();
+        assertThat(product.getHistoryStartDate()).isEqualTo(TODAY.minusYears(3));
+        assertThat(product.getHistoryEndDate()).isEqualTo(TODAY);
+        verify(dataQualityService).claim(any());
         verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 

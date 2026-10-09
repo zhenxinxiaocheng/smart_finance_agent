@@ -44,7 +44,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     private final InvestmentAnalysisSnapshotMapper snapshotMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentDataQualityService dataQualityService;
-    private final ProductDailyQuoteService quoteService;
     private final WealthService wealthService;
     private final FinancialProfileMapper financialProfileMapper;
     private final ObjectMapper objectMapper;
@@ -63,7 +62,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                                          InvestmentAnalysisSnapshotMapper snapshotMapper,
                                          AnalysisServiceClient analysisClient,
                                          InvestmentDataQualityService dataQualityService,
-                                         ProductDailyQuoteService quoteService,
                                          WealthService wealthService,
                                          FinancialProfileMapper financialProfileMapper,
                                          ObjectMapper objectMapper,
@@ -81,7 +79,6 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         this.snapshotMapper = snapshotMapper;
         this.analysisClient = analysisClient;
         this.dataQualityService = dataQualityService;
-        this.quoteService = quoteService;
         this.wealthService = wealthService;
         this.financialProfileMapper = financialProfileMapper;
         this.objectMapper = objectMapper;
@@ -112,6 +109,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
     private record DetailContext(InvestmentAssetView asset, InvestmentProduct product,
                                  ResolvedHorizonProfile horizon, Map<String, Object> quality,
+                                 List<ProductDailyQuote> quotes, AnalysisHistory history,
                                  InvestmentAnalysisSnapshot snapshot, String holdingsRevision, String key) {}
 
     private String holdingsRevision(Long userId) {
@@ -127,16 +125,20 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentProduct product = productMapper.selectById(asset.getProductId());
         if (product == null) throw new IllegalArgumentException("投资产品不存在");
         ResolvedHorizonProfile horizon = horizonService.resolve(userId, assetId);
-        Map<String, Object> quality = dataQualityService.latestStatus(product);
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId, true);
+        Map<String, Object> quality = dataQualityService.analysisStatus(product,
+                snapshot == null ? null : snapshot.getDatasetVersion());
+        List<ProductDailyQuote> quotes = loadQuotes(product);
+        AnalysisHistory history = analysisHistory(product, quotes, quality);
         String holdingsRevision = holdingsRevision(userId);
         // Includes holdings, global/asset preferences and the latest persisted quality gate.
         // A failed Redis eviction must not expose a previous owner's data or a blocked conclusion.
         String key = hash(writeJson(Arrays.asList(asset, horizonConfigMaterial(horizon), quality, holdingsRevision,
                 runtimeProperties.getAnalysis().getStrategyVersion(), horizonProperties.getAnalysisRuleVersion(),
+                quoteHistoryMaterial(quotes), history.internalGap(), benchmarkCacheMaterial(product, history.records()),
                 snapshot == null ? null : Arrays.asList(snapshot.getAnalysisCacheKey(), snapshot.getAnalyzedAt(),
                         snapshot.getAnalysisStatus(), snapshot.getUpdatedAt()))));
-        return new DetailContext(asset, product, horizon, quality, snapshot, holdingsRevision, key);
+        return new DetailContext(asset, product, horizon, quality, quotes, history, snapshot, holdingsRevision, key);
     }
 
     private InvestmentAssetDetailResponse detailStatus(Long userId, Long assetId,
@@ -172,12 +174,12 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
     @Override
     public InvestmentAssetDetailResponse refresh(Long userId, Long assetId) {
-        return rebuildAndCache(userId, assetId, true, false);
+        return rebuildAndCache(userId, assetId, true);
     }
 
     @Override
     public InvestmentAssetDetailResponse retryData(Long userId, Long assetId) {
-        return rebuildAndCache(userId, assetId, false, true);
+        return queueDataRefresh(userId, assetId);
     }
 
     @Override
@@ -189,13 +191,16 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     private InvestmentAssetDetailResponse rebuildAndCache(Long userId, Long assetId,
-                                                          boolean forceAnalysis, boolean refreshQuotes) {
+                                                          boolean forceAnalysis) {
         String holdingsBefore = holdingsRevision(userId);
-        InvestmentAssetDetailResponse response = build(userId, assetId, forceAnalysis, refreshQuotes);
+        InvestmentAssetDetailResponse response = build(userId, assetId, forceAnalysis);
         DetailContext current = detailContext(userId, assetId);
         detailCache.evict(userId, assetId);
         Map<String, Object> provenance = asMap(response.getTechnicalAnalysis().get("provenance"));
-        if (Objects.equals(holdingsBefore, current.holdingsRevision())
+        AnalysisEligibility currentEligibility = analysisEligibility(current.product(), current.history(),
+                findSnapshot(userId, assetId), current.horizon(), current.quality(), null);
+        if ((current.snapshot() == null || currentEligibility.compatibleInputs()) && !currentEligibility.blocked()
+                && Objects.equals(holdingsBefore, current.holdingsRevision())
                 && Objects.equals(response.getSourceStatus().get("qualityDecision"), current.quality().get("decision"))
                 && Objects.equals(provenance.get("datasetVersion"), current.quality().get("datasetVersion"))
                 && Objects.equals(response.getSourceStatus().get("analyzedAt"),
@@ -207,7 +212,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         return response;
     }
 
-    private boolean canReuseSnapshot(
+    private boolean snapshotInputsMatch(
             InvestmentAnalysisSnapshot snapshot,
             List<ProductDailyQuote> quotes,
             Map<String, Object> latestQuality,
@@ -220,8 +225,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         if ("BLOCK".equalsIgnoreCase(text(latestQuality.get("decision")))) {
             return false;
         }
-        if (!"READY".equals(snapshot.getAnalysisStatus())
-                || Boolean.TRUE.equals(snapshot.getHistoricalCache())
+        if (Boolean.TRUE.equals(snapshot.getHistoricalCache())
                 || !("PASS".equals(snapshot.getQualityStatus()) || "WARN".equals(snapshot.getQualityStatus()))
                 || snapshot.getDatasetVersion() == null
                 || snapshot.getQualityRuleSetVersion() == null) {
@@ -306,22 +310,19 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentAssetView asset = context.asset();
         InvestmentProduct product = context.product();
         ResolvedHorizonProfile horizonProfile = context.horizon();
-        List<ProductDailyQuote> quotes = loadQuotes(product);
-        List<ProductDailyQuote> analysisQuotes = analysisReadyQuotes(product, quotes);
+        List<ProductDailyQuote> quotes = context.quotes();
+        AnalysisHistory history = context.history();
+        List<ProductDailyQuote> analysisQuotes = history.records();
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
         Map<String, Object> quality = context.quality();
         boolean localHistorySufficient = analysisQuotes.size()
                 >= horizonProperties.getMinimumHistoryTradingDays();
-        // 详情页只读且以「已有有效分析」为准：
-        // 只有数据源明确判定 BLOCK 才隐藏结论；校验服务短暂不可用不撤销既有分析。
-        boolean qualityBlocked = "BLOCK".equalsIgnoreCase(text(quality.get("decision")));
-        boolean returnsPending = hasMissingFundReturns(product, quotes);
-        boolean reusable = canReuseSnapshot(snapshot, analysisQuotes, quality, horizonProfile, product);
-        boolean historicalCache = returnsPending && reusable && localHistorySufficient && !qualityBlocked;
-        boolean blocked = qualityBlocked || returnsPending && !historicalCache;
+        AnalysisEligibility eligibility = analysisEligibility(
+                product, history, snapshot, horizonProfile, quality, null);
+        boolean blocked = eligibility.blocked();
         // 只读：详情页不创建任务、不触发回补。数据刷新由后台调度负责。
         // Never label an incompatible snapshot (different preference/dataset/rules) as current.
-        if (blocked || !reusable) snapshot = null;
+        if (blocked || !eligibility.compatibleInputs()) snapshot = null;
         Map<String, Object> technical = snapshot == null
                 ? new LinkedHashMap<>(Map.of("status", localHistorySufficient ? "PREPARING" : "INSUFFICIENT", "verdict", "WAIT",
                 "reason", "可靠分析正在后台准备中"))
@@ -340,14 +341,15 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         Map<String, Object> sourceStatus = new LinkedHashMap<>();
         putFundClassification(sourceStatus, product);
         sourceStatus.put("dataState", blocked ? "BLOCKED"
-                : historicalCache ? "STABLE_CACHE" : snapshot != null ? "READY"
+                : eligibility.reusableSnapshot() ? "READY"
+                : snapshot != null ? "WAITING"
                 : localHistorySufficient ? "PREPARING" : "WAITING");
         sourceStatus.put("qualityStatus", quality.getOrDefault("status", "UNAVAILABLE"));
         sourceStatus.put("qualityDecision", quality.getOrDefault("decision", "WAITING"));
         sourceStatus.put("quoteStatus", analysisQuotes.size() >= horizonProperties.getMinimumHistoryTradingDays()
                 ? "READY" : "INSUFFICIENT");
         sourceStatus.put("adjustType", configuredAdjustType(product));
-        sourceStatus.put("historicalCache", historicalCache);
+        sourceStatus.put("historicalCache", false);
         sourceStatus.put("quoteDate", analysisQuotes.isEmpty()
                 ? null : analysisQuotes.get(analysisQuotes.size() - 1).getTradeDate());
         sourceStatus.put("analyzedAt", snapshot == null ? null : snapshot.getAnalyzedAt());
@@ -398,8 +400,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     private InvestmentAssetDetailResponse build(Long userId, Long assetId,
-                                                boolean forceAnalysis,
-                                                boolean refreshQuotes) {
+                                                boolean forceAnalysis) {
         InvestmentAssetView asset = assetService.get(userId, assetId);
         InvestmentProduct product = productMapper.selectById(asset.getProductId());
         if (product == null) throw new IllegalArgumentException("投资产品不存在");
@@ -410,7 +411,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         LocalDate qualityStartDate = qualityEndDate.minusDays(
                 calendarLookbackDays(requiredHistoryDays, horizonProperties));
         List<ProductDailyQuote> quotes = loadQuotes(product);
-        List<ProductDailyQuote> analysisQuotes = analysisReadyQuotes(product, quotes);
+        AnalysisHistory history = analysisHistory(product, quotes);
+        List<ProductDailyQuote> analysisQuotes = history.records();
         Map<String, Object> sourceStatus = new LinkedHashMap<>();
         putFundClassification(sourceStatus, product);
         sourceStatus.put("quoteStatus", analysisQuotes.size() >= horizonProperties.getMinimumHistoryTradingDays()
@@ -425,15 +427,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
         InvestmentDataQualityService.Evaluation quality = null;
         try {
-            String adjustType = configuredAdjustType(product);
-            quality = dataQualityService.resolve(
-                    product, qualityStartDate, qualityEndDate, adjustType, refreshQuotes);
-            if (!quality.blocked()) {
-                dataQualityService.claim(quality);
-                quoteService.persistDailyQuotes(product, quality.response(), adjustType);
-                quotes = loadQuotes(product);
-                analysisQuotes = analysisReadyQuotes(product, quotes);
-            }
+            quality = dataQualityService.preparedEvaluation(product, qualityStartDate, qualityEndDate);
         } catch (RuntimeException exception) {
             quality = null;
             log.warn("Investment quality evaluation unavailable productId={} code={}",
@@ -461,15 +455,29 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                     >= horizonProperties.getMinimumHistoryTradingDays() ? "READY" : "INSUFFICIENT");
         }
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
-        Map<String, Object> latestQuality = dataQualityService.latestStatus(product);
-        boolean fundReturnsMissing = hasMissingFundReturns(product, quotes);
+        Map<String, Object> latestQuality = dataQualityService.analysisStatus(product,
+                quality != null ? quality.datasetVersion() : snapshot == null ? null : snapshot.getDatasetVersion());
+        Map<String, Object> inputScope = quality == null ? latestQuality : new LinkedHashMap<>();
+        if (quality != null) inputScope.put("sampleStartDate", earliestRecordDate(quality.records()));
+        history = analysisHistory(product, quotes, inputScope);
+        analysisQuotes = history.records();
+        sourceStatus.put("quoteCount", analysisQuotes.size());
+        sourceStatus.put("quoteStatus", analysisQuotes.size() >= horizonProperties.getMinimumHistoryTradingDays()
+                ? "READY" : "INSUFFICIENT");
+        if (quality == null) {
+            sourceStatus.put("qualityStatus", "UNAVAILABLE");
+            sourceStatus.put("qualityDecision", "WAITING");
+        }
+        boolean fundReturnsMissing = history.missingReturns();
         boolean latestQualityBlocked = "BLOCK".equalsIgnoreCase(text(latestQuality.get("decision")));
-        boolean explicitBlock = latestQualityBlocked || fundReturnsMissing
-                || quality != null && quality.blocked();
         boolean sourceUnavailable = quality == null;
+        AnalysisEligibility eligibility = analysisEligibility(
+                product, history, snapshot, horizonProfile, latestQuality, quality);
+        boolean inputsMismatch = quality != null && !quality.blocked() && !quality.matchesInputs(product, analysisQuotes);
+        boolean explicitBlock = eligibility.blocked() || inputsMismatch;
+        if (inputsMismatch) sourceStatus.put("analysisInputError", "已准备的数据与实际分析输入不一致");
         // 校验不可用时仅保留契约兼容、曾通过质量门控的快照；条数不能代替质量校验。
-        boolean reusableWithoutEvaluation = sourceUnavailable && !explicitBlock
-                && canReuseSnapshot(snapshot, analysisQuotes, latestQuality, horizonProfile, product);
+        boolean reusableWithoutEvaluation = sourceUnavailable && !explicitBlock && eligibility.reusableSnapshot();
         boolean qualityBlocked = explicitBlock || sourceUnavailable && !reusableWithoutEvaluation;
         if (latestQualityBlocked) {
             sourceStatus.put("qualityStatus", latestQuality.getOrDefault("status", "BLOCKED"));
@@ -598,22 +606,43 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                     );
                     technical = fund;
                     fundamental = Map.of("status", "NOT_APPLICABLE", "verdict", "NOT_APPLICABLE");
+                    requireStrategyVersion(configuredStrategyVersion, technical, "分析");
                 } else {
-                    technical = analysisClient.technicalAnalysis(
-                            records, horizons, horizonProfile.primaryCode(), marketSnapshot(asset));
-                    fundamental = analysisClient.fundamentalAnalysis(product.getCode(), product.getMarket());
+                    try {
+                        technical = analysisClient.technicalAnalysis(
+                                records, horizons, horizonProfile.primaryCode(), marketSnapshot(asset));
+                        requireStrategyVersion(configuredStrategyVersion, technical, "分析");
+                    } catch (RuntimeException technicalException) {
+                        technical = Map.of("status", "FAILED", "verdict", "WAIT",
+                                "message", "技术分析服务暂不可用");
+                        sourceStatus.put("analysisError", technicalException.getMessage());
+                    }
+                    try {
+                        fundamental = analysisClient.fundamentalAnalysis(product.getCode(), product.getMarket());
+                    } catch (RuntimeException financialException) {
+                        fundamental = Map.of("status", "UNAVAILABLE", "verdict", "INSUFFICIENT",
+                                "reason", "财务数据源暂不可用，基本面分析待更新");
+                        sourceStatus.put("fundamentalError", financialException.getMessage());
+                    }
                     fund = Map.of();
                 }
-                requireStrategyVersion(configuredStrategyVersion, technical, "分析");
-                sourceStatus.put("analysisStrategyVersion", technical.get("strategyVersion"));
-                sourceStatus.put("analysisStatus", analysisResultStatus(technical));
-                snapshot = saveSnapshot(userId, assetId, snapshot, quoteDate, preferenceHash,
-                        horizonProfile.version(), horizonConfigJson,
-                        effectiveDatasetVersion, effectiveRuleSetVersion, configuredStrategyVersion,
-                        analysisCacheKey, quality.status(),
-                        technical, fundamental, fund, sourceStatus);
-                currentSnapshot = true;
-                compatibleSnapshot = isCompatibleSnapshot(snapshot, analysisCacheKey);
+                if ("FAILED".equals(analysisResultStatus(technical)) && compatibleSnapshot) {
+                    technical = readMap(snapshot.getTechnicalJson());
+                    fund = readMap(snapshot.getFundJson());
+                    historicalCacheUsed = true;
+                    sourceStatus.put("analysisStatus", "CACHED");
+                    sourceStatus.put("historicalCache", true);
+                } else {
+                    sourceStatus.put("analysisStrategyVersion", technical.get("strategyVersion"));
+                    sourceStatus.put("analysisStatus", analysisResultStatus(technical));
+                    snapshot = saveSnapshot(userId, assetId, snapshot, quoteDate, preferenceHash,
+                            horizonProfile.version(), horizonConfigJson,
+                            effectiveDatasetVersion, effectiveRuleSetVersion, configuredStrategyVersion,
+                            analysisCacheKey, quality.status(),
+                            technical, fundamental, fund, sourceStatus);
+                    currentSnapshot = true;
+                    compatibleSnapshot = isCompatibleSnapshot(snapshot, analysisCacheKey);
+                }
             } catch (RuntimeException exception) {
                 if (!compatibleSnapshot) {
                     boolean fundProduct = "MUTUAL_FUND".equals(product.getProductType());
@@ -737,25 +766,54 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                 .orderByAsc(ProductDailyQuote::getTradeDate));
     }
 
-    private static List<ProductDailyQuote> analysisReadyQuotes(
+    private record AnalysisHistory(List<ProductDailyQuote> records, boolean missingReturns, boolean internalGap) { }
+
+    private record AnalysisEligibility(boolean compatibleInputs, boolean reusableSnapshot, boolean blocked) { }
+
+    private AnalysisEligibility analysisEligibility(
+            InvestmentProduct product, AnalysisHistory history, InvestmentAnalysisSnapshot snapshot,
+            ResolvedHorizonProfile horizon, Map<String, Object> qualityStatus,
+            InvestmentDataQualityService.Evaluation evaluation) {
+        boolean compatibleInputs = !history.internalGap()
+                && snapshotInputsMatch(snapshot, history.records(), qualityStatus, horizon, product);
+        boolean reusable = compatibleInputs && "READY".equals(snapshot.getAnalysisStatus());
+        boolean validatedPrefix = evaluation != null && !evaluation.blocked() && !evaluation.records().isEmpty()
+                && !history.records().isEmpty() && latestRecordDate(evaluation.records())
+                .equals(history.records().get(history.records().size() - 1).getTradeDate());
+        boolean returnsBlocked = history.missingReturns()
+                && (history.internalGap() || (evaluation == null ? !reusable : !validatedPrefix));
+        boolean blocked = returnsBlocked || "BLOCK".equalsIgnoreCase(text(qualityStatus.get("decision")))
+                || evaluation != null && evaluation.blocked();
+        return new AnalysisEligibility(compatibleInputs, reusable, blocked);
+    }
+
+    private static AnalysisHistory analysisHistory(
             InvestmentProduct product, List<ProductDailyQuote> quotes) {
         if (!"MUTUAL_FUND".equals(product.getProductType())) {
-            return quotes;
+            return new AnalysisHistory(quotes, false, false);
         }
         // 收益分析必须使用从首日开始连续有效的前缀，中间缺失后不能重新拼接。
+        int prefix = quotes.size();
+        boolean gap = false;
         for (int index = 0; index < quotes.size(); index++) {
             ProductDailyQuote quote = quotes.get(index);
             if (quote.getTotalReturnIndex() == null || quote.getTotalReturnIndex().signum() <= 0) {
-                return quotes.subList(0, index);
+                prefix = Math.min(prefix, index);
+            } else if (prefix < index) {
+                gap = true;
             }
         }
-        return quotes;
+        return new AnalysisHistory(quotes.subList(0, prefix), prefix < quotes.size(), gap);
     }
 
-    private static boolean hasMissingFundReturns(InvestmentProduct product, List<ProductDailyQuote> quotes) {
-        return "MUTUAL_FUND".equals(product.getProductType())
-                && quotes.stream().anyMatch(quote -> quote.getTotalReturnIndex() == null
-                || quote.getTotalReturnIndex().signum() <= 0);
+    private static AnalysisHistory analysisHistory(
+            InvestmentProduct product, List<ProductDailyQuote> quotes, Map<String, Object> quality) {
+        AnalysisHistory history = analysisHistory(product, quotes);
+        Object start = quality.get("sampleStartDate");
+        if (start == null) return history;
+        LocalDate first = LocalDate.parse(String.valueOf(start));
+        return new AnalysisHistory(history.records().stream().filter(quote -> !quote.getTradeDate().isBefore(first)).toList(),
+                history.missingReturns(), history.internalGap());
     }
 
     private InvestmentAnalysisSnapshot findSnapshot(Long userId, Long assetId) {
@@ -770,6 +828,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                         horizonProperties.getAnalysisRuleVersion()).last("LIMIT 1");
         if (metadataOnly) {
             query.select(InvestmentAnalysisSnapshot::getId, InvestmentAnalysisSnapshot::getAnalysisCacheKey,
+                    InvestmentAnalysisSnapshot::getDatasetVersion,
                     InvestmentAnalysisSnapshot::getAnalyzedAt,
                     InvestmentAnalysisSnapshot::getAnalysisStatus, InvestmentAnalysisSnapshot::getUpdatedAt);
         }
@@ -910,6 +969,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         item.put("close", quote.getClosePrice());
         item.put("total_return_index", quote.getTotalReturnIndex());
         item.put("volume", quote.getVolume());
+        if (quote.getAmount() != null) item.put("amount", quote.getAmount());
+        if (quote.getTurnoverRate() != null) item.put("turnover_rate", quote.getTurnoverRate());
         return item;
     }
 

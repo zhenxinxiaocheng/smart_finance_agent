@@ -298,7 +298,7 @@ public class InvestmentHistoryPreparationService {
             }
             series.add(raw);
         }
-        if (!fullBackfill && primary.end() != null && !primary.end().isAfter(localLastValid)) {
+        if (!demandWindow && !fullBackfill && primary.end() != null && !primary.end().isAfter(localLastValid)) {
             return skipped(product, adjustType, localLastValid, requestedStart);
         }
         for (PreparedSeries item : series) {
@@ -479,7 +479,8 @@ public class InvestmentHistoryPreparationService {
     }
 
     static boolean supportsQuality(InvestmentProduct product) {
-        return fund(product) || ("STOCK".equals(product.getProductType()) && mainlandExchangeProduct(product));
+        return fund(product) || ("STOCK".equals(product.getProductType()) && (mainlandExchangeProduct(product)
+                || product.getMarket() != null && Set.of("NASDAQ", "NYSE", "AMEX").contains(product.getMarket())));
     }
 
     private static boolean mainlandExchangeProduct(InvestmentProduct product) {

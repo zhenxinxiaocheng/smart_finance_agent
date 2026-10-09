@@ -48,4 +48,13 @@ class ServiceIntegrationTestConfig {
     InvestmentDataQualityService investmentDataQualityService() {
         return mock(InvestmentDataQualityService.class);
     }
+
+    @Bean
+    com.smartfinance.agent.investment.service.InvestmentQuoteAvailabilityService investmentQuoteAvailabilityService() {
+        var availability = mock(com.smartfinance.agent.investment.service.InvestmentQuoteAvailabilityService.class);
+        org.mockito.Mockito.when(availability.target(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> call.getArgument(1));
+        return availability;
+    }
 }

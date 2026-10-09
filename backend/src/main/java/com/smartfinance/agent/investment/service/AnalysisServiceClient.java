@@ -469,6 +469,23 @@ public class AnalysisServiceClient {
         return postInternal("/internal/v1/data-quality/replay",body,"数据质量重放");
     }
 
+    public Map<String,Object> replayDataQuality(InvestmentProduct product, List<String> versions,
+                                               List<String> secondaryVersions, String config,
+                                               LocalDate start, LocalDate end) {
+        Map<String,Object> body = new LinkedHashMap<>();
+        body.put("datasetVersion", versions.get(0));
+        body.put("continuationDatasetVersions", versions.subList(1, versions.size()));
+        if (secondaryVersions.size() == versions.size()) {
+            body.put("secondaryDatasetVersion", secondaryVersions.get(0));
+            body.put("continuationSecondaryVersions", secondaryVersions.subList(1, secondaryVersions.size()));
+        }
+        body.put("qualityConfigVersion", config);
+        body.put("fundCategory", product.getFundCategory());
+        body.put("startDate", start.toString());
+        body.put("endDate", end.toString());
+        return postInternal("/internal/v1/data-quality/replay", body, "已准备窗口质量重放");
+    }
+
     public Map<String,Object> quoteAvailability(InvestmentProduct product,LocalDate start,LocalDate end,java.time.Instant at) {
         Map<String,Object> body=new LinkedHashMap<>();
         body.put("productType",product.getProductType());body.put("market",product.getMarket());

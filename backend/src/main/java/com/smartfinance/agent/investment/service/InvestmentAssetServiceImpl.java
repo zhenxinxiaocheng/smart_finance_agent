@@ -52,6 +52,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
     private final ProductDailyQuoteService quoteService;
+    private final InvestmentHistoryPreparationService historyPreparation;
     private final TransactionTemplate quoteTransaction;
     private InvestmentQuoteAvailabilityService availability;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -76,6 +77,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentDetailCacheService detailCache,
                                       InvestmentQuoteCacheService quoteCache,
                                       ProductDailyQuoteService quoteService,
+                                      InvestmentHistoryPreparationService historyPreparation,
                                       PlatformTransactionManager transactionManager) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
@@ -93,6 +95,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.detailCache = detailCache;
         this.quoteCache = quoteCache;
         this.quoteService = quoteService;
+        this.historyPreparation = historyPreparation;
         this.quoteTransaction = new TransactionTemplate(transactionManager);
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
@@ -179,7 +182,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     @Override
-    @Transactional
     public InvestmentAssetView sync(Long userId, Long assetId) {
         return refresh(userId, assetId, true);
     }
@@ -288,12 +290,10 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                 LocalDate end = availability == null ? today.minusDays(1)
                         : availability.target(product, today, Instant.now());
                 LocalDate start = end.minusDays(runtimeProperties.getMarket().getDailyQuoteLookbackDays());
-                Map<String, Object> response = analysisClient.marketDailyQuotes(product, start, end, "NONE");
-                Set<LocalDate> dates = InvestmentHistoryPreparationService.recordDates(response);
-                if (dates.isEmpty() || dates.stream().anyMatch(date -> date.isBefore(start) || date.isAfter(end))) {
-                    throw new IllegalStateException("日线行情未返回请求区间内的有效记录");
+                var prepared = historyPreparation.prepareDemandProduct(product, "STOCK_HISTORY", false, start, end);
+                if (prepared.skipped() && prepared.verifiedThrough() == null) {
+                    return new RefreshOutcome("PARTIAL", "请求区间暂无已披露行情，保留已有数据");
                 }
-                quoteService.persistDailyQuotes(product, response, "NONE");
                 return new RefreshOutcome("SUCCESS", null);
             }
             if (usesRealtimeQuote(product)) {

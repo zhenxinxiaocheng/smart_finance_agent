@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -106,6 +106,12 @@ class DataQualityReplayRequest(BaseModel):
         default=None, alias="secondaryDatasetVersion", pattern=r"^[0-9a-f]{64}$"
     )
     quality_config_version: str = Field(alias="qualityConfigVersion", min_length=1)
+    continuation_dataset_versions: list[Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]] | None = Field(
+        default=None, alias="continuationDatasetVersions", max_length=512)
+    continuation_secondary_versions: list[Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]] | None = Field(
+        default=None, alias="continuationSecondaryVersions", max_length=512)
+    start_date: date | None = Field(default=None, alias="startDate")
+    end_date: date | None = Field(default=None, alias="endDate")
 
 
 class DataQualityClaimRequest(BaseModel):
@@ -183,7 +189,7 @@ class TechnicalAnalysisRequest(AnalysisRequest):
 
 class FundamentalAnalysisRequest(AnalysisRequest):
     periods: list[dict[str, Any]] = Field(default_factory=list)
-    code: str | None = Field(default=None, min_length=6, max_length=6)
+    code: str | None = Field(default=None, min_length=1, max_length=40)
     market: str | None = Field(default=None, max_length=20)
 
 
@@ -424,11 +430,18 @@ def validate_data_quality(request: DataQualityValidateRequest):
 @app.post("/internal/v1/data-quality/replay", dependencies=[Depends(internal_auth)])
 def replay_data_quality(request: DataQualityReplayRequest):
     try:
+        prepared = {} if all(value is None for value in (request.start_date, request.end_date,
+                request.continuation_dataset_versions, request.continuation_secondary_versions)) else {
+            "continuation_dataset_versions": request.continuation_dataset_versions,
+            "continuation_secondary_versions": request.continuation_secondary_versions,
+            "start_date": request.start_date, "end_date": request.end_date,
+        }
         return quality_service.replay(
             dataset_version=request.dataset_version,
             secondary_dataset_version=request.secondary_dataset_version,
             fund_category=request.fund_category,
             quality_config_version=request.quality_config_version,
+            **prepared,
         )
     except SnapshotNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -530,10 +543,12 @@ def fundamental_analysis(request: FundamentalAnalysisRequest):
     warnings: list[str] = []
     if not periods and request.code:
         try:
-            periods, warnings = fetch_stock_fundamentals(request.code)
+            periods, warnings = fetch_stock_fundamentals(request.code, market=request.market or "SSE")
         except ProviderUnavailable as exc:
             return {"status": "INSUFFICIENT", "verdict": "INSUFFICIENT", "coverage": 0,
-                    "dimensions": {}, "warnings": [str(exc)]}
+                    "dimensions": {}, "reason": str(exc), "warnings": [str(exc)]}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = analyze_fundamentals(periods)
     result["warnings"] = warnings
     return result

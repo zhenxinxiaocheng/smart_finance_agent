@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .config import load_data_quality_config
 from .engine import DataQualityEngine
-from .models import AdjustType, DataQualityConfig, DataQualityManifest, ProductType
+from .models import AdjustType, DataQualityConfig, DataQualityManifest, DataSnapshotContext, ProductType
 from .snapshot_store import SnapshotStore
 from ..quote_availability import quote_availability
 
@@ -86,18 +86,29 @@ class DataQualityService:
         quality_config_version: str,
         secondary_dataset_version: str | None = None,
         fund_category: str | None = None,
+        continuation_dataset_versions: list[str] | None = None,
+        continuation_secondary_versions: list[str] | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, Any]:
         config = self._config_loader(quality_config_version)
         store = SnapshotStore(config.storage_root, config.schema_version)
-        primary = store.read_manifest(dataset_version)
+        prepared_versions = [dataset_version, *(continuation_dataset_versions or [])]
+        if continuation_dataset_versions or start_date is not None or end_date is not None:
+            primary = self._prepared_window(store, prepared_versions, start_date, end_date)
+            dataset_version = primary.dataset_version
+        else:
+            primary = store.read_manifest(dataset_version)
         primary_rows = store.read(dataset_version)
         secondary_manifests: list[DataQualityManifest] = []
         secondary_rows = None
         if secondary_dataset_version is not None:
-            secondary = store.read_manifest(secondary_dataset_version)
+            secondary = self._prepared_window(store,
+                [secondary_dataset_version, *(continuation_secondary_versions or [])], start_date, end_date) \
+                if continuation_dataset_versions or start_date is not None else store.read_manifest(secondary_dataset_version)
             _require_replay_compatible(primary, secondary)
             secondary_manifests.append(secondary)
-            secondary_rows = store.read(secondary_dataset_version)
+            secondary_rows = store.read(secondary.dataset_version)
         expected_dates = self._expected_dates(config, primary, fund_category)
         report = DataQualityEngine(config, lambda: primary.fetched_at).evaluate(
             primary,
@@ -106,7 +117,45 @@ class DataQualityService:
             integrity_verified=True,
             secondary_records=secondary_rows,
         )
-        return _response(primary, secondary_manifests, report, primary_rows, ())
+        response = _response(primary, secondary_manifests, report, primary_rows, ())
+        if continuation_dataset_versions or start_date is not None:
+            response["preparedDatasetVersions"] = prepared_versions
+        return response
+
+    def _prepared_window(self, store, versions, start, end):
+        """Rebuild a real quality input from intact prepared snapshots, without provider access."""
+        if start is None or end is None or start > end:
+            raise ValueError("prepared replay requires an ordered start/end window")
+        manifests = [store.read_manifest(version) for version in versions]
+        primary = manifests[0]
+        fields = ("product_type", "code", "market", "frequency", "adjust_type", "provider", "adapter_version", "schema_version")
+        if any(any(getattr(item, field) != getattr(primary, field) for field in fields) for item in manifests):
+            raise ValueError("prepared datasets have incompatible identity or price basis")
+        cursor = start
+        for item in sorted(manifests, key=lambda item: item.requested_start_date):
+            if item.requested_end_date < cursor:
+                continue
+            if item.requested_start_date > cursor:
+                raise ValueError("prepared replay contains an unprepared window")
+            cursor = max(cursor, item.requested_end_date + timedelta(days=1))
+        if cursor <= end:
+            raise ValueError("prepared replay contains an unprepared tail")
+        rows = {}
+        for item in sorted(manifests, key=lambda item: item.fetched_at):
+            for row in store.read(item.dataset_version):
+                day = date.fromisoformat(row["data_date"])
+                if not start <= day <= end:
+                    continue
+                previous = rows.get(day)
+                if previous is not None and primary.adjust_type is not AdjustType.NONE \
+                        and previous.get("close") != row.get("close"):
+                    raise ValueError("prepared adjusted datasets disagree on their overlapping price basis")
+                rows[day] = row
+        context = DataSnapshotContext(product_type=primary.product_type, code=primary.code, market=primary.market,
+            frequency=primary.frequency, adjust_type=primary.adjust_type, provider=primary.provider,
+            adapter_version=primary.adapter_version, requested_start_date=start, requested_end_date=end,
+            fetched_at=max(item.fetched_at for item in manifests))
+        return store.write([rows[day] for day in sorted(rows)], context)
 
     def claim(self, *, dataset_version: str, quality_config_version: str) -> dict[str, str]:
         config = self._config_loader(quality_config_version)

@@ -1043,8 +1043,12 @@ class ProviderEmpty(ProviderUnavailable):
     pass
 
 
-def fetch_stock_fundamentals(code: str, ak_module: Any = None) -> tuple[list[dict[str, Any]], list[str]]:
+def fetch_stock_fundamentals(code: str, ak_module: Any = None, *, market: str = "SSE") -> tuple[list[dict[str, Any]], list[str]]:
     """Return a small, provider-neutral set of financial periods for long-horizon analysis."""
+    if market.strip().upper() not in {"SSE", "SZSE", "BSE"}:
+        raise ProviderUnavailable("当前市场尚未接入财务数据源，暂不形成基本面结论。")
+    if len(code) != 6 or not code.isascii() or not code.isdigit():
+        raise ValueError("A 股财务数据源要求六位数字代码")
     if ak_module is None:
         try:
             import akshare as ak_module
@@ -1267,6 +1271,13 @@ class AkshareProvider(MarketDataProvider):
         market = market.upper()
         start = start_date.strftime("%Y%m%d")
         end = end_date.strftime("%Y%m%d")
+        if product is ProductType.STOCK and market in {"NYSE", "NASDAQ", "AMEX"} and adjustment is AdjustType.NONE:
+            # Raw US history uses the same configured sources and units as Market Data.
+            from .market_catalog import daily_history
+            records = daily_history(code, market, product.value, start_date, end_date, adjustment.value,
+                                    ak_module=ak, fetched_at=fetched_at)
+            return _provider_batch(product, code, market, adjustment,
+                                   records[0].provider if records else self.name, fetched_at, records)
         if product is ProductType.MUTUAL_FUND:
             frame = _ak_frame(ak, "fund_open_fund_info_em", symbol=code, indicator="单位净值走势")
         else:

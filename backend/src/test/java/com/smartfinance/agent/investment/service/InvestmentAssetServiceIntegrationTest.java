@@ -54,6 +54,7 @@ import static org.mockito.Mockito.when;
         com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
         com.smartfinance.agent.investment.service.FundClassificationService.class,
         com.smartfinance.agent.investment.service.ProductDailyQuoteService.class,
+        com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService.class,
         com.smartfinance.agent.investment.service.InvestmentHorizonServiceImpl.class,
         com.smartfinance.agent.investment.config.InvestmentHorizonProperties.class})
 @Sql(scripts = "/schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
@@ -214,19 +215,64 @@ class InvestmentAssetServiceIntegrationTest {
                 "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", List.of(
                 java.util.Map.of("data_date", recent.toString(), "close", "180", "volume", "1000")));
         when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(response);
+        when(dataQualityService.adjustType(any())).thenReturn("NONE");
+        var receipt = new com.smartfinance.agent.investment.entity.InvestmentDataQualitySnapshot();
+        receipt.setDatasetVersion("us-prepared"); receipt.setQualityStatus("PASS"); receipt.setDecision("ALLOW");
+        var prepared = new com.smartfinance.agent.investment.service.InvestmentDataQualityService.Evaluation(
+                receipt, response, (List<java.util.Map<String,Object>>) response.get("records"), List.of());
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true))).thenReturn(prepared);
 
         var refreshed = assetService.refresh(7L, asset.getId(), true);
 
         assertThat(refreshed.getLatestPrice()).isEqualByComparingTo("180");
         assertThat(refreshed.getDataDate()).isEqualTo(recent);
         assertThat(refreshed.getSyncStatus()).isEqualTo("SUCCESS");
+        verify(dataQualityService).resolve(any(), any(), any(), eq("NONE"), eq(true));
+        verify(dataQualityService).claim(prepared);
+        verify(analysisServiceClient, org.mockito.Mockito.never()).marketDailyQuotes(any(), any(), any(), anyString());
         verify(analysisServiceClient, org.mockito.Mockito.never()).realtimeQuote(anyString(), anyString());
+        var correctedRows = List.of(java.util.Map.<String,Object>of(
+                "data_date", recent.toString(), "close", "181", "volume", "1000"));
+        var correctedResponse = java.util.Map.<String,Object>of("provider", "AKSHARE_US_SINA", "adapterVersion", "1",
+                "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", correctedRows);
+        var correctedReceipt = new com.smartfinance.agent.investment.entity.InvestmentDataQualitySnapshot();
+        correctedReceipt.setDatasetVersion("us-corrected");
+        correctedReceipt.setQualityStatus("PASS"); correctedReceipt.setDecision("ALLOW");
+        var corrected = new com.smartfinance.agent.investment.service.InvestmentDataQualityService.Evaluation(
+                correctedReceipt, correctedResponse, correctedRows, List.of());
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true))).thenReturn(corrected);
+        assertThat(assetService.refresh(7L, asset.getId(), true).getLatestPrice()).isEqualByComparingTo("181");
+        verify(dataQualityService).claim(corrected);
         when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(java.util.Map.of(
                 "records", List.of(java.util.Map.of("data_date", recent.minusYears(1).toString(), "close", "1"))));
+        var outside = java.util.Map.<String,Object>of("records", List.of(
+                java.util.Map.<String,Object>of("data_date", recent.minusYears(1).toString(), "close", "1")));
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
+                .thenReturn(new com.smartfinance.agent.investment.service.InvestmentDataQualityService.Evaluation(
+                        receipt, outside, (List<java.util.Map<String,Object>>) outside.get("records"), List.of()));
         var failed = assetService.refresh(7L, asset.getId(), true);
         assertThat(failed.getSyncStatus()).isEqualTo("FAILED");
-        assertThat(failed.getLatestPrice()).isEqualByComparingTo("180");
+        assertThat(failed.getLatestPrice()).isEqualByComparingTo("181");
         assertThat(failed.getDataDate()).isEqualTo(recent);
+
+        var callWithinTransaction = new java.util.concurrent.atomic.AtomicBoolean();
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true))).thenAnswer(invocation -> {
+            callWithinTransaction.set(org.springframework.transaction.support.TransactionSynchronizationManager
+                    .isActualTransactionActive());
+            throw new IllegalStateException("质量数据源暂不可用");
+        });
+        var failedSync = assetService.sync(7L, asset.getId());
+        assertThat(callWithinTransaction.get()).isFalse();
+        assertThat(failedSync.getSyncStatus()).isEqualTo("FAILED");
+        assertThat(failedSync.getLatestPrice()).isEqualByComparingTo("181");
+        assertThat(failedSync.getDataDate()).isEqualTo(recent);
+
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
+                .thenThrow(new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录"));
+        var empty = assetService.sync(7L, asset.getId());
+        assertThat(empty.getSyncStatus()).isEqualTo("PARTIAL");
+        assertThat(empty.getLatestPrice()).isEqualByComparingTo("181");
+        assertThat(empty.getDataDate()).isEqualTo(recent);
     }
 
     @Test

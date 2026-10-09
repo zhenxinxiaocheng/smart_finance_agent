@@ -4,12 +4,14 @@ import shutil
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.data_quality import AdjustType, ProductType
 from app.data_quality.service import DataQualityService
+from app.data_quality.snapshot_store import SnapshotStore
 from app.providers import NormalizedQuote, ProviderBatch
 from app.quote_availability import QuoteAvailability
 
@@ -96,3 +98,58 @@ class DataQualityServiceTest(unittest.TestCase):
         self.assertIsNone(row["volume"])
         self.assertEqual("10.1", row["nav"])
         self.assertEqual("UNIT_NAV", row["nav_type"])
+
+    def _stored_slice(self, day, close, *, provider="TENCENT", adjust_type=AdjustType.NONE):
+        batch = self._batch()
+        record = replace(batch.records[0], data_date=day, open=Decimal(close), high=Decimal(close),
+                         low=Decimal(close), close=Decimal(close), provider=provider)
+        batch = replace(batch, records=(record,), adjust_type=adjust_type, provider=provider)
+        return SnapshotStore(self.root, "market-data-schema-v2").write(
+            batch.to_snapshot_rows("market-data-schema-v2"), batch.snapshot_context(day, day)).dataset_version
+
+    def test_replay_rechecks_cross_slice_returns_without_fetching_quotes(self):
+        first = self._stored_slice(date(2026, 1, 2), "10")
+        second = self._stored_slice(date(2026, 1, 3), "100")
+        result = self.service.replay(dataset_version=first, continuation_dataset_versions=[second],
+                                     start_date=date(2026, 1, 2), end_date=date(2026, 1, 3),
+                                     quality_config_version="data-quality-v6")
+
+        self.assertEqual(["2026-01-02", "2026-01-03"], [row["data_date"] for row in result["records"]])
+        issues = {issue["ruleCode"]: issue for issue in result["qualityReport"]["issues"]}
+        self.assertEqual("FAIL", issues["STOCK_EXTREME_RETURN"]["outcome"])
+        self.assertEqual([first, second], result["preparedDatasetVersions"])
+        replayed = self.service.replay(dataset_version=result["datasetVersion"], quality_config_version="data-quality-v6")
+        self.assertEqual(result["records"], replayed["records"])
+        self.registry.daily_quality_batches.assert_not_called()
+
+    def test_combined_secondary_source_checks_the_new_tail_as_well(self):
+        first = self._stored_slice(date(2026, 1, 2), "10")
+        tail = self._stored_slice(date(2026, 1, 3), "11")
+        secondary = self._stored_slice(date(2026, 1, 2), "10", provider="SINA")
+        secondary_tail = self._stored_slice(date(2026, 1, 3), "15", provider="SINA")
+        result = self.service.replay(dataset_version=first, continuation_dataset_versions=[tail],
+            secondary_dataset_version=secondary, continuation_secondary_versions=[secondary_tail],
+            start_date=date(2026, 1, 2), end_date=date(2026, 1, 3), quality_config_version="data-quality-v6")
+        issue = next(item for item in result["qualityReport"]["issues"] if item["ruleCode"] == "STOCK_CROSS_SOURCE_RECONCILIATION")
+        self.assertEqual("FAIL", issue["outcome"])
+        self.assertIn("2026-01-03", issue["affectedDates"])
+        self.registry.daily_quality_batches.assert_not_called()
+
+    def test_prepared_replay_rejects_changed_adjustment_basis_or_source_identity(self):
+        first = self._stored_slice(date(2026, 1, 2), "10", adjust_type=AdjustType.QFQ)
+        changed = self._stored_slice(date(2026, 1, 2), "11", adjust_type=AdjustType.QFQ)
+        other = self._stored_slice(date(2026, 1, 3), "11", provider="SINA", adjust_type=AdjustType.QFQ)
+        for continuation in (changed, other):
+            with self.subTest(continuation=continuation), self.assertRaisesRegex(ValueError, "basis|identity"):
+                self.service.replay(dataset_version=first, continuation_dataset_versions=[continuation],
+                    start_date=date(2026, 1, 2), end_date=date(2026, 1, 2), quality_config_version="data-quality-v6")
+        self.registry.daily_quality_batches.assert_not_called()
+
+    def test_replay_cannot_invent_proof_for_an_unprepared_gap(self):
+        first = self._stored_slice(date(2026, 1, 2), "10")
+        second = self._stored_slice(date(2026, 1, 4), "11")
+        with self.assertRaisesRegex(ValueError, "unprepared"):
+            self.service.replay(dataset_version=first, continuation_dataset_versions=[second],
+                                start_date=date(2026, 1, 2), end_date=date(2026, 1, 4),
+                                quality_config_version="data-quality-v6")
+        self.registry.daily_quality_batches.assert_not_called()

@@ -361,7 +361,7 @@ def current_members(preset: str, ak_module=None) -> list[str]:
 
 def daily_history(code: str, market: str, product_type: str,
                   start_date: date, end_date: date, adjust_type: str,
-                  ak_module=None):
+                  ak_module=None, *, fetched_at=None):
     if adjust_type not in {"NONE", "QFQ", "HFQ"}:
         raise ValueError("unsupported adjust type")
     if start_date > end_date:
@@ -413,7 +413,7 @@ def daily_history(code: str, market: str, product_type: str,
                 empty_response = True
                 continue
             records = [record for record in _frame_to_quotes(frame, code, market, source["name"],
-                       source_function=source["function"], adjust_type=adjust_type)
+                       fetched_at=fetched_at, source_function=source["function"], adjust_type=adjust_type)
                        if start_date <= record.data_date <= end_date]
             if records:
                 return records
