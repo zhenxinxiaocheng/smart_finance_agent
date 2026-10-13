@@ -1155,9 +1155,19 @@ class TencentHistoryProvider(MarketDataProvider):
             )
             with self.opener(url, timeout=_provider_integer("history_http_timeout_seconds")) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            for row in ((payload.get("data") or {}).get(symbol) or {}).get(payload_key) or []:
-                if len(row) >= 6:
-                    rows_by_date[str(row[0])] = row
+            if not isinstance(payload, dict) or payload.get("code", 0) != 0:
+                raise ProviderUnavailable("TENCENT: unsuccessful history response")
+            data = payload.get("data")
+            series = data.get(symbol) if isinstance(data, dict) else None
+            if not isinstance(series, dict) or not isinstance(series.get(payload_key), list):
+                raise ProviderUnavailable("TENCENT: unexpected history response shape")
+            for row in series[payload_key]:
+                if not isinstance(row, list) or len(row) < 6:
+                    raise ProviderUnavailable("TENCENT: incomplete history row")
+                previous = rows_by_date.get(str(row[0]))
+                if previous is not None and previous != row:
+                    raise ProviderUnavailable("TENCENT: conflicting history date")
+                rows_by_date[str(row[0])] = row
             cursor = chunk_end + timedelta(days=1)
         return [rows_by_date[key] for key in sorted(rows_by_date)]
 
@@ -1428,18 +1438,18 @@ class ProviderRegistry:
         ) if providers is None else providers)
 
     def daily_quotes(self, code: str, market: str, product_type: str, start_date: date, end_date: date):
-        warnings: list[str] = []
-        for provider in self.providers:
-            if not provider.supports(market, product_type):
-                continue
-            try:
-                records = provider.daily_quotes(code, market, product_type, start_date, end_date)
-                if records:
-                    return records, warnings
-                warnings.append(f"{provider.name}: no records")
-            except Exception as exc:
-                warnings.append(f"{provider.name}: {exc}")
-        raise ProviderUnavailable("; ".join(warnings) or "no provider supports this product")
+        if product_type.upper() in {"ETF", "INDEX"}:
+            from .market_catalog import daily_history
+            records = daily_history(code, market, product_type, start_date, end_date, "NONE")
+            if not records:
+                raise ProviderEmpty("query returned no records")
+            return records, []
+        # Preserve the legacy entry's domestic QFQ default, sharing result semantics.
+        adjustment = AdjustType.QFQ if product_type.upper() == "STOCK" and market.upper() in {"SSE", "SZSE", "BSE"} else AdjustType.NONE
+        batches, warnings = self.daily_quality_batches(code=code, market=market, product_type=product_type,
+            start_date=start_date, end_date=end_date, adjust_type=adjustment,
+            clock=lambda: datetime.now(timezone.utc), maximum_batches=1)
+        return list(batches[0].records), list(warnings)
 
     def daily_quality_batches(
         self, *, code: str, market: str, product_type: ProductType | str,
@@ -1496,6 +1506,9 @@ class ProviderRegistry:
                 warnings.append(f"{provider.name}: invalid ProviderBatch")
                 continue
             mismatch = _batch_mismatch(value, product, normalized_code, normalized_market, adjustment)
+            required = ("open", "high", "low", "close", "volume") if product is ProductType.STOCK else ("close",)
+            if mismatch is None and any(getattr(row, field) is None for row in value.records for field in required):
+                mismatch = "required quote fields are missing"
             if mismatch is not None:
                 source_errors += 1
                 warnings.append(f"{provider.name}: {mismatch}")

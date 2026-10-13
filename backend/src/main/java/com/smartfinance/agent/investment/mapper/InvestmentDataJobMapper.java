@@ -17,9 +17,10 @@ public interface InvestmentDataJobMapper extends BaseMapper<InvestmentDataJob> {
             SET status = 'QUEUED', force_refresh = 1, record_count = 0, attempt_count = 0,
                 next_retry_at = NULL, lease_until = NULL, lease_token = NULL,
                 error_message = NULL, started_at = NULL, finished_at = NULL
-            WHERE id = #{id} AND status IN ('SUCCEEDED', 'FAILED', 'PARTIAL', 'CANCELLED')
+            WHERE id = #{id} AND (status IN ('SUCCEEDED', 'FAILED', 'PARTIAL', 'CANCELLED', 'RETRY_WAIT')
+                OR (status = 'QUEUED' AND (force_refresh = 0 OR force_refresh IS NULL)))
             """)
-    int requeueTerminal(@Param("id") Long id);
+    int requeueForRefresh(@Param("id") Long id);
 
     @Update("""
             UPDATE investment_data_job

@@ -103,7 +103,8 @@ public class InvestmentDataJobWorker {
                         return;
                     }
                     historyResult = new InvestmentHistoryPreparationService.PreparationResult(
-                            demand.recordCount(claimedJob.getProductId()),null,null,null,false,null,true);
+                            demand.recordCount(claimedJob.getProductId()),null,null,null,false,null,true,
+                            demand.publishedThrough(claimedJob.getUserId(),"ASSET",Long.toString(claimedJob.getAssetId()),claimedJob.getProductId()));
                 } else {
                     // 显式全量修复必须重新采集，不能复用先前的需求回执。
                     historyResult = historyPreparationService.prepare(claimedJob);
@@ -120,7 +121,11 @@ public class InvestmentDataJobWorker {
             LocalDateTime completionTime = LocalDateTime.now(clock);
             if (recordCount >= minimum) {
                 if (historyResult != null) {
-                    requireAnalysis(claimedJob, historyResult.skipped());
+                    if (!requireAnalysis(claimedJob, historyResult.skipped())) {
+                        jobService.markPartial(claimedJob.getId(), leaseToken, recordCount,
+                                truncate("行情采集已完成，分析输入暂不满足要求"), LocalDateTime.now(clock));
+                        return;
+                    }
                     completionTime = LocalDateTime.now(clock);
                 }
                 jobService.markSucceeded(
@@ -133,6 +138,9 @@ public class InvestmentDataJobWorker {
                 jobService.markPartial(claimedJob.getId(), leaseToken, recordCount,
                         truncate("历史记录仅 " + recordCount + " 条，低于最低要求 " + minimum + " 条"),
                         completionTime);
+            } else if (historyResult != null && historyResult.checkedThrough() != null) {
+                jobService.markPartial(claimedJob.getId(), leaseToken, 0,
+                        truncate("本次查询暂无历史记录"), completionTime);
             } else {
                 retryOrFail(claimedJob, leaseToken, completionTime, "没有历史数据");
             }
@@ -150,14 +158,17 @@ public class InvestmentDataJobWorker {
         }
     }
 
-    private void requireAnalysis(InvestmentDataJob job, boolean historyUnchanged) {
+    private boolean requireAnalysis(InvestmentDataJob job, boolean historyUnchanged) {
         if (historyUnchanged && readyAnalysis(analysisService.detail(job.getUserId(), job.getAssetId()))) {
-            return;
+            return true;
         }
         InvestmentAssetDetailResponse detail = analysisService.refresh(job.getUserId(), job.getAssetId());
         if (!readyAnalysis(detail)) {
+            var state = detail == null || detail.getSourceStatus() == null ? null : detail.getSourceStatus().get("dataState");
+            if (java.util.Set.of("BLOCKED", "UNAVAILABLE", "INSUFFICIENT").contains(String.valueOf(state))) return false;
             throw new IllegalStateException("历史数据已更新，但尚未生成新分析结果");
         }
+        return true;
     }
 
     private static boolean readyAnalysis(InvestmentAssetDetailResponse detail) {

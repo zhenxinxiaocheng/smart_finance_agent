@@ -19,9 +19,24 @@ import static org.mockito.Mockito.*;
 class ProductDailyQuoteServiceTest {
 
     private static ProductDailyQuoteService writer(ProductDailyQuoteMapper quoteMapper) {
+        var saved = new java.util.ArrayList<ProductDailyQuote>();
+        doAnswer(call -> {saved.addAll(call.getArgument(0)); return saved.size();}).when(quoteMapper).upsertHistory(any());
+        when(quoteMapper.selectSeries(anyList(), any(), any(), anySet())).thenAnswer(call -> List.copyOf(saved));
         return new ProductDailyQuoteService(quoteMapper, new InvestmentRuntimeProperties());
     }
 
+
+    @Test
+    void recordProvenanceIsPreservedWhenSourcesDifferFromResponseMetadata() {
+        var mapper = mock(ProductDailyQuoteMapper.class);
+        var product = new InvestmentProduct(); product.setId(88L);
+        writer(mapper).persistDailyQuotes(product, Map.of("provider", "MULTI_SOURCE", "adapterVersion", "2",
+                "records", List.of(Map.of("data_date", "2026-07-10", "close", "10", "provider", "SINA", "adapter_version", "3"))), "NONE");
+        ArgumentCaptor<List<ProductDailyQuote>> captured = ArgumentCaptor.forClass(List.class);
+        verify(mapper).upsertHistory(captured.capture());
+        assertThat(captured.getValue().get(0).getSource()).isEqualTo("SINA");
+        assertThat(captured.getValue().get(0).getAdapterVersion()).isEqualTo("3");
+    }
 
     @Test
     void persistDailyQuotes_shouldSaveEveryReturnedTradingDay() {

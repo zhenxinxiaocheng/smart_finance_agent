@@ -40,6 +40,7 @@ public class ProductDailyQuoteService {
         if (records == null || records.isEmpty()) {
             throw new IllegalStateException("未返回行情记录");
         }
+        InvestmentHistoryPreparationService.recordDates(response, adjustType);
         String provider = responseMetadata(response, "provider");
         String adapterVersion = responseMetadata(response, "adapterVersion");
         List<Map<String, Object>> orderedRecords = records.stream()
@@ -76,10 +77,29 @@ public class ProductDailyQuoteService {
         for (int start = 0; start < prepared.size(); start += batchSize) {
             quoteMapper.upsertHistory(prepared.subList(start, Math.min(start + batchSize, prepared.size())));
         }
-        ProductDailyQuote stored = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
-                .eq(ProductDailyQuote::getProductId, product.getId())
-                .eq(ProductDailyQuote::getAdjustType, adjustType).eq(ProductDailyQuote::getTradeDate, lastDate));
-        return stored == null ? latest : stored;
+        Map<LocalDate, ProductDailyQuote> stored = new HashMap<>();
+        for (var quote : quoteMapper.selectSeries(List.of(product.getId()), firstDate, lastDate, java.util.Set.of(adjustType)))
+            stored.put(quote.getTradeDate(), quote);
+        for (var expected : prepared) {
+            var actual = stored.get(expected.getTradeDate());
+            if (actual == null || !same(expected.getClosePrice(), actual.getClosePrice(), 10)
+                    || !same(expected.getOpenPrice(), actual.getOpenPrice(), 10)
+                    || !same(expected.getHighPrice(), actual.getHighPrice(), 10)
+                    || !same(expected.getLowPrice(), actual.getLowPrice(), 10)
+                    || !same(expected.getTotalReturnIndex(), actual.getTotalReturnIndex(), 10)
+                    || !same(expected.getVolume(), actual.getVolume(), 8)
+                    || !same(expected.getAmount(), actual.getAmount(), 8)
+                    || !same(expected.getTurnoverRate(), actual.getTurnoverRate(), 8)
+                    || !java.util.Objects.equals(expected.getSource(), actual.getSource())
+                    || !java.util.Objects.equals(expected.getAdapterVersion(), actual.getAdapterVersion()))
+                throw new IllegalStateException("行情保存核对失败：" + expected.getTradeDate());
+        }
+        return stored.get(lastDate);
+    }
+
+    static boolean same(BigDecimal expected, BigDecimal actual, int scale) {
+        return expected == null ? actual == null : actual != null
+                && expected.setScale(scale, RoundingMode.HALF_UP).compareTo(actual.setScale(scale, RoundingMode.HALF_UP)) == 0;
     }
 
     /**
@@ -136,17 +156,13 @@ public class ProductDailyQuoteService {
             quote.setTradeDate(tradeDate);
             quote.setAdjustType(adjustType);
         }
-        quote.setOpenPrice(decimal(record.get("open")));
-        quote.setHighPrice(decimal(record.get("high")));
-        quote.setLowPrice(decimal(record.get("low")));
+        if (decimal(record.get("open")) != null) quote.setOpenPrice(decimal(record.get("open")));
+        if (decimal(record.get("high")) != null) quote.setHighPrice(decimal(record.get("high")));
+        if (decimal(record.get("low")) != null) quote.setLowPrice(decimal(record.get("low")));
         Object closeValue = record.get("close");
         if (closeValue == null) closeValue = record.get("nav");
         quote.setClosePrice(decimal(closeValue));
-        BigDecimal returnIndex = decimal(record.get("total_return_index"));
-        BigDecimal factor = decimal(record.get("adjustment_factor"));
-        if (returnIndex == null && fund(product) && factor != null && quote.getClosePrice() != null) {
-            returnIndex = quote.getClosePrice().multiply(factor);
-        }
+        BigDecimal returnIndex = fund(product) ? totalReturnIndex(record) : decimal(record.get("total_return_index"));
         // 已有有效累计收益指数时不要用空值覆盖，避免历史分析被动失效。
         if (returnIndex != null && returnIndex.signum() > 0) {
             quote.setTotalReturnIndex(returnIndex);
@@ -159,13 +175,22 @@ public class ProductDailyQuoteService {
             quote.setChangePercent(effectivePrevious.signum()>0 && quote.getClosePrice().signum()>0
                     ? changeAmount.divide(effectivePrevious, 8, RoundingMode.HALF_UP).multiply(new BigDecimal("100")) : null);
         }
-        quote.setVolume(decimal(record.get("volume")));
-        quote.setAmount(decimal(record.get("amount")));
-        quote.setTurnoverRate(decimal(record.get("turnover_rate")));
-        quote.setSource(provider);
-        quote.setAdapterVersion(adapterVersion);
+        if (decimal(record.get("volume")) != null) quote.setVolume(decimal(record.get("volume")));
+        if (decimal(record.get("amount")) != null) quote.setAmount(decimal(record.get("amount")));
+        if (decimal(record.get("turnover_rate")) != null) quote.setTurnoverRate(decimal(record.get("turnover_rate")));
+        quote.setSource(record.get("provider") == null ? provider : String.valueOf(record.get("provider")));
+        quote.setAdapterVersion(record.get("adapter_version") == null ? adapterVersion : String.valueOf(record.get("adapter_version")));
         quote.setSyncedAt(LocalDateTime.now());
         return quote;
+    }
+
+    /** Both stored and snapshot fund returns use the same NAV reinvestment basis. */
+    static BigDecimal totalReturnIndex(Map<?, ?> record) {
+        BigDecimal direct = decimal(record.get("total_return_index"));
+        if (direct != null) return direct;
+        BigDecimal nav = decimal(record.get("close") == null ? record.get("nav") : record.get("close"));
+        BigDecimal factor = decimal(record.get("adjustment_factor"));
+        return nav == null || factor == null ? null : nav.multiply(factor);
     }
 
     private static boolean fund(InvestmentProduct product) {

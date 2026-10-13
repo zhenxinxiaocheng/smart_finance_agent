@@ -472,7 +472,14 @@ public class AnalysisServiceClient {
     public Map<String,Object> replayDataQuality(InvestmentProduct product, List<String> versions,
                                                List<String> secondaryVersions, String config,
                                                LocalDate start, LocalDate end) {
+        return replayDataQuality(product,versions,secondaryVersions,config,start,end,null);
+    }
+
+    public Map<String,Object> replayDataQuality(InvestmentProduct product, List<String> versions,
+                                               List<String> secondaryVersions, String config,
+                                               LocalDate start, LocalDate end, List<LocalDate> observedDates) {
         Map<String,Object> body = new LinkedHashMap<>();
+        if (observedDates != null) body.put("observedDates", observedDates.stream().map(LocalDate::toString).toList());
         body.put("datasetVersion", versions.get(0));
         body.put("continuationDatasetVersions", versions.subList(1, versions.size()));
         if (secondaryVersions.size() == versions.size()) {
@@ -661,6 +668,11 @@ public class AnalysisServiceClient {
         }
         if (response == null) {
             throw new IllegalStateException("分析服务返回空" + operation + "结果");
+        }
+        if ("EMPTY".equals(response.get("result"))) {
+            if (!(response.get("records") instanceof List<?> records) || !records.isEmpty())
+                throw new IllegalStateException("空查询结果格式无效");
+            throw new SourceEmptyException(String.valueOf(response.get("message")));
         }
         return response;
     }

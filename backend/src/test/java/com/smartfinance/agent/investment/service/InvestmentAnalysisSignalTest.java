@@ -16,13 +16,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InvestmentAnalysisSignalTest {
 
     @Test
-    void quoteRefreshUsesTheResolvedProfileHistoryRequirement() {
+    void calendarLookbackIncludesNonTradingDaysForTheRequestedHistory() {
         var properties = InvestmentSyncWorkerTest.horizonProperties(2500);
         assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(20, properties)).isGreaterThan(20);
         assertThat(InvestmentAnalysisServiceImpl.calendarLookbackDays(900, properties)).isGreaterThan(900);
-        assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(320, 900, false)).isTrue();
-        assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(920, 900, false)).isFalse();
-        assertThat(InvestmentAnalysisServiceImpl.shouldRefreshQuotes(920, 900, true)).isTrue();
     }
 
     @Test
@@ -37,6 +34,19 @@ class InvestmentAnalysisSignalTest {
 
         assertThat(InvestmentAnalysisServiceImpl.interactiveHistoryDays(profile, properties))
                 .isEqualTo(501);
+    }
+
+    @Test
+    void maximumAllowedHorizonStillIncludesItsBaselineObservation() {
+        var properties = InvestmentSyncWorkerTest.horizonProperties(2500);
+        properties.setInteractiveHistoryMultiplier(1);
+        var profile = new ResolvedHorizonProfile(
+                "asset:limit", "template-v1", List.of(
+                new HorizonSetting("CUSTOM", "上限周期", 10, 120, 2500, 2500, true, "ASSET")
+        ), List.of());
+
+        assertThat(InvestmentAnalysisServiceImpl.interactiveHistoryDays(profile, properties))
+                .isEqualTo(2501);
     }
 
     @Test
@@ -105,7 +115,7 @@ class InvestmentAnalysisSignalTest {
     }
 
     @Test
-    void fundDescriptiveResultRemainsInsufficientAndSuppressesAdvice() {
+    void fundDescriptiveResultRemainsInsufficient() {
         Map<String, Object> result = Map.of(
                 "status", "INSUFFICIENT",
                 "adviceStatus", "UNAVAILABLE",
@@ -114,10 +124,6 @@ class InvestmentAnalysisSignalTest {
 
         assertThat(InvestmentAnalysisServiceImpl.analysisResultStatus(result))
                 .isEqualTo("INSUFFICIENT");
-        assertThat(InvestmentAnalysisServiceImpl.adviceUnavailable(
-                "MUTUAL_FUND", result)).isTrue();
-        assertThat(InvestmentAnalysisServiceImpl.adviceUnavailable(
-                "STOCK", Map.of("status", "READY"))).isFalse();
     }
 
     private static ProductDailyQuote quote(String date, String close) {

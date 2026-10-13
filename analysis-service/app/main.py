@@ -113,6 +113,8 @@ class DataQualityReplayRequest(BaseModel):
     start_date: date | None = Field(default=None, alias="startDate")
     end_date: date | None = Field(default=None, alias="endDate")
 
+    observed_dates: list[date] | None = Field(default=None, alias="observedDates", min_length=1, max_length=20000)
+
 
 class DataQualityClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -348,6 +350,10 @@ def index_quotes(request: IndexQuotesRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _empty_quote_result(message: str):
+    return {"result": "EMPTY", "records": [], "message": message, "warnings": []}
+
+
 @app.post("/internal/v1/market-data/quotes/daily", dependencies=[Depends(internal_auth)])
 def daily_quotes(request: QuoteRequest):
     if request.end_date < request.start_date:
@@ -364,13 +370,14 @@ def daily_quotes(request: QuoteRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderEmpty as exc:
-        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": str(exc)}) from exc
+        return _empty_quote_result(str(exc))
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
     if not records:
-        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": "Requested window is empty"})
+        return _empty_quote_result("Requested window is empty")
     latest = max((item.data_date for item in records), default=None)
     return {
+        "result": "DATA",
         "provider": records[0].provider if records else "AKSHARE",
         "dataDate": latest.isoformat() if latest else None,
         "fetchedAt": records[0].fetched_at.isoformat() if records else None,
@@ -420,7 +427,7 @@ def validate_data_quality(request: DataQualityValidateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderEmpty as exc:
-        raise HTTPException(status_code=503, detail={"code": "SOURCE_EMPTY", "message": str(exc)}) from exc
+        return _empty_quote_result(str(exc))
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
     except SnapshotIntegrityError as exc:
@@ -431,11 +438,13 @@ def validate_data_quality(request: DataQualityValidateRequest):
 def replay_data_quality(request: DataQualityReplayRequest):
     try:
         prepared = {} if all(value is None for value in (request.start_date, request.end_date,
-                request.continuation_dataset_versions, request.continuation_secondary_versions)) else {
+                request.continuation_dataset_versions, request.continuation_secondary_versions, request.observed_dates)) else {
             "continuation_dataset_versions": request.continuation_dataset_versions,
             "continuation_secondary_versions": request.continuation_secondary_versions,
             "start_date": request.start_date, "end_date": request.end_date,
         }
+        if request.observed_dates is not None:
+            prepared["observed_dates"] = request.observed_dates
         return quality_service.replay(
             dataset_version=request.dataset_version,
             secondary_dataset_version=request.secondary_dataset_version,

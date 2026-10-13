@@ -41,6 +41,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class QuoteHistoryPersistenceTest {
     @TempDir Path temporary;
 
+    @Test
+    void silentlyDroppedRowFailsReadbackAndRollsBackTheWholeBatch() throws Exception {
+        var fixture = fixture("sqlite");
+        fixture.jdbc().execute("CREATE TRIGGER drop_quote BEFORE INSERT ON product_daily_quote "
+                + "WHEN NEW.trade_date='2026-09-29' BEGIN SELECT RAISE(IGNORE); END");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> fixture.persist(Map.of(
+                "provider", "TEST", "adapterVersion", "fixture", "records", List.of(
+                    Map.of("data_date", "2026-09-29", "close", "10"),
+                    Map.of("data_date", "2026-09-30", "close", "11"))), "NONE"))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("保存");
+        assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM product_daily_quote", Integer.class)).isZero();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"h2", "sqlite"})
     void thousandHistoryDaysAvoidPerRowDatabaseRoundTrips(String dialect) throws Exception {

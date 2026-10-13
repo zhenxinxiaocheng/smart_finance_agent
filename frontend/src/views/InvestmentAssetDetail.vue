@@ -467,11 +467,11 @@ const activeHeadline = computed(() => activeAnalysis.value.status === 'PREPARING
   : fundAdviceUnavailable.value
   ? '暂无操作建议'
   : activeAnalysis.value.status === 'INSUFFICIENT'
-  ? '数据不足'
+  ? '历史样本不足'
   : activeAnalysis.value.status === 'BLOCKED'
-    ? '分析更新中'
+    ? '数据校验未通过'
     : activeAnalysis.value.status === 'UNAVAILABLE'
-      ? '分析更新中'
+      ? '分析暂不可用'
   : isFund.value ? fundActionLabel(activeAnalysis.value?.action) : verdictLabel(activeVerdict.value))
 const activePeriodText = computed(() => horizonRange(activeAnalysis.value))
 const cycleDifference = computed(() => new Set(Object.values(technical.value.horizons || {}).map(item => item.outlook?.direction).filter(Boolean)).size > 1)

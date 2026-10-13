@@ -16,6 +16,7 @@ from .models import (
     DataQualityStatus,
     EnforcementMode,
     IssueOutcome,
+    IssueSeverity,
     ProductType,
 )
 from .rules import RULES, RULE_BY_CODE
@@ -73,6 +74,14 @@ class DataQualityEngine:
             else:
                 issues.append(evaluators[rule.code]())
 
+        # Calendar expectations and backup availability are diagnostics, not evidence
+        # that a successful source response lost data. Legacy replay keeps its rules.
+        if self._config.source_driven_rules:
+            diagnostics = {"STOCK_STALENESS", "STOCK_UNEXPLAINED_TRADING_GAPS",
+                "FUND_STALENESS", "FUND_UNEXPLAINED_NAV_GAPS", "STOCK_SECONDARY_SOURCE_AVAILABILITY"}
+            issues = [issue.model_copy(update={"severity": IssueSeverity.INFO})
+                      if issue.rule_code in diagnostics else issue for issue in issues]
+
         critical_failures = sum(
             issue.outcome is IssueOutcome.FAIL and issue.severity.value == "CRITICAL" for issue in issues
         )
@@ -86,7 +95,8 @@ class DataQualityEngine:
         }
         blocking_warning_count = (len(blocking_warning_groups) if self._config.evidence_aware_rules
                                   else warning_failures)
-        failure_count = critical_failures + warning_failures
+        failure_count = (sum(issue.outcome is IssueOutcome.FAIL for issue in issues)
+                         if self._config.source_driven_rules else critical_failures + warning_failures)
         if critical_failures or blocking_warning_count >= self._config.warning_failures_to_block:
             status = DataQualityStatus.BLOCKED
         elif failure_count:

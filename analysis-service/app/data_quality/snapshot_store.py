@@ -234,6 +234,8 @@ class SnapshotStore:
             "storageFormat": "PARQUET",
             "schemaVersion": self.schema_version if schema_version is None else schema_version,
         }
+        if context.source_units:
+            payload["sourceUnits"] = [list(unit) for unit in context.source_units]
         dataset_version = _sha256_json(payload)
         storage_uri = f"snapshots/{dataset_version[:2]}/{dataset_version}.parquet"
         return DataQualityManifest.model_validate(payload | {"datasetVersion": dataset_version, "storageUri": storage_uri})
@@ -370,7 +372,10 @@ def _canonicalize_record(record: dict[str, Any], context: DataSnapshotContext,
         value = record[field]
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field} must be a non-blank string")
-        if value != expected[field]:
+        if context.source_units and field in {"provider", "adapter_version"}:
+            if (record["provider"], record["adapter_version"]) not in context.source_units:
+                raise ValueError("record source is outside manifest source units")
+        elif value != expected[field]:
             raise ValueError(f"record {field} conflicts with context")
         row[field] = value
     row["data_date"] = _parse_date(record["data_date"])
@@ -434,7 +439,7 @@ def _context_from_manifest(manifest: DataQualityManifest) -> DataSnapshotContext
         product_type=manifest.product_type, market=manifest.market, code=manifest.code, frequency=manifest.frequency,
         adjust_type=manifest.adjust_type, provider=manifest.provider, adapter_version=manifest.adapter_version,
         requested_start_date=manifest.requested_start_date, requested_end_date=manifest.requested_end_date,
-        fetched_at=manifest.fetched_at,
+        fetched_at=manifest.fetched_at, source_units=manifest.source_units,
     )
 
 

@@ -315,7 +315,7 @@ def analyze_technical(
     for name, configured_bounds in horizons.items():
         bounds = list(configured_bounds)
         minimum, maximum = int(bounds[0]), int(bounds[-1])
-        history_complete = len(closes) >= maximum
+        history_complete = len(closes) > maximum
         effective_lookback = min(maximum, len(closes) - 1)
         horizon_fast_period = max(2, min(minimum, effective_lookback))
         horizon_slow_period = max(horizon_fast_period, effective_lookback)

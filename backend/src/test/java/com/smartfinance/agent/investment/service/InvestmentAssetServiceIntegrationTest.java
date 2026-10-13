@@ -270,7 +270,7 @@ class InvestmentAssetServiceIntegrationTest {
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
                 .thenThrow(new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录"));
         var empty = assetService.sync(7L, asset.getId());
-        assertThat(empty.getSyncStatus()).isEqualTo("PARTIAL");
+        assertThat(empty.getSyncStatus()).isEqualTo("SUCCESS");
         assertThat(empty.getLatestPrice()).isEqualByComparingTo("181");
         assertThat(empty.getDataDate()).isEqualTo(recent);
     }

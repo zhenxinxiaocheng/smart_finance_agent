@@ -19,7 +19,6 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.Instant;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -64,16 +63,14 @@ public class InvestmentDataQualityService {
                     BigDecimal close = number(record.get("close") == null ? record.get("nav") : record.get("close"));
                     if (!same(close, input.getClosePrice(), 10)) return false;
                     if (fund) {
-                        BigDecimal total = number(record.get("total_return_index"));
-                        if (total == null && close != null && record.get("adjustment_factor") != null)
-                            total = close.multiply(number(record.get("adjustment_factor")));
+                        BigDecimal total = ProductDailyQuoteService.totalReturnIndex(record);
                         if (!same(total, input.getTotalReturnIndex(), 10)) return false;
                     } else if (!same(number(record.get("open")), input.getOpenPrice(), 10)
                             || !same(number(record.get("high")), input.getHighPrice(), 10)
                             || !same(number(record.get("low")), input.getLowPrice(), 10)
                             || !same(number(record.get("volume")), input.getVolume(), 8)
-                            || record.containsKey("amount") && !same(number(record.get("amount")), input.getAmount(), 8)
-                            || record.containsKey("turnover_rate") && !same(number(record.get("turnover_rate")), input.getTurnoverRate(), 8)) return false;
+                            || record.get("amount") != null && !same(number(record.get("amount")), input.getAmount(), 8)
+                            || record.get("turnover_rate") != null && !same(number(record.get("turnover_rate")), input.getTurnoverRate(), 8)) return false;
                 }
                 return byDate.isEmpty();
             } catch (IllegalArgumentException malformed) {
@@ -87,7 +84,7 @@ public class InvestmentDataQualityService {
 
         private static boolean same(BigDecimal expected, BigDecimal actual, int scale) {
             return expected == null ? actual == null : actual != null
-                    && expected.setScale(scale, RoundingMode.HALF_UP).compareTo(actual.setScale(scale, RoundingMode.HALF_UP)) == 0;
+                    && ProductDailyQuoteService.same(expected, actual, scale);
         }
 
         public boolean failedRule(String ruleCode) {
@@ -151,8 +148,8 @@ public class InvestmentDataQualityService {
                 runtimeProperties.getDataQuality().getFrequency(),
                 adjustType,
                 configVersion);
-        InvestmentDataQualitySnapshot persisted = persist(configVersion, response);
-        return toEvaluation(persisted, response);
+        // Acquisition is not preparation; publish only in the successful quote write transaction.
+        return toEvaluation(describe(configVersion, response), response);
     }
 
     private Evaluation replay(InvestmentProduct product, InvestmentDataQualitySnapshot existing, String configVersion) {
@@ -166,29 +163,46 @@ public class InvestmentDataQualityService {
     }
 
     /** Whether the existing collection worker must prepare this request again. */
-    public boolean requiresPreparation(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
+    public boolean requiresPreparation(InvestmentProduct product, LocalDate startDate, LocalDate endDate,
+                                       List<ProductDailyQuote> inputs) {
         startDate = preparedStart(product, startDate);
         LocalDate target = availability == null ? endDate : availability.target(product, endDate, Instant.now());
+        List<LocalDate> observedDates = inputs.stream().map(ProductDailyQuote::getTradeDate).distinct().sorted().toList();
+        if (!observedDates.isEmpty()) {
+            startDate = observedDates.get(0);
+            target = observedDates.get(observedDates.size() - 1);
+        }
         if (startDate.isAfter(target)) return false;
-        var receipts = preparedReceipts(product, startDate, target);
-        if (receipts.isEmpty()) return true;
+        var receipts = preparedReceipts(product, startDate, target, observedDates.isEmpty() ? null : observedDates);
+        if (receipts.isEmpty()) return !observedDates.isEmpty();
         var first = receipts.get(0);
         // Dates alone cannot prove that old and new collection units may be spliced.
         // The worker refreshes this bounded request; analysis never performs acquisition.
-        return receipts.stream().anyMatch(item -> !Objects.equals(first.getProvider(), item.getProvider())
-                || !Objects.equals(first.getAdapterVersion(), item.getAdapterVersion()));
+        return receipts.stream().anyMatch(item -> !Objects.equals(first.getAdapterVersion(), item.getAdapterVersion()));
     }
 
     /** Recheck intact preparation receipts; this method never fetches or writes quotes. */
     @Transactional
     public Evaluation preparedEvaluation(InvestmentProduct product, LocalDate startDate, LocalDate endDate) {
+        return preparedEvaluation(product,startDate,endDate,null);
+    }
+
+    /** Analysis supplies actual observations; empty calendar dates are not missing snapshot rows. */
+    @Transactional
+    public Evaluation preparedEvaluation(InvestmentProduct product, LocalDate startDate, LocalDate endDate,
+                                         List<ProductDailyQuote> inputs) {
         String config = runtimeProperties.getDataQuality().getConfigVersion();
         startDate = preparedStart(product, startDate);
         LocalDate target = availability == null ? endDate : availability.target(product, endDate, Instant.now());
+        List<LocalDate> observedDates = inputs == null ? null : inputs.stream().map(ProductDailyQuote::getTradeDate).distinct().sorted().toList();
+        if (observedDates != null) {
+            if (observedDates.isEmpty()) return null;
+            startDate = observedDates.get(0); target = observedDates.get(observedDates.size()-1);
+        }
         if (startDate.isAfter(target)) return null;
-        var selected = preparedReceipts(product, startDate, target);
+        var selected = preparedReceipts(product, startDate, target, observedDates);
         if (selected.isEmpty()) return null;
-        if (selected.size() == 1 && config.equals(selected.get(0).getQualityConfigVersion()))
+        if (observedDates == null && selected.size() == 1 && config.equals(selected.get(0).getQualityConfigVersion()))
             return replay(product, selected.get(0), config);
         List<String> versions = new ArrayList<>(), secondaryVersions = new ArrayList<>();
         for (var receipt : selected) {
@@ -200,8 +214,9 @@ public class InvestmentDataQualityService {
             String secondary = firstSecondary(receipt.getSecondaryDatasetVersionsJson());
             if (secondary != null) secondaryVersions.add(secondary);
         }
-        Map<String,Object> response = analysisClient.replayDataQuality(product, versions, secondaryVersions,
-                config, startDate, target);
+        Map<String,Object> response = observedDates == null
+                ? analysisClient.replayDataQuality(product, versions, secondaryVersions, config, startDate, target)
+                : analysisClient.replayDataQuality(product, versions, secondaryVersions, config, startDate, target, observedDates);
         String rules = requiredText(requiredMap(response, "qualityReport"), "qualityRuleSetVersion");
         if (selected.stream().anyMatch(item -> config.equals(item.getQualityConfigVersion())
                 && !Objects.equals(item.getQualityRuleSetVersion(), rules)))
@@ -210,6 +225,9 @@ public class InvestmentDataQualityService {
         manifest.put("inputDatasetVersions", versions);
         response = new LinkedHashMap<>(response);
         response.put("manifest", manifest);
+        Evaluation evaluated = toEvaluation(describe(config, response), response);
+        if (inputs != null && !evaluated.blocked() && !evaluated.matchesInputs(product, inputs))
+            throw new IllegalStateException("快照与已保存行情不一致，拒绝登记为已准备数据");
         // Claim the derived immutable snapshot before persisting its existing receipt format.
         analysisClient.claimDataQuality(requiredText(response, "datasetVersion"), config);
         for (String secondary : stringList(response.get("secondaryDatasetVersions")))
@@ -225,6 +243,11 @@ public class InvestmentDataQualityService {
 
     /** One receipt selection for both the analysis gate and its existing preparation worker. */
     private List<InvestmentDataQualitySnapshot> preparedReceipts(InvestmentProduct product, LocalDate startDate, LocalDate target) {
+        return preparedReceipts(product,startDate,target,null);
+    }
+
+    private List<InvestmentDataQualitySnapshot> preparedReceipts(InvestmentProduct product, LocalDate startDate,
+                                                                LocalDate target, List<LocalDate> observedDates) {
         String config = runtimeProperties.getDataQuality().getConfigVersion();
         Map<String, InvestmentDataQualitySnapshot> latestWindows = new LinkedHashMap<>();
         for (var receipt : snapshotMapper.selectList(contractQuery(product, adjustType(product), config)
@@ -258,6 +281,10 @@ public class InvestmentDataQualityService {
             if (receipt == null) return List.of();
             selected.add(receipt);
             cursor = receipt.getRequestedEndDate().plusDays(1);
+            if (observedDates != null) {
+                LocalDate afterReceipt = cursor;
+                cursor = observedDates.stream().filter(day -> !day.isBefore(afterReceipt)).findFirst().orElse(target.plusDays(1));
+            }
         }
         // Newer corrections inside an already requested window must participate as well.
         LocalDateTime oldest = selected.stream().map(InvestmentDataQualitySnapshot::getFetchedAt)
@@ -289,6 +316,13 @@ public class InvestmentDataQualityService {
             analysisClient.claimDataQuality(
                     secondaryDatasetVersion, runtimeProperties.getDataQuality().getConfigVersion());
         }
+    }
+
+    /** Shares the quote writer's transaction: a failed write cannot leave a prepared receipt. */
+    @Transactional
+    public void persistPrepared(Evaluation evaluation) {
+        if (evaluation.blocked()) throw new IllegalStateException("被拦截的行情不能登记为已准备数据");
+        persist(runtimeProperties.getDataQuality().getConfigVersion(), evaluation.response());
     }
 
     public Map<String, Object> latestStatus(InvestmentProduct product) {
@@ -363,17 +397,29 @@ public class InvestmentDataQualityService {
 
     private InvestmentDataQualitySnapshot persist(String configVersion,
                                                    Map<String, Object> response) {
+        InvestmentDataQualitySnapshot snapshot = describe(configVersion, response);
+        InvestmentDataQualitySnapshot existing = snapshotMapper.selectOne(
+                new LambdaQueryWrapper<InvestmentDataQualitySnapshot>()
+                        .eq(InvestmentDataQualitySnapshot::getDatasetVersion, snapshot.getDatasetVersion())
+                        .eq(InvestmentDataQualitySnapshot::getQualityConfigVersion, configVersion));
+        if (existing != null) snapshot.setId(existing.getId());
+        if (snapshot.getId() == null) {
+            snapshotMapper.insert(snapshot);
+        } else {
+            snapshotMapper.updateById(snapshot);
+            issueMapper.delete(new LambdaQueryWrapper<InvestmentDataQualityIssue>()
+                    .eq(InvestmentDataQualityIssue::getQualitySnapshotId, snapshot.getId()));
+        }
+        persistIssues(snapshot.getId(), requiredMap(response, "qualityReport"));
+        return snapshot;
+    }
+
+    private InvestmentDataQualitySnapshot describe(String configVersion, Map<String, Object> response) {
         Map<String, Object> manifest = requiredMap(response, "manifest");
         Map<String, Object> report = requiredMap(response, "qualityReport");
         String datasetVersion = requiredText(response, "datasetVersion");
-        InvestmentDataQualitySnapshot snapshot = snapshotMapper.selectOne(
-                new LambdaQueryWrapper<InvestmentDataQualitySnapshot>()
-                        .eq(InvestmentDataQualitySnapshot::getDatasetVersion, datasetVersion)
-                        .eq(InvestmentDataQualitySnapshot::getQualityConfigVersion, configVersion));
-        if (snapshot == null) {
-            snapshot = new InvestmentDataQualitySnapshot();
-            snapshot.setDatasetVersion(datasetVersion);
-        }
+        InvestmentDataQualitySnapshot snapshot = new InvestmentDataQualitySnapshot();
+        snapshot.setDatasetVersion(datasetVersion);
         snapshot.setProductType(requiredText(manifest, "productType"));
         snapshot.setCode(requiredText(manifest, "code"));
         snapshot.setMarket(requiredText(manifest, "market"));
@@ -396,14 +442,6 @@ public class InvestmentDataQualityService {
         snapshot.setReportJson(writeJson(report));
         snapshot.setSecondaryDatasetVersionsJson(writeJson(
                 response.getOrDefault("secondaryDatasetVersions", List.of())));
-        if (snapshot.getId() == null) {
-            snapshotMapper.insert(snapshot);
-        } else {
-            snapshotMapper.updateById(snapshot);
-            issueMapper.delete(new LambdaQueryWrapper<InvestmentDataQualityIssue>()
-                    .eq(InvestmentDataQualityIssue::getQualitySnapshotId, snapshot.getId()));
-        }
-        persistIssues(snapshot.getId(), report);
         return snapshot;
     }
 

@@ -27,6 +27,30 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AnalysisServiceClientTest {
 
     @Test
+    void preparedReplaySerializesActualDatesWithoutChangingLegacyRequests() {
+        for (boolean observed : List.of(false, true)) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            var client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+            String actualDates = observed ? ",\"observedDates\":[\"2026-01-02\",\"2026-01-04\"]" : "";
+            server.expect(requestTo("http://analysis.test/internal/v1/data-quality/replay"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andExpect(header("X-Internal-Token", "secret-token"))
+                    .andExpect(content().json("""
+                            {"datasetVersion":"base","continuationDatasetVersions":["tail"],
+                             "qualityConfigVersion":"data-quality-v7","fundCategory":null,
+                             "startDate":"2026-01-02","endDate":"2026-01-04"%s}
+                            """.formatted(actualDates), true))
+                    .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+            var product = new InvestmentProduct();
+            LocalDate first = LocalDate.of(2026, 1, 2), last = first.plusDays(2);
+            if (observed) client.replayDataQuality(product,List.of("base","tail"),List.of(),"data-quality-v7",first,last,List.of(first,last));
+            else client.replayDataQuality(product,List.of("base","tail"),List.of(),"data-quality-v7",first,last);
+            server.verify();
+        }
+    }
+
+    @Test
     void availabilitySendsTheFullFundIdentityAndExactRequestedWindow() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -115,6 +139,19 @@ class AnalysisServiceClientTest {
                 LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE");
 
         assertThat(result).containsKey("records");
+        server.verify();
+    }
+
+    @Test
+    void normalEmpty200RetainsTheEmptyQueryOutcome() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AnalysisServiceClient client = new AnalysisServiceClient(builder, "http://analysis.test", "secret-token");
+        server.expect(requestTo("http://analysis.test/internal/v1/market-data/quotes/daily"))
+                .andRespond(withSuccess("{\"result\":\"EMPTY\",\"records\":[],\"message\":\"no records\"}", MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> client.marketDailyQuotes(etfProduct(),
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 30), "NONE"))
+                .isInstanceOf(AnalysisServiceClient.SourceEmptyException.class);
         server.verify();
     }
 

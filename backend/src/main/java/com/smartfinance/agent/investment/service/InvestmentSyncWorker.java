@@ -1,7 +1,6 @@
 package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.smartfinance.agent.investment.config.InvestmentHorizonProperties;
 import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.*;
 import com.smartfinance.agent.investment.mapper.*;
@@ -25,13 +24,11 @@ public class InvestmentSyncWorker {
     private final InvestmentSyncBatchMapper syncBatchMapper;
     private final InvestmentPositionMapper positionMapper;
     private final InvestmentProductMapper productMapper;
-    private final ProductDailyQuoteService quoteService;
+    private final ProductDailyQuoteMapper quoteMapper;
     private final DailyExchangeRateMapper exchangeRateMapper;
     private final AnalysisServiceClient analysisClient;
-    private final InvestmentDataQualityService dataQualityService;
+    private final InvestmentHistoryPreparationService historyPreparation;
     private final InvestmentDataJobService dataJobService;
-    private final InvestmentHorizonService horizonService;
-    private final InvestmentHorizonProperties horizonProperties;
     private final InvestmentRuntimeProperties runtimeProperties;
     private TransactionTemplate writeTransaction;
 
@@ -43,24 +40,20 @@ public class InvestmentSyncWorker {
     public InvestmentSyncWorker(InvestmentSyncBatchMapper syncBatchMapper,
                                 InvestmentPositionMapper positionMapper,
                                 InvestmentProductMapper productMapper,
-                                ProductDailyQuoteService quoteService,
+                                ProductDailyQuoteMapper quoteMapper,
                                 DailyExchangeRateMapper exchangeRateMapper,
                                 AnalysisServiceClient analysisClient,
-                                InvestmentDataQualityService dataQualityService,
+                                InvestmentHistoryPreparationService historyPreparation,
                                 InvestmentDataJobService dataJobService,
-                                InvestmentHorizonService horizonService,
-                                InvestmentHorizonProperties horizonProperties,
                                 InvestmentRuntimeProperties runtimeProperties) {
         this.syncBatchMapper = syncBatchMapper;
         this.positionMapper = positionMapper;
         this.productMapper = productMapper;
-        this.quoteService = quoteService;
+        this.quoteMapper = quoteMapper;
         this.exchangeRateMapper = exchangeRateMapper;
         this.analysisClient = analysisClient;
-        this.dataQualityService = dataQualityService;
+        this.historyPreparation = historyPreparation;
         this.dataJobService = dataJobService;
-        this.horizonService = horizonService;
-        this.horizonProperties = horizonProperties;
         this.runtimeProperties = runtimeProperties;
     }
 
@@ -84,10 +77,6 @@ public class InvestmentSyncWorker {
         int failed = 0;
         String provider = null;
         String lastError = null;
-        LocalDate endDate = LocalDate.now(runtimeProperties.getMarket().getZone());
-        LocalDate startDate = endDate.minusDays(
-                InvestmentAnalysisServiceImpl.calendarLookbackDays(
-                        requiredHistoryDays(batch.getUserId()), horizonProperties));
         List<InvestmentPosition> positions = positionMapper.selectList(new LambdaQueryWrapper<InvestmentPosition>()
                 .eq(InvestmentPosition::getUserId, batch.getUserId()).gt(InvestmentPosition::getQuantity, BigDecimal.ZERO));
         for (InvestmentPosition position : positions) {
@@ -97,29 +86,18 @@ public class InvestmentSyncWorker {
                 continue;
             }
             try {
-                // Holdings use executable prices; research history is maintained by the shared history job.
-                Map<String, Object> rawResponse;
-                if (InvestmentHistoryPreparationService.supportsQuality(product)) {
-                    InvestmentDataQualityService.Evaluation quality = dataQualityService.resolve(
-                            product, startDate, endDate, "NONE", true);
-                    if (quality.blocked()) {
-                        throw new IllegalStateException("数据质量门禁未通过：" + quality.datasetVersion());
-                    }
-                    dataQualityService.claim(quality);
-                    rawResponse = quality.response();
-                } else {
-                    rawResponse = analysisClient.marketDailyQuotes(product, startDate, endDate, "NONE");
+                historyPreparation.prepareProduct(product, fund(product) ? "FUND_NAV_HISTORY" : "STOCK_HISTORY", false);
+                ProductDailyQuote latest = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
+                        .eq(ProductDailyQuote::getProductId, product.getId()).eq(ProductDailyQuote::getAdjustType, "NONE")
+                        .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
+                if (latest == null) {
+                    lastError = "本次查询暂无行情，暂不能更新估值";
+                    continue;
                 }
-                provider = ProductDailyQuoteService.responseMetadata(rawResponse, "provider");
-                LocalDate priceDate = InvestmentHistoryPreparationService.recordDates(rawResponse).stream()
-                        .max(LocalDate::compareTo).orElseThrow(() -> new IllegalStateException("未返回行情记录"));
-                if (fund(product) && InvestmentHistoryPreparationService.hasInvalidFundReturns(rawResponse)) {
-                    throw new IllegalStateException("基金历史缺少有效累计收益");
-                }
+                provider = latest.getSource();
                 BigDecimal fxRate = "CNY".equals(product.getCurrency()) ? BigDecimal.ONE
-                        : latestFxRate(product.getCurrency(), priceDate);
+                        : latestFxRate(product.getCurrency(), latest.getTradeDate());
                 Runnable persist = () -> {
-                    ProductDailyQuote latest = quoteService.persistDailyQuotes(product, rawResponse, "NONE");
                     BigDecimal close = latest.getClosePrice();
                     position.setLatestPrice(close);
                     position.setDataDate(latest.getTradeDate());
@@ -143,14 +121,10 @@ public class InvestmentSyncWorker {
         int maxErrorLength = runtimeProperties.getSync().getErrorMessageMaxLength();
         batch.setErrorMessage(lastError == null ? null
                 : lastError.substring(0, Math.min(maxErrorLength, lastError.length())));
-        batch.setStatus(failed == 0 ? "SUCCESS" : success == 0 ? "FAILED" : "PARTIAL");
+        batch.setStatus(failed == 0 && success == positions.size() ? "SUCCESS"
+                : failed > 0 && success == 0 ? "FAILED" : "PARTIAL");
         batch.setFinishedAt(LocalDateTime.now());
         syncBatchMapper.updateById(batch);
-    }
-
-    int requiredHistoryDays(Long userId) {
-        return InvestmentAnalysisServiceImpl.requiredHistoryDays(
-                horizonService.resolve(userId, null), horizonProperties);
     }
 
     private BigDecimal latestFxRate(String currency, LocalDate dataDate) {

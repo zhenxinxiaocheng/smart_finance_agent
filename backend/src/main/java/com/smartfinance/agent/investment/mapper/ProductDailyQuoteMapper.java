@@ -120,25 +120,4 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
         return selectCount(query) > 0;
     }
 
-    default LocalDate latestCompleteFundTradeDate(Long productId) {
-        ProductDailyQuote latest = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
-                .select(ProductDailyQuote::getTradeDate)
-                .eq(ProductDailyQuote::getProductId, productId)
-                .eq(ProductDailyQuote::getAdjustType, "NONE")
-                .gt(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO)
-                .orderByDesc(ProductDailyQuote::getTradeDate)
-                .last("LIMIT 1"));
-        return latest == null ? null : latest.getTradeDate();
-    }
-
-    default LocalDate earliestMissingFundReturnDate(Long productId) {
-        ProductDailyQuote first = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
-                .select(ProductDailyQuote::getTradeDate)
-                .eq(ProductDailyQuote::getProductId, productId)
-                .eq(ProductDailyQuote::getAdjustType, "NONE")
-                .and(nested -> nested.isNull(ProductDailyQuote::getTotalReturnIndex)
-                        .or().le(ProductDailyQuote::getTotalReturnIndex, BigDecimal.ZERO))
-                .orderByAsc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
-        return first == null ? null : first.getTradeDate();
-    }
 }

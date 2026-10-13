@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections.abc import Mapping
 
 from pydantic import (BaseModel, ConfigDict, Field, JsonValue, StrictBool,
-                      field_serializer, field_validator, model_validator)
+                      field_serializer, field_validator, model_validator, model_serializer)
 
 
 PositiveCount = Annotated[int, Field(strict=True, gt=0)]
@@ -87,6 +87,7 @@ class DataSnapshotContext(StrictContract):
     adapter_version: NonBlank = Field(alias="adapterVersion")
     requested_start_date: date = Field(alias="requestedStartDate")
     requested_end_date: date = Field(alias="requestedEndDate")
+    source_units: tuple[tuple[NonBlank, NonBlank], ...] = Field(default=(), alias="sourceUnits")
     fetched_at: datetime = Field(alias="fetchedAt")
 
     @model_validator(mode="after")
@@ -138,6 +139,7 @@ class DataQualityConfig(StrictContract):
     version: NonBlank
     rule_set: NonBlank = Field(alias="ruleSet")
     evidence_aware_rules: StrictBool = Field(default=False, alias="evidenceAwareRules")
+    source_driven_rules: StrictBool = Field(default=False, alias="sourceDrivenRules")
     publication_aware_rules: StrictBool = Field(default=False, alias="publicationAwareRules")
     market_time_zones: Mapping[str, str] = Field(default_factory=dict, alias="marketTimeZones")
     schema_version: NonBlank = Field(alias="schemaVersion")
@@ -177,12 +179,21 @@ class DataQualityManifest(StrictContract):
     sample_start_date: date = Field(alias="sampleStartDate")
     sample_end_date: date = Field(alias="sampleEndDate")
     record_count: PositiveCount = Field(alias="recordCount")
+    source_units: tuple[tuple[NonBlank, NonBlank], ...] = Field(default=(), alias="sourceUnits")
     fetched_at: datetime = Field(alias="fetchedAt")
     content_hash: NonBlank = Field(alias="contentHash")
     parquet_file_hash: NonBlank = Field(alias="parquetFileHash")
     storage_format: Literal["PARQUET"] = Field(alias="storageFormat")
     storage_uri: NonBlank = Field(alias="storageUri")
     schema_version: NonBlank = Field(alias="schemaVersion")
+
+    @model_serializer(mode="wrap")
+    def serialize_manifest(self, handler):
+        payload = handler(self)
+        if not self.source_units:
+            payload.pop("sourceUnits", None)
+            payload.pop("source_units", None)
+        return payload
 
     @model_validator(mode="after")
     def ranges_are_ordered(self) -> "DataQualityManifest":

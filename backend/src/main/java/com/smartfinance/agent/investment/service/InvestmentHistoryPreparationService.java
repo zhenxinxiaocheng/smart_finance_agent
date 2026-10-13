@@ -1,7 +1,6 @@
 package com.smartfinance.agent.investment.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.smartfinance.agent.investment.domain.FundClassificationPolicy;
 import com.smartfinance.agent.investment.entity.InvestmentDataJob;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
@@ -18,7 +17,6 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -62,7 +60,7 @@ public class InvestmentHistoryPreparationService {
             boolean coverageComplete,
             String datasetVersion,
             boolean skipped,
-            LocalDate verifiedThrough) {
+            LocalDate checkedThrough) {
         public PreparationResult(int count,LocalDate requestedStart,LocalDate sampleStart,LocalDate sampleEnd,
                                  boolean complete,String version,boolean skipped) {
             this(count,requestedStart,sampleStart,sampleEnd,complete,version,skipped,null);
@@ -83,7 +81,7 @@ public class InvestmentHistoryPreparationService {
         this.availability = availability;
     }
     /**
-     * 数据源调用与行情写事务分离；全部必需序列准备成功后，行情和覆盖标记一起提交。
+     * 数据源调用与写事务分离；每个有效序列和它的准备记录独立提交。
      */
     private final TransactionTemplate writeTransaction;
 
@@ -173,13 +171,18 @@ public class InvestmentHistoryPreparationService {
     }
 
     public boolean requiresPreparation(InvestmentProduct product, LocalDate start, LocalDate end) {
-        return supportsQuality(product) && dataQualityService.requiresPreparation(product, start, end);
+        if (!supportsQuality(product)) return false;
+        var inputs = quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
+                .eq(ProductDailyQuote::getProductId, product.getId())
+                .eq(ProductDailyQuote::getAdjustType, dataQualityService.adjustType(product))
+                .ge(ProductDailyQuote::getTradeDate, start).le(ProductDailyQuote::getTradeDate, end));
+        return dataQualityService.requiresPreparation(product, start, end, inputs);
     }
 
     private PreparationResult prepareProduct(InvestmentProduct incoming,String jobType,boolean forceRefresh,
                                              LocalDate start,LocalDate target,boolean demandWindow) {
-        InvestmentProduct product = start == null ? classificationService.enrichIfMissing(incoming)
-                : demandWindow&&fund(incoming) ? classifyDemandFund(incoming) : incoming;
+        InvestmentProduct product = fund(incoming) && (start == null || demandWindow) ? classifyFund(incoming)
+                : start == null ? classificationService.enrichIfMissing(incoming) : incoming;
         String adjustType = dataQualityService.adjustType(product);
         boolean strict = supportsQuality(product);
         boolean needsRaw = !"NONE".equals(adjustType);
@@ -187,64 +190,54 @@ public class InvestmentHistoryPreparationService {
         LocalDate localLastValid = nextDate == null ? null : nextDate.minusDays(1);
         boolean fullBackfill = localLastValid == null || forceRefresh;
         if (fullBackfill && start == null && knownStartDate(product) == null && strict) {
-            AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(
-                    product.getProductType(), product.getCode());
-            if (resolved != null && resolved.inceptionDate() != null) {
-                product.setInceptionDate(resolved.inceptionDate());
+            try {
+                AnalysisServiceClient.ResolvedProduct resolved = analysisClient.resolveProduct(product.getProductType(), product.getCode());
+                if (resolved != null && resolved.inceptionDate() != null) product.setInceptionDate(resolved.inceptionDate());
+            } catch (RuntimeException unavailable) {
+                log.debug("历史起点资料暂不可用，仍按配置窗口采集 {}",product.getId(),unavailable);
             }
         }
         LocalDate availableEnd = availability == null ? LocalDate.now(clock)
                 : availability.target(product, LocalDate.now(clock), clock.instant());
-        LocalDate requestedEnd = target == null ? availableEnd
-                : availability == null ? target : earlier(target, availableEnd);
-        // Publication bounds limit acquisition; a demand receipt must prove the caller's whole window.
-        LocalDate verificationEnd = demandWindow && target != null ? target : requestedEnd;
+        // Explicit acquisition windows stay intact; automatic callers use the calendar target.
+        LocalDate requestedEnd = target == null ? availableEnd : target;
         LocalDate requestedStart = start != null ? start
-                : fullBackfill ? initialStart(product, strict) : localLastValid.plusDays(1);
-        if (fund(product)) {
-            LocalDate missingReturn = quoteMapper.earliestMissingFundReturnDate(product.getId());
-            requestedStart = earlier(requestedStart, missingReturn);
-        }
-        if (requestedStart.isAfter(requestedEnd)) {
-            // 本地已是最新，无需请求数据源。
-            PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
-            if(demandWindow&&confirmedClosedWindow(product,requestedStart,verificationEnd))
-                return new PreparationResult(result.recordCount(),requestedStart,result.sampleStartDate(),result.sampleEndDate(),
-                        result.coverageComplete(),null,true,verificationEnd);
-            return result;
-        }
-        if (!fullBackfill && mainlandExchangeProduct(product)
-                && confirmedClosedWindow(product, requestedStart, verificationEnd)) {
-            PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
-            return demandWindow ? new PreparationResult(result.recordCount(),requestedStart,
-                    result.sampleStartDate(),result.sampleEndDate(),result.coverageComplete(),null,true,verificationEnd) : result;
-        }
-        // Historical chunks are acquisition windows, not evidence of freshness today.
-        // An unknown inception cannot supply a valid calendar denominator for a full-history check.
-        boolean useQuality = strict && (demandWindow || start == null || (!requestedEnd.isBefore(availableEnd)
-                && (knownStartDate(product) != null || !fullBackfill)));
+                : fullBackfill ? initialStart(product) : localLastValid.plusDays(1);
+        if (demandWindow && !forceRefresh && localLastValid != null && requestedStart.isAfter(localLastValid))
+            requestedStart = earlier(requestedStart, localLastValid.plusDays(1));
+        if (requestedStart.isAfter(requestedEnd))
+            return skipped(product, adjustType, localLastValid, requestedStart);
+        if (!forceRefresh && confirmedClosedWindow(product, requestedStart, requestedEnd))
+            return checkedEmpty(product, adjustType, localLastValid, requestedStart, requestedEnd);
+        boolean useQuality = strict;
 
-        List<PreparedSeries> series = new ArrayList<>();
+        PreparedSeries primary = null;
+        RuntimeException failure = null;
+        boolean rebuilding = false;
+        boolean anchoredBasis = "QFQ".equals(adjustType) || fund(product);
         try {
-            ProductDailyQuote anchor = "QFQ".equals(adjustType) && (!fullBackfill || start!=null)
+            ProductDailyQuote anchor = anchoredBasis && (!fullBackfill || start!=null)
                     ? quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                     .eq(ProductDailyQuote::getProductId, product.getId())
                     .eq(ProductDailyQuote::getAdjustType, adjustType)
                     .lt(ProductDailyQuote::getTradeDate, requestedStart)
                     .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1")) : null;
-            if(anchor==null && start!=null && "QFQ".equals(adjustType))
+            if(anchor==null && start!=null && anchoredBasis)
                 anchor=quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                         .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType)
                         .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
-            PreparedSeries primary = fetch(product, anchor == null ? requestedStart : earlier(requestedStart,anchor.getTradeDate()),
+            primary = fetch(product, anchor == null ? requestedStart : earlier(requestedStart,anchor.getTradeDate()),
                     anchor==null ? requestedEnd : later(requestedEnd,anchor.getTradeDate()), adjustType, useQuality);
             if (anchor != null) {
-                BigDecimal remoteAnchor = closeOn(primary.response(), anchor.getTradeDate());
+                BigDecimal remoteAnchor = valueOn(primary.response(), anchor.getTradeDate(), "close");
                 if (remoteAnchor == null || anchor.getClosePrice() == null) {
                     throw new IllegalStateException("复权增量缺少重叠价格，无法确认历史价格基准");
                 }
-                if (remoteAnchor.compareTo(anchor.getClosePrice()) != 0) {
-                    // QFQ prices are time-varying: never splice a new basis into the old series.
+                BigDecimal remoteReturn = fund(product) ? valueOn(primary.response(), anchor.getTradeDate(), "total_return_index") : null;
+                boolean sameReturn = !fund(product) || ProductDailyQuoteService.same(remoteReturn, anchor.getTotalReturnIndex(), 10);
+                if (!ProductDailyQuoteService.same(remoteAnchor, anchor.getClosePrice(), 10) || !sameReturn) {
+                    // Adjusted prices and fund return indices must share one basis across history.
+                    rebuilding = true;
                     LocalDate origin = knownStartDate(product);
                     if (origin == null) {
                         ProductDailyQuote first = quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
@@ -261,95 +254,86 @@ public class InvestmentHistoryPreparationService {
                     primary = fetch(product, requestedStart, requestedEnd, adjustType, useQuality);
                     Set<LocalDate> refreshed=recordDates(primary.response(),primary.adjustType());
                     for(var existing:quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
-                            .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType)))
+                            .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType))) {
                         if(!refreshed.contains(existing.getTradeDate()))
                             throw new IllegalStateException("复权基准重建未覆盖已有日期，保留原行情等待补齐");
-                } else {
-                    primary = after(primary, requestedStart);
-                    if(primary.end().isAfter(requestedEnd))primary=through(primary,requestedEnd);
+                        if (fund(product) && existing.getTotalReturnIndex()!=null && existing.getTotalReturnIndex().signum()>0) {
+                            BigDecimal rebuiltReturn = valueOn(primary.response(),existing.getTradeDate(),"total_return_index");
+                            if (rebuiltReturn==null || rebuiltReturn.signum()<=0)
+                                throw new IllegalStateException("收益基准重建未覆盖已有收益数据，保留原行情等待补齐");
+                        }
+                    }
                 }
             }
-            series.add(primary);
         } catch (RuntimeException exception) {
-            if ((fullBackfill && start == null) || !isSourceEmpty(exception)) {
-                throw exception;
-            }
-            log.debug("增量窗口 {} 在数据源尚无记录，跳过：{}", requestedStart, exception.getMessage());
-            PreparationResult result=skipped(product, adjustType, localLastValid, requestedStart);
-            // Funds are fetched first: a Chinese exchange holiday cannot suppress overseas NAV.
-            if(demandWindow&&confirmedClosedWindow(product,requestedStart,verificationEnd))
-                return new PreparationResult(result.recordCount(),requestedStart,result.sampleStartDate(),result.sampleEndDate(),
-                        result.coverageComplete(),null,true,verificationEnd);
-            return result;
+            primary = null;
+            if (isSourceEmpty(exception) && !rebuilding)
+                log.debug("研究价格查询正常返回空记录 {} 至 {}", requestedStart, requestedEnd);
+            else failure = isSourceEmpty(exception)
+                    ? new IllegalStateException("价格基准重建未返回记录，保留原行情等待重试", exception) : exception;
         }
-        PreparedSeries primary = series.get(0);
-        if (primary.evaluation() != null && primary.evaluation().blocked()) {
-            write(writeTransaction, () -> {
-                product.setHistoryCoverageComplete(false);
-                productMapper.updateById(product);
-            });
-            throw new QualityBlockedException();
+        boolean coverageComplete = fullBackfill
+                ? initialCoverageComplete(product, requestedStart, requestedEnd, availableEnd)
+                : Boolean.TRUE.equals(product.getHistoryCoverageComplete());
+        if (primary != null) {
+            try {
+                if (primary.evaluation() != null && primary.evaluation().blocked()) throw new QualityBlockedException();
+                persistSeries(product, primary, coverageComplete, true);
+            } catch (RuntimeException exception) {
+                failure = exception;
+            }
         }
         if (needsRaw) {
-            PreparedSeries raw = fetch(product, requestedStart, requestedEnd, "NONE", useQuality);
-            if (raw.evaluation() != null && raw.evaluation().blocked()) {
-                throw new QualityBlockedException();
+            try {
+                PreparedSeries raw = fetch(product, requestedStart, requestedEnd, "NONE", useQuality);
+                if (raw.evaluation() != null && raw.evaluation().blocked()) throw new QualityBlockedException();
+                persistSeries(product, raw, coverageComplete, false);
+            } catch (AnalysisServiceClient.SourceEmptyException empty) {
+                log.debug("原始价格查询正常返回空记录 {} 至 {}", requestedStart, requestedEnd);
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
             }
-            // Every research date must have an executable raw price before either series is written.
-            Set<LocalDate> rawDates = recordDates(raw.response(),raw.adjustType());
-            if (!rawDates.containsAll(recordDates(primary.response(),primary.adjustType()))) {
-                throw new IllegalStateException("原始价格未覆盖研究价格日期，等待补齐后重试");
-            }
-            series.add(raw);
         }
-        if (!demandWindow && !fullBackfill && primary.end() != null && !primary.end().isAfter(localLastValid)) {
-            return skipped(product, adjustType, localLastValid, requestedStart);
-        }
-        for (PreparedSeries item : series) {
-            if (item.evaluation() != null) dataQualityService.claim(item.evaluation());
-        }
-        LocalDate sampleStart = series.stream().map(PreparedSeries::start).max(LocalDate::compareTo).orElseThrow();
-        LocalDate sampleEnd = series.stream().map(PreparedSeries::end).min(LocalDate::compareTo).orElseThrow();
-        boolean coverageComplete = fullBackfill
-                ? initialCoverageComplete(product, requestedStart, requestedEnd, series, availableEnd)
-                : Boolean.TRUE.equals(product.getHistoryCoverageComplete());
-        write(writeTransaction, () -> {
-            for (PreparedSeries item : series) {
-                quoteService.persistDailyQuotes(product, item.response(), item.adjustType());
-            }
-            product.setHistoryStartDate(
-                    earlier(product.getHistoryStartDate(), sampleStart));
-            product.setHistoryEndDate(
-                    later(product.getHistoryEndDate(), sampleEnd));
-            product.setHistoryCoverageComplete(coverageComplete);
-            productMapper.updateById(product);
-        });
+        if (failure != null) throw failure;
+        if (primary == null) return checkedEmpty(product, adjustType, localLastValid, requestedStart, requestedEnd);
 
         return new PreparationResult(
                 persistedCount(product.getId(), adjustType),
                 requestedStart,
-                sampleStart,
-                sampleEnd,
+                primary.start(),
+                primary.end(),
                 coverageComplete,
                 primary.evaluation() == null ? null : primary.evaluation().datasetVersion(),
                 false,
-                demandWindow ? verifiedThrough(product,requestedStart,verificationEnd,series) : null);
+                requestedEnd);
+    }
+
+    /** Another series failing must not discard valid observations already fetched and stored. */
+    private void persistSeries(InvestmentProduct product, PreparedSeries item, boolean complete, boolean primary) {
+        if (item.evaluation() != null) dataQualityService.claim(item.evaluation());
+        write(writeTransaction, () -> {
+            quoteService.persistDailyQuotes(product, item.response(), item.adjustType());
+            if (item.evaluation() != null) dataQualityService.persistPrepared(item.evaluation());
+            if (primary) {
+                product.setHistoryStartDate(earlier(product.getHistoryStartDate(), item.start()));
+                product.setHistoryEndDate(later(product.getHistoryEndDate(), item.end()));
+                product.setHistoryCoverageComplete(complete);
+                productMapper.updateById(product);
+            }
+        });
     }
 
     /** null means one of the required price series still needs its initial history. */
     public LocalDate incrementalStart(InvestmentProduct product) {
         String adjustment = dataQualityService.adjustType(product);
-        LocalDate latest = fund(product) ? quoteMapper.latestCompleteFundTradeDate(product.getId())
-                : quoteMapper.latestTradeDate(product.getId(), adjustment);
+        LocalDate latest = quoteMapper.latestTradeDate(product.getId(), adjustment);
         if (!"NONE".equals(adjustment)) {
             LocalDate raw = quoteMapper.latestTradeDate(product.getId(), "NONE");
             if (raw == null || latest == null) return null;
             latest = earlier(latest, raw);
         }
         LocalDate next = latest == null ? null : latest.plusDays(1);
-        if (fund(product) && next != null) {
-            next = earlier(next, quoteMapper.earliestMissingFundReturnDate(product.getId()));
-        }
         return next;
     }
 
@@ -357,57 +341,17 @@ public class InvestmentHistoryPreparationService {
                                   InvestmentDataQualityService.Evaluation evaluation,
                                   LocalDate start, LocalDate end) { }
 
-    private static BigDecimal closeOn(Map<String, Object> response, LocalDate day) {
+    private static BigDecimal valueOn(Map<String, Object> response, LocalDate day, String field) {
         for (Object value : (List<?>) response.get("records")) {
             Map<?, ?> row = (Map<?, ?>) value;
             if (day.equals(LocalDate.parse(String.valueOf(row.get("data_date")).substring(0, 10)))) {
-                return new BigDecimal(String.valueOf(row.get("close")));
+                if ("total_return_index".equals(field)) return ProductDailyQuoteService.totalReturnIndex(row);
+                Object valueAtDate = row.get(field);
+                if (valueAtDate == null && "close".equals(field)) valueAtDate = row.get("nav");
+                return valueAtDate == null ? null : new BigDecimal(String.valueOf(valueAtDate));
             }
         }
         return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static PreparedSeries after(PreparedSeries series, LocalDate start) {
-        List<Map<String, Object>> records = ((List<Map<String, Object>>) series.response().get("records")).stream()
-                .filter(row -> !LocalDate.parse(String.valueOf(row.get("data_date")).substring(0, 10)).isBefore(start))
-                .toList();
-        if (records.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回新记录");
-        Map<String, Object> response = new java.util.LinkedHashMap<>(series.response());
-        response.put("records", records);
-        Set<LocalDate> dates = recordDates(response,series.adjustType());
-        return new PreparedSeries(series.adjustType(), response, series.evaluation(),
-                dates.stream().min(LocalDate::compareTo).orElseThrow(), dates.stream().max(LocalDate::compareTo).orElseThrow());
-    }
-
-    @SuppressWarnings("unchecked")
-    private static PreparedSeries through(PreparedSeries series,LocalDate end) {
-        List<Map<String,Object>> records=((List<Map<String,Object>>)series.response().get("records")).stream()
-                .filter(row->!LocalDate.parse(String.valueOf(row.get("data_date")).substring(0,10)).isAfter(end)).toList();
-        if(records.isEmpty())throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回新记录");
-        Map<String,Object> response=new java.util.LinkedHashMap<>(series.response());response.put("records",records);
-        Set<LocalDate> dates=recordDates(response,series.adjustType());
-        return new PreparedSeries(series.adjustType(),response,series.evaluation(),
-                dates.stream().min(LocalDate::compareTo).orElseThrow(),dates.stream().max(LocalDate::compareTo).orElseThrow());
-    }
-
-    /** A receipt covers every expected observation, including the beginning and internal dates. */
-    private LocalDate verifiedThrough(InvestmentProduct product,LocalDate start,LocalDate end,List<PreparedSeries> series) {
-        LocalDate observed=series.stream().map(PreparedSeries::end).min(LocalDate::compareTo).orElseThrow();
-        if(observed.isBefore(start))return null;
-        try {
-            List<LocalDate> calendar=AnalysisServiceClient.expectedQuoteDates(
-                    analysisClient.quoteAvailability(product,start,end,clock.instant()),start,end);
-            if(calendar==null||calendar.isEmpty())return null;
-            Set<LocalDate> expected=new java.util.HashSet<>();
-            for(LocalDate date:calendar)if(!date.isAfter(observed))expected.add(date);
-            if(expected.isEmpty()||series.stream().anyMatch(item->!recordDates(item.response(),item.adjustType()).containsAll(expected)))return null;
-            boolean closedTail=calendar.stream().noneMatch(date->date.isAfter(observed));
-            return closedTail ? end : observed;
-        } catch(RuntimeException unavailable) {
-            log.debug("未确认区间覆盖，保留已获取行情 {} 至 {}",start,end,unavailable);
-            return null;
-        }
     }
 
     private boolean domesticCalendarProduct(InvestmentProduct product) {
@@ -418,9 +362,9 @@ public class InvestmentHistoryPreparationService {
     /** Pending classification may enter the existing job; calendar receipts still require a known supported category. */
     public boolean supportsDemandPreparation(InvestmentProduct product) {
         return domesticCalendarProduct(product) || (fund(product) && "FUND_CN".equals(product.getMarket())
-                && !FundClassificationPolicy.known(product.getFundCategory()));
+                && !com.smartfinance.agent.investment.domain.FundClassificationPolicy.known(product.getFundCategory()));
     }
-    private InvestmentProduct classifyDemandFund(InvestmentProduct product) {
+    private InvestmentProduct classifyFund(InvestmentProduct product) {
         try{return classificationService.enrichIfMissing(product);}
         catch(RuntimeException unavailable){log.debug("基金分类暂未取得，仍保留可获取的净值 {}",product.getId(),unavailable);return product;}
     }
@@ -433,9 +377,6 @@ public class InvestmentHistoryPreparationService {
                 ? analysisClient.marketDailyQuotes(product, start, end, adjustType) : evaluation.response();
         Set<LocalDate> dates = recordDates(response,adjustType);
         if (dates.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录");
-        if (fund(product) && hasInvalidFundReturns(response)) {
-            throw new IllegalStateException("基金历史缺少有效累计收益，保留已有数据并等待重试");
-        }
         if (dates.stream().anyMatch(day -> day.isBefore(start) || day.isAfter(end))) {
             // A stale/out-of-window response must never overwrite local data.
             throw new IllegalStateException("数据源返回请求区间之外的记录");
@@ -445,27 +386,13 @@ public class InvestmentHistoryPreparationService {
                 dates.stream().max(LocalDate::compareTo).orElseThrow());
     }
 
-    static boolean hasInvalidFundReturns(Map<String, Object> response) {
-        for (Object value : (List<?>) response.get("records")) {
-            Map<?, ?> row = (Map<?, ?>) value;
-            Object index = row.get("total_return_index");
-            if (index == null && row.get("adjustment_factor") != null) {
-                Object nav = row.get("nav") == null ? row.get("close") : row.get("nav");
-                if (nav != null) index = new BigDecimal(String.valueOf(nav))
-                        .multiply(new BigDecimal(String.valueOf(row.get("adjustment_factor"))));
-            }
-            if (index == null || new BigDecimal(String.valueOf(index)).signum() <= 0) return true;
-        }
-        return false;
-    }
-
     @SuppressWarnings("unchecked")
     static Set<LocalDate> recordDates(Map<String, Object> response) {
         return recordDates(response,"NONE");
     }
 
     @SuppressWarnings("unchecked")
-    private static Set<LocalDate> recordDates(Map<String, Object> response,String adjustType) {
+    static Set<LocalDate> recordDates(Map<String, Object> response,String adjustType) {
         if (response == null || !(response.get("records") instanceof List<?>)) {
             throw new IllegalStateException("日线响应缺少records");
         }
@@ -504,11 +431,6 @@ public class InvestmentHistoryPreparationService {
         }
     }
 
-    public boolean closedAfter(InvestmentProduct product,LocalDate lastObserved,LocalDate end) {
-        return lastObserved!=null&&lastObserved.isBefore(end)&&mainlandExchangeProduct(product)
-                && confirmedClosedWindow(product,lastObserved.plusDays(1),end);
-    }
-
     private static boolean fund(InvestmentProduct product) {
         return "MUTUAL_FUND".equals(product.getProductType()) || "FUND".equals(product.getProductType());
     }
@@ -520,6 +442,13 @@ public class InvestmentHistoryPreparationService {
             return;
         }
         template.executeWithoutResult(status -> action.run());
+    }
+
+    private PreparationResult checkedEmpty(InvestmentProduct product, String adjustment,
+                                           LocalDate last, LocalDate start, LocalDate end) {
+        var previous = skipped(product, adjustment, last, start);
+        return new PreparationResult(previous.recordCount(), start, previous.sampleStartDate(),
+                previous.sampleEndDate(), previous.coverageComplete(), null, true, end);
     }
 
     private PreparationResult skipped(InvestmentProduct product, String adjustType,
@@ -560,10 +489,10 @@ public class InvestmentHistoryPreparationService {
                 || "FUND_NAV_HISTORY".equals(job.getJobType()));
     }
 
-    private LocalDate initialStart(InvestmentProduct product, boolean strict) {
+    private LocalDate initialStart(InvestmentProduct product) {
         LocalDate start = knownStartDate(product);
         if (start == null) {
-            if (strict || historyYears <= 0) {
+            if (historyYears <= 0) {
                 throw new IllegalStateException("产品历史起始日期缺失，无法校验完整历史数据");
             }
             return LocalDate.now(clock).minusYears(historyYears);
@@ -578,24 +507,11 @@ public class InvestmentHistoryPreparationService {
         return product.getInceptionDate();
     }
 
-    /** 仅全量回补时校验：样本起点需覆盖产品成立/上市日期（含容差）。 */
+    /** Completion describes a successful origin-to-target query, not guessed daily observations. */
     private boolean initialCoverageComplete(InvestmentProduct product, LocalDate start, LocalDate end,
-                                            List<PreparedSeries> series, LocalDate availableEnd) {
-        LocalDate inception = knownStartDate(product);
-        if (inception == null || start.isAfter(inception) || end.isBefore(availableEnd)) return false;
-        return series.stream().allMatch(item -> item.evaluation() != null
-                && missingDatesVerified(item.response()));
-    }
-
-    private static boolean missingDatesVerified(Map<String, Object> response) {
-        if (!(response.get("qualityReport") instanceof Map<?, ?> report)
-                || !(report.get("issues") instanceof List<?> issues)) return false;
-        return issues.stream().filter(Map.class::isInstance).map(Map.class::cast).anyMatch(issue ->
-                Set.of("STOCK_UNEXPLAINED_TRADING_GAPS", "FUND_UNEXPLAINED_NAV_GAPS")
-                        .contains(String.valueOf(issue.get("ruleCode")))
-                        && "PASS".equals(issue.get("outcome"))
-                        && issue.get("observed") instanceof Map<?, ?> observed
-                        && "0".equals(String.valueOf(observed.get("missingDateCount"))));
+                                            LocalDate availableEnd) {
+        LocalDate origin = knownStartDate(product);
+        return origin != null && !start.isAfter(origin) && !end.isBefore(availableEnd);
     }
 
     private static LocalDate earlier(LocalDate first, LocalDate second) {

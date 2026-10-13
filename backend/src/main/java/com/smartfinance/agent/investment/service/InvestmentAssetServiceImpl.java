@@ -291,8 +291,8 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                         : availability.target(product, today, Instant.now());
                 LocalDate start = end.minusDays(runtimeProperties.getMarket().getDailyQuoteLookbackDays());
                 var prepared = historyPreparation.prepareDemandProduct(product, "STOCK_HISTORY", false, start, end);
-                if (prepared.skipped() && prepared.verifiedThrough() == null) {
-                    return new RefreshOutcome("PARTIAL", "请求区间暂无已披露行情，保留已有数据");
+                if (prepared.skipped()) {
+                    return new RefreshOutcome("SUCCESS", "本次查询暂无新行情，保留已有数据");
                 }
                 return new RefreshOutcome("SUCCESS", null);
             }

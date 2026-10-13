@@ -1,0 +1,47 @@
+{
+  "version": "data-quality-v7",
+  "ruleSet": "data-quality-v7",
+  "evidenceAwareRules": true,
+  "publicationAwareRules": true,
+  "marketTimeZones": {
+    "SSE": "Asia/Shanghai",
+    "SZSE": "Asia/Shanghai",
+    "BSE": "Asia/Shanghai",
+    "FUND_CN": "Asia/Shanghai",
+    "HKEX": "Asia/Hong_Kong",
+    "NYSE": "America/New_York",
+    "NASDAQ": "America/New_York",
+    "AMEX": "America/New_York"
+  },
+  "schemaVersion": "market-data-schema-v2",
+  "enforcementMode": "ENFORCE",
+  "storageRootEnv": "ANALYSIS_DATA_ROOT",
+  "storageRoot": "../.data/market-snapshots",
+  "orphanRetentionHours": 24,
+  "warningFailuresToBlock": 3,
+  "providers": {
+    "enabled": [
+      "TENCENT",
+      "AKSHARE"
+    ],
+    "maximumBatches": 1
+  },
+  "stock": {
+    "maxStaleTradingDays": 1,
+    "maxMissingRatio": 0.02,
+    "crossSourceEnabled": true,
+    "minimumOverlapDays": 1,
+    "maxPriceDeviationRatio": 0.01,
+    "extremeReturnRatio": 0.2,
+    "corporateActionEvidenceReturnRatio": 0.3,
+    "extremeVolumeMultiplier": 20,
+    "requireAdjustmentFactor": false,
+    "allowSignedQfq": true
+  },
+  "fund": {
+    "maxStaleCalendarDays": 3,
+    "maxStaleTradingDays": 3,
+    "maxMissingNavRatio": 0.05
+  },
+  "sourceDrivenRules": true
+}

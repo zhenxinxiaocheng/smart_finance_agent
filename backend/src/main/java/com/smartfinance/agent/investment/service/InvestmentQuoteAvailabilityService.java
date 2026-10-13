@@ -28,12 +28,13 @@ public class InvestmentQuoteAvailabilityService {
             LocalDate target;
             try {
                 Map<String,Object> response=client.quoteAvailability(category,requested.minusYears(1),requested,at);
-                target=LocalDate.parse(String.valueOf(response.get("targetDate")));
+                target=Boolean.FALSE.equals(response.get("calendarKnown")) ? requested
+                        : LocalDate.parse(String.valueOf(response.get("targetDate")));
             } catch(RuntimeException unavailable) {
-                // This is only a conservative request bound, never completeness/holiday evidence.
+                // An unavailable calendar cannot declare the latest data unobtainable.
                 // Calendar/provider outages must not abort ApplicationReadyEvent or the queue.
                 log.warn("Publication calendar unavailable for {} {}",scope.market(),scope.category());
-                target=result==null?requested.minusDays(1):result.target();
+                target=requested;
             }
             result=new Cached(requested,at.plus(cacheTtl),target.isAfter(requested)?requested:target);
             cache.put(scope,result);

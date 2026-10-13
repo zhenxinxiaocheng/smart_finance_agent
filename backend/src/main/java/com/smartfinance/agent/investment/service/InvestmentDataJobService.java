@@ -65,11 +65,8 @@ public class InvestmentDataJobService {
         boolean requiresCompleteHistory = demand == null && isAssetHistoryJob(jobType) && !hasLocalHistory(productId);
         InvestmentDataJob existing = findByAssetAndType(assetId, jobType);
         if (existing != null) {
-            if (isActive(existing)) {
-                return existing;
-            }
-            if (forceRefresh) {
-                return requeueTerminal(existing, true);
+            if (forceRefresh && !"RUNNING".equals(existing.getStatus())) {
+                return requeue(existing, true);
             }
             return existing;
         }
@@ -115,7 +112,7 @@ public class InvestmentDataJobService {
         }
         // 已有终态任务且分析过期时只做增量补齐，绝不因 PARTIAL / FAILED 触发全量回补。
         if (analysisStale && List.of("SUCCEEDED", "PARTIAL", "FAILED").contains(existing.getStatus())) {
-            return requeueTerminal(existing, false);
+            return requeue(existing, false);
         }
         return existing;
     }
@@ -172,10 +169,10 @@ public class InvestmentDataJobService {
                 .distinct().forEach(this::queueAnalysisForProduct);
     }
 
-    private InvestmentDataJob requeueTerminal(InvestmentDataJob existing, boolean forceRefresh) {
+    private InvestmentDataJob requeue(InvestmentDataJob existing, boolean forceRefresh) {
         // Another request may already have requeued/claimed this row since our SELECT.
         int updated = forceRefresh
-                ? mapper.requeueTerminal(existing.getId())
+                ? mapper.requeueForRefresh(existing.getId())
                 : mapper.requeueTerminalIncremental(existing.getId());
         if (updated == 1) {
             resetForRefresh(existing);

@@ -68,6 +68,57 @@ class InvestmentDataJobServiceIntegrationTest {
     }
 
     @Test
+    void manualRefreshUpgradesAQueuedIncrementalJobWithoutCreatingAnotherJob() {
+        var queued = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+        var forced = service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+
+        assertThat(forced.getId()).isEqualTo(queued.getId());
+        assertThat(mapper.selectById(queued.getId()).getForceRefresh()).isTrue();
+        assertThat(mapper.selectCount(null)).isEqualTo(1);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(queued.getId(), now, now.plusMinutes(5), "manual-worker")).isTrue();
+        assertThat(service.claimedSnapshot(queued.getId(), "manual-worker").getForceRefresh()).isTrue();
+    }
+
+    @Test
+    void manualRefreshMakesAnIncrementalRetryRunnableImmediately() {
+        var job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "old-worker")).isTrue();
+        assertThat(service.markRetryWait(job.getId(), "old-worker", 2, now.plusHours(1), "failed", now)).isTrue();
+
+        service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+
+        var refreshed = mapper.selectById(job.getId());
+        assertThat(refreshed.getStatus()).isEqualTo("QUEUED");
+        assertThat(refreshed.getForceRefresh()).isTrue();
+        assertThat(refreshed.getNextRetryAt()).isNull();
+        assertThat(refreshed.getAttemptCount()).isZero();
+        assertThat(service.pendingJobs(10)).extracting(InvestmentDataJob::getId).contains(job.getId());
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "manual-worker")).isTrue();
+    }
+
+    @Test
+    void manualRefreshCanRetryAnAlreadyForcedWaitingJobWithoutResettingARunningLease() {
+        var job = service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+        LocalDateTime now = LocalDateTime.now();
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "old-worker")).isTrue();
+        assertThat(service.markRetryWait(job.getId(), "old-worker", 2, now.plusHours(1), "failed", now)).isTrue();
+        service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+        assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "new-worker")).isTrue();
+        var before = mapper.selectById(job.getId());
+
+        service.ensureQueued(7L, 11L, 21L, "STOCK", true);
+
+        var running = mapper.selectById(job.getId());
+        assertThat(running.getStatus()).isEqualTo("RUNNING");
+        assertThat(running.getLeaseToken()).isEqualTo("new-worker");
+        assertThat(running.getStartedAt()).isEqualTo(before.getStartedAt());
+        assertThat(running.getLeaseUntil()).isEqualTo(before.getLeaseUntil());
+        assertThat(service.markSucceeded(job.getId(), "old-worker", 30, now)).isFalse();
+    }
+
+    @Test
     void expiredWorkerTokenCannotFinishJobAfterReclaim() {
         InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
         LocalDateTime now = LocalDateTime.now().withNano(0);
@@ -86,10 +137,10 @@ class InvestmentDataJobServiceIntegrationTest {
         LocalDateTime now = LocalDateTime.now();
         assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "worker-1")).isTrue();
         assertThat(service.markSucceeded(job.getId(), "worker-1", 30, now)).isTrue();
-        assertThat(mapper.requeueTerminal(job.getId())).isEqualTo(1);
-        assertThat(mapper.requeueTerminal(job.getId())).isZero();
+        assertThat(mapper.requeueForRefresh(job.getId())).isEqualTo(1);
+        assertThat(mapper.requeueForRefresh(job.getId())).isZero();
         assertThat(service.claim(job.getId(), now, now.plusMinutes(5), "worker-2")).isTrue();
-        assertThat(mapper.requeueTerminal(job.getId())).isZero();
+        assertThat(mapper.requeueForRefresh(job.getId())).isZero();
         assertThat(mapper.selectById(job.getId()).getLeaseToken()).isEqualTo("worker-2");
     }
 

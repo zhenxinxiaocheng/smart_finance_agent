@@ -78,6 +78,31 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
+    void successfullyFetchedSparseWindowCompletesCollectionWithoutCalendarProof() {
+        var product = product(); product.setMarket("NASDAQ");
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        var start = TODAY.minusDays(20);
+        when(dataQualityService.resolve(any(), any(), any(), anyString(), eq(true)))
+                .thenReturn(evaluation(TODAY.minusDays(2), TODAY.minusDays(2)));
+        var result = service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, TODAY);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+    }
+
+    @Test
+    void normalEmptyInitialWindowCompletesQueryWithoutInventingQuotes() {
+        var product = product();
+        when(quoteMapper.selectCount(any())).thenReturn(0L);
+        when(dataQualityService.resolve(any(), any(), any(), anyString(), eq(true)))
+                .thenThrow(new AnalysisServiceClient.SourceEmptyException("no records"));
+        var result = service.prepareDemandProduct(product, "STOCK_HISTORY", true, TODAY.minusDays(10), TODAY);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        assertThat(result.recordCount()).isZero();
+        assertThat(result.skipped()).isTrue();
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+    }
+
+    @Test
     void confirmedClosedStockWindowDoesNotCallFailingPriceSources() {
         InvestmentProduct product = product();
         LocalDate lastQuote = LocalDate.of(2026, 9, 30);
@@ -109,7 +134,7 @@ class InvestmentHistoryPreparationServiceTest {
         when(availability.target(any(), any(), any())).thenReturn(published);
         service.setAvailability(availability);
         when(dataQualityService.adjustType(product)).thenReturn("NONE");
-        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(published);
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(published);
         when(productMapper.selectById(21L)).thenReturn(product);
         var job = new InvestmentDataJob();
         job.setProductId(21L);
@@ -161,20 +186,20 @@ class InvestmentHistoryPreparationServiceTest {
         when(analysisClient.quoteAvailability(eq(product), eq(start), eq(end), any())).thenReturn(Map.of(
                 "calendarKnown", true, "expectedThroughDate", end.toString(), "targetDate", end.toString(),
                 "expectedDates", List.of("2026-10-01", "2026-10-02"), "ruleProfile", "US_CLOSE", "ruleVersion", "quote-availability-v1"));
-        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).verifiedThrough()).isEqualTo(end);
+        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).checkedThrough()).isEqualTo(end);
         assertThat(service.supportsDemandPreparation(product)).isFalse();
         verify(analysisClient, never()).aShareTradingDates(org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test
-    void usDemandWithAnInternalTradingGapDoesNotReceiveAReceipt() {
+    void sourceSuccessfulSparseUsWindowReceivesCollectionProgress() {
         var product = product(); product.setMarket("NASDAQ");
         when(dataQualityService.adjustType(product)).thenReturn("NONE");
         var start = LocalDate.of(2026, 7, 20); var end = start.plusDays(2);
         when(analysisClient.quoteAvailability(eq(product), eq(start), eq(end), any())).thenReturn(Map.of(
                 "calendarKnown", true, "expectedThroughDate", end.toString(), "targetDate", end.toString(),
                 "expectedDates", List.of("2026-07-20", "2026-07-21", "2026-07-22"), "ruleProfile", "US_CLOSE", "ruleVersion", "quote-availability-v1"));
-        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).verifiedThrough()).isNull();
+        assertThat(service.prepareDemandProduct(product, "STOCK_HISTORY", true, start, end).checkedThrough()).isEqualTo(end);
     }
 
     @Test
@@ -184,14 +209,14 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
-    void demandWindowCannotBeConfirmedFromOnlyItsLastObservation() {
+    void collectionCompletionDoesNotClaimDailyObservationCompleteness() {
         var product=product();
         LocalDate start=LocalDate.of(2026,7,20),end=LocalDate.of(2026,7,24);
         when(dataQualityService.resolve(any(),any(),any(),anyString(),eq(true)))
                 .thenReturn(evaluation(end,end));
         policyCalendar(start,end,List.of(start.toString(),start.plusDays(1).toString(),end.toString()));
         var result=service.prepareDemandProduct(product,"STOCK_HISTORY",true,start,end);
-        assertThat(result.verifiedThrough()).isNull();
+        assertThat(result.checkedThrough()).isEqualTo(end);
     }
     @Test
     void publishedFundWindowCanFinishOnAConfirmedClosedDay() {
@@ -206,12 +231,12 @@ class InvestmentHistoryPreparationServiceTest {
         var evaluated=new InvestmentDataQualityService.Evaluation(evaluation(friday,friday).snapshot(),response,List.of(),List.of());
         when(dataQualityService.resolve(any(),any(),any(),anyString(),eq(true))).thenReturn(evaluated);
         policyCalendar(friday,sunday,List.of(friday.toString()));
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isEqualTo(sunday);
-        verify(dataQualityService).resolve(product,friday,friday,"NONE",true);
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).checkedThrough()).isEqualTo(sunday);
+        verify(dataQualityService).resolve(product,friday,sunday,"NONE",true);
     }
 
     @Test
-    void publicationClippingCannotCompleteAnUnpublishedSession() {
+    void explicitWindowQueriesTheOriginalTargetDespitePublicationEstimate() {
         var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         var monday=LocalDate.of(2026,7,27); var tuesday=monday.plusDays(1);
@@ -221,17 +246,16 @@ class InvestmentHistoryPreparationServiceTest {
         when(analysisClient.quoteAvailability(eq(product),eq(monday),eq(tuesday),any()))
                 .thenReturn(calendarResponse(monday,List.of(monday.toString())));
 
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,monday,tuesday).verifiedThrough()).isNull();
-        verify(dataQualityService).resolve(product,monday,monday,"NONE",true);
-        verify(analysisClient).quoteAvailability(eq(product),eq(monday),eq(tuesday),any());
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,monday,tuesday).checkedThrough()).isEqualTo(tuesday);
+        verify(dataQualityService).resolve(product,monday,tuesday,"NONE",true);
     }
 
     @Test
-    void closedWeekendBeyondPublicationRequiresTheFullOriginalWindowProof() {
+    void knownClosedWindowSkipsButUnknownFundStillQueries() {
         var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         var friday=LocalDate.of(2026,7,24); var saturday=friday.plusDays(1); var sunday=friday.plusDays(2);
-        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(friday);
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(friday);
         var availability=mock(InvestmentQuoteAvailabilityService.class);
         when(availability.target(any(),any(),any())).thenReturn(friday);
         service.setAvailability(availability);
@@ -239,15 +263,15 @@ class InvestmentHistoryPreparationServiceTest {
                 "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of())
                         : Map.of("calendarKnown",false,"expectedDates",List.of()));
 
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).verifiedThrough()).isEqualTo(sunday);
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).checkedThrough()).isEqualTo(sunday);
         product.setFundCategory("QDII_FUND");
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).verifiedThrough()).isNull();
-        verify(dataQualityService,never()).resolve(any(),any(),any(),anyString(),anyBoolean());
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,saturday,sunday).checkedThrough()).isEqualTo(sunday);
+        verify(dataQualityService).resolve(product,saturday,sunday,"NONE",true);
         verify(analysisClient,never()).marketDailyQuotes(any(),any(),any(),anyString());
     }
 
     @Test
-    void unknownFundNeedsClassificationBeforeReceivingCalendarProof() {
+    void unknownFundCollectionCompletesWithoutCalendarProof() {
         var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory(null);
         assertThat(service.supportsDemandPreparation(product)).isTrue();
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
@@ -259,25 +283,25 @@ class InvestmentHistoryPreparationServiceTest {
         when(analysisClient.quoteAvailability(eq(product),eq(friday),eq(sunday),any())).thenAnswer(call ->
                 "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of(friday.toString()))
                         : Map.of("calendarKnown",false,"expectedDates",List.of(),"targetDate",friday.toString(),"ruleProfile","UNKNOWN","ruleVersion","quote-availability-v1"));
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isNull();
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).checkedThrough()).isEqualTo(sunday);
         when(classificationService.enrichIfMissing(product)).thenAnswer(call->{product.setFundCategory("INDEX_FUND");return product;});
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).verifiedThrough()).isEqualTo(sunday);
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",true,friday,sunday).checkedThrough()).isEqualTo(sunday);
         verify(classificationService,org.mockito.Mockito.times(2)).enrichIfMissing(product);
     }
     @Test
-    void emptyFundWeekendExtendsOnlyAConfirmedDomesticReceipt() {
+    void emptyFundQueryCompletesForKnownAndUnknownPublicationSchedules() {
         var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");product.setFundCategory("INDEX_FUND");
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         LocalDate friday=LocalDate.of(2026,7,24),sunday=friday.plusDays(2);
-        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(friday);
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(friday);
         when(analysisClient.quoteAvailability(eq(product),eq(friday.plusDays(1)),eq(sunday),any())).thenAnswer(call ->
                 "INDEX_FUND".equals(product.getFundCategory()) ? calendarResponse(sunday,List.of())
                         : Map.of("calendarKnown",false,"expectedDates",List.of(),"targetDate",friday.toString(),"ruleProfile","UNKNOWN","ruleVersion","quote-availability-v1"));
         org.mockito.Mockito.doThrow(new AnalysisServiceClient.SourceEmptyException("not published"))
                 .when(dataQualityService).resolve(any(),any(),any(),anyString(),eq(true));
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,friday.plusDays(1),sunday).verifiedThrough()).isEqualTo(sunday);
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,friday.plusDays(1),sunday).checkedThrough()).isEqualTo(sunday);
         product.setFundCategory("QDII_FUND");
-        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,friday.plusDays(1),sunday).verifiedThrough()).isNull();
+        assertThat(service.prepareDemandProduct(product,"FUND_NAV_HISTORY",false,friday.plusDays(1),sunday).checkedThrough()).isEqualTo(sunday);
     }
 
     @Test
@@ -335,7 +359,7 @@ class InvestmentHistoryPreparationServiceTest {
         product.setProductType("MUTUAL_FUND");
         product.setMarket("FUND_CN");
         when(dataQualityService.adjustType(product)).thenReturn("NONE");
-        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(TODAY.minusDays(2));
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(TODAY.minusDays(2));
 
         var result = service.prepareProduct(product, "FUND_NAV_HISTORY", false, TODAY.minusDays(1), TODAY);
 
@@ -393,15 +417,16 @@ class InvestmentHistoryPreparationServiceTest {
         org.mockito.Mockito.doThrow(new AnalysisServiceClient.SourceEmptyException("no initial history"))
                 .when(analysisClient).marketDailyQuotes(any(), any(), any(), anyString());
 
-        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
-                .isInstanceOf(AnalysisServiceClient.SourceEmptyException.class);
+        var result = service.prepareProduct(product, "STOCK_HISTORY", false);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        assertThat(result.skipped()).isTrue();
         verify(analysisClient, never()).aShareTradingDates(org.mockito.ArgumentMatchers.anyInt());
         verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
         assertThat(product.getHistoryCoverageComplete()).isFalse();
     }
 
     @Test
-    void unchangedQfqAnchorIsCheckedButNotWrittenAsANewIncrement() {
+    void unchangedQfqAnchorIsUpsertedWithTheFetchedIncrement() {
         InvestmentProduct product = product();
         LocalDate anchorDay = LocalDate.of(2026, 7, 28);
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(anchorDay);
@@ -419,7 +444,97 @@ class InvestmentHistoryPreparationServiceTest {
         var written = org.mockito.ArgumentCaptor.forClass(Map.class);
         verify(quoteService).persistDailyQuotes(eq(product), written.capture(), eq("QFQ"));
         assertThat(InvestmentHistoryPreparationService.recordDates(written.getValue()))
-                .doesNotContain(anchorDay).contains(TODAY);
+                .contains(anchorDay, TODAY);
+    }
+
+    @Test
+    void realFundSnapshotShapeUsesNavTimesFactorForIncrementalBasis() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");
+        LocalDate last=TODAY.minusDays(2);when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        when(quoteMapper.latestTradeDate(21L,"NONE")).thenReturn(last);
+        var anchor=new ProductDailyQuote();anchor.setTradeDate(last);anchor.setClosePrice(new java.math.BigDecimal("1.2"));anchor.setTotalReturnIndex(new java.math.BigDecimal("120"));
+        when(quoteMapper.selectOne(any())).thenReturn(anchor);
+        var e=evaluation(last,TODAY);var response=new java.util.LinkedHashMap<>(e.response());
+        response.put("records",List.of(Map.of("data_date",last.toString(),"nav","1.2","close","1.2","adjustment_factor","100"),
+                Map.of("data_date",TODAY.toString(),"nav","1.3","close","1.3","adjustment_factor","100")));
+        when(dataQualityService.resolve(product,last,TODAY,"NONE",true)).thenReturn(new InvestmentDataQualityService.Evaluation(e.snapshot(),response,List.of(),List.of()));
+        var result=service.prepareProduct(product,"FUND_NAV_HISTORY",false);
+        assertThat(result.requestedStartDate()).isEqualTo(last.plusDays(1));
+        verify(dataQualityService,org.mockito.Mockito.times(1)).resolve(any(),any(),any(),anyString(),eq(true));
+        var saved=org.mockito.ArgumentCaptor.forClass(Map.class);verify(quoteService).persistDailyQuotes(eq(product),saved.capture(),eq("NONE"));
+        assertThat(InvestmentHistoryPreparationService.recordDates(saved.getValue())).contains(last, TODAY);
+    }
+
+    @Test
+    void changedFundReturnBasisReusesExistingOverlapAndHistoryRebuild() {
+        var product=product(); product.setProductType("MUTUAL_FUND"); product.setMarket("FUND_CN");
+        LocalDate origin=TODAY.minusDays(20),last=TODAY.minusDays(2); product.setInceptionDate(origin);
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        when(quoteMapper.latestTradeDate(21L,"NONE")).thenReturn(last);
+        var anchor=new ProductDailyQuote();anchor.setTradeDate(last);anchor.setClosePrice(java.math.BigDecimal.ONE);
+        anchor.setTotalReturnIndex(java.math.BigDecimal.TEN);
+        when(quoteMapper.selectOne(any())).thenReturn(anchor); when(quoteMapper.selectList(any())).thenReturn(List.of(anchor));
+        var original=evaluation(origin,TODAY);
+        var response=new java.util.LinkedHashMap<>(original.response());
+        response.put("records",List.of(Map.of("data_date",origin.toString(),"close",1,"total_return_index",100),
+            Map.of("data_date",last.toString(),"close",1,"total_return_index",100),
+            Map.of("data_date",TODAY.toString(),"close",2,"total_return_index",200)));
+        when(dataQualityService.resolve(product,origin,TODAY,"NONE",true)).thenReturn(
+            new InvestmentDataQualityService.Evaluation(original.snapshot(),response,List.of(),List.of()));
+        var result=service.prepareProduct(product,"FUND_NAV_HISTORY",false);
+        assertThat(result.requestedStartDate()).isEqualTo(origin);
+        verify(dataQualityService).resolve(product,last,TODAY,"NONE",true);
+        verify(dataQualityService).resolve(product,origin,TODAY,"NONE",true);
+        verify(quoteService).persistDailyQuotes(product,response,"NONE");
+    }
+
+    @Test
+    void emptyAdjustedRebuildIsFailureAndKeepsOldQuotes() {
+        var product=product();LocalDate origin=TODAY.minusDays(20),last=TODAY.minusDays(2);product.setListingDate(origin);
+        when(quoteMapper.latestTradeDate(21L,"QFQ")).thenReturn(last);
+        var anchor=new ProductDailyQuote();anchor.setTradeDate(last);anchor.setClosePrice(java.math.BigDecimal.TEN);
+        when(quoteMapper.selectOne(any())).thenReturn(anchor);
+        when(dataQualityService.resolve(product,origin,TODAY,"QFQ",true)).thenThrow(new AnalysisServiceClient.SourceEmptyException("no rebuilt rows"));
+        assertThatThrownBy(()->service.prepareProduct(product,"STOCK_HISTORY",false)).hasMessageContaining("重建");
+        verify(quoteService,never()).persistDailyQuotes(any(),any(),eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product),any(),eq("NONE"));
+        verify(productMapper,never()).updateById(any());
+    }
+
+    @Test
+    void optionalFundMetadataOutageDoesNotBlockValidNavAcquisition() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        when(classificationService.enrichIfMissing(product)).thenThrow(new IllegalStateException("profile unavailable"));
+        when(analysisClient.resolveProduct(anyString(),anyString())).thenThrow(new IllegalStateException("metadata unavailable"));
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"historyYears",5);
+        var result=service.prepareProduct(product,"FUND_NAV_HISTORY",false);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        verify(quoteService).persistDailyQuotes(eq(product),any(),eq("NONE"));
+    }
+
+    @Test
+    void fundBasisRebuildCannotPreserveOldReturnsAgainstANewNavBasis() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");
+        LocalDate origin=TODAY.minusDays(20),last=TODAY.minusDays(2);product.setInceptionDate(origin);
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");when(quoteMapper.latestTradeDate(21L,"NONE")).thenReturn(last);
+        var anchor=new ProductDailyQuote();anchor.setTradeDate(last);anchor.setClosePrice(java.math.BigDecimal.TEN);anchor.setTotalReturnIndex(java.math.BigDecimal.TEN);
+        when(quoteMapper.selectOne(any())).thenReturn(anchor);when(quoteMapper.selectList(any())).thenReturn(List.of(anchor));
+        var e=evaluation(origin,TODAY);var response=new java.util.LinkedHashMap<>(e.response());
+        response.put("records",List.of(Map.of("data_date",origin.toString(),"close",1),Map.of("data_date",last.toString(),"close",1),Map.of("data_date",TODAY.toString(),"close",2)));
+        when(dataQualityService.resolve(product,origin,TODAY,"NONE",true)).thenReturn(new InvestmentDataQualityService.Evaluation(e.snapshot(),response,List.of(),List.of()));
+        assertThatThrownBy(()->service.prepareProduct(product,"FUND_NAV_HISTORY",false)).hasMessageContaining("收益");
+        verify(quoteService,never()).persistDailyQuotes(any(),any(),anyString());
+    }
+
+    @Test
+    void missingOriginMetadataDoesNotPreventSourceAcquisition() {
+        var product=product();product.setMarket("NASDAQ");when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"historyYears",5);
+        var result=service.prepareProduct(product,"STOCK_HISTORY",false);
+        assertThat(result.requestedStartDate()).isEqualTo(TODAY.minusYears(5));
+        assertThat(result.coverageComplete()).isFalse();
+        verify(quoteService).persistDailyQuotes(eq(product),any(),eq("NONE"));
     }
 
     @Test
@@ -455,16 +570,16 @@ class InvestmentHistoryPreparationServiceTest {
         when(quoteMapper.selectList(any())).thenReturn(List.of(anchor));
         var response=new java.util.LinkedHashMap<String,Object>(evaluation(origin,last).response());
         response.put("records",List.of(Map.of("data_date",origin.toString(),"close",1),Map.of("data_date",last.toString(),"close",1)));
-        org.mockito.Mockito.doReturn(response).when(analysisClient).marketDailyQuotes(eq(product),eq(origin),eq(last),anyString());
+        when(dataQualityService.resolve(eq(product),eq(origin),eq(last),anyString(),eq(true))).thenReturn(new InvestmentDataQualityService.Evaluation(evaluation(origin,last).snapshot(),response,List.of(),List.of()));
         var result=service.prepareProduct(product,"STOCK_HISTORY",true,start,end);
         assertThat(result.requestedStartDate()).isEqualTo(origin);
-        verify(analysisClient).marketDailyQuotes(product,start,last,"QFQ");
-        verify(analysisClient).marketDailyQuotes(product,origin,last,"QFQ");
-        verify(analysisClient).marketDailyQuotes(product,origin,last,"NONE");
+        verify(dataQualityService).resolve(product,start,last,"QFQ", true);
+        verify(dataQualityService).resolve(product,origin,last,"QFQ", true);
+        verify(dataQualityService).resolve(product,origin,last,"NONE", true);
     }
 
     @Test
-    void changedQfqBasisRetainsSignedHistoryAndStillRequiresEveryRawDate() {
+    void changedQfqBasisRetainsSignedHistoryWithoutRequiringMatchingRawDates() {
         var product=product();var origin=LocalDate.of(2002,8,26);var anchorDay=TODAY.minusDays(2);
         product.setListingDate(origin);
         when(quoteMapper.latestTradeDate(21L,"QFQ")).thenReturn(anchorDay);
@@ -487,13 +602,13 @@ class InvestmentHistoryPreparationServiceTest {
         when(dataQualityService.resolve(product,origin,TODAY,"NONE",true))
                 .thenReturn(new InvestmentDataQualityService.Evaluation(base.snapshot(),rawResponse,missing,List.of()));
         org.mockito.Mockito.clearInvocations(quoteService);
-        assertThatThrownBy(()->service.prepareProduct(product,"STOCK_HISTORY",true,origin,TODAY))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("原始价格未覆盖");
-        verify(quoteService,never()).persistDailyQuotes(any(),any(),anyString());
+        service.prepareProduct(product,"STOCK_HISTORY",true,origin,TODAY);
+        verify(quoteService).persistDailyQuotes(product,response,"QFQ");
+        verify(quoteService).persistDailyQuotes(product,rawResponse,"NONE");
     }
 
     @Test
-    void basisRebuildMissingAnExistingObservationPreservesBothStoredSeries() {
+    void basisRebuildMissingAnExistingObservationPreservesAdjustedPricesAndStoresValidRawPrices() {
         var product=product();LocalDate origin=LocalDate.of(2026,7,1),start=origin.plusDays(9),end=start.plusDays(2),last=TODAY.minusDays(1);
         product.setListingDate(origin);
         when(quoteMapper.latestTradeDate(21L,"QFQ")).thenReturn(last);
@@ -502,7 +617,8 @@ class InvestmentHistoryPreparationServiceTest {
         when(quoteMapper.selectOne(any())).thenReturn(null,anchor);
         when(quoteMapper.selectList(any())).thenReturn(List.of(anchor,existing));
         assertThatThrownBy(()->service.prepareProduct(product,"STOCK_HISTORY",true,start,end)).hasMessageContaining("未覆盖已有日期");
-        verify(quoteService,never()).persistDailyQuotes(any(),any(),anyString());
+        verify(quoteService,never()).persistDailyQuotes(any(),any(),eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product),any(),eq("NONE"));
     }
 
     @Test
@@ -573,21 +689,23 @@ class InvestmentHistoryPreparationServiceTest {
         assertThat(result.recordCount()).isEqualTo(10);
         assertThat(product.getHistoryCoverageComplete()).isTrue();
         assertThat(product.getHistoryEndDate()).isEqualTo(LocalDate.of(2026, 7, 28));
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
-    void providerEmptyDuringExplicitFullRepairStillFails() {
+    void explicitRepairReportsNormalEmptyAndPreservesExistingData() {
         InvestmentProduct product = product();
         product.setInceptionDate(LocalDate.of(2020, 1, 2));
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 28));
         when(dataQualityService.resolve(any(), any(), any(), eq("QFQ"), eq(true)))
                 .thenThrow(new AnalysisServiceClient.SourceEmptyException("AKSHARE: no records"));
 
-        // 用户显式要求全量修复时，数据源为空必须暴露为失败，不能静默跳过。
-        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", true))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("no records");
+        var result = service.prepareProduct(product, "STOCK_HISTORY", true);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        assertThat(result.skipped()).isTrue();
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
@@ -657,7 +775,7 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
-    void blockedQualityStopsBeforePersistence() {
+    void blockedQualityStopsOnlyTheInvalidSeriesBeforePersistence() {
         InvestmentProduct product = product();
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 28));
         InvestmentDataQualityService.Evaluation blocked = evaluation(
@@ -667,7 +785,8 @@ class InvestmentHistoryPreparationServiceTest {
 
         assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
                 .isInstanceOf(InvestmentHistoryPreparationService.QualityBlockedException.class);
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
@@ -679,7 +798,8 @@ class InvestmentHistoryPreparationServiceTest {
 
         assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("区间之外");
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
         verify(productMapper, never()).updateById(any());
     }
 
@@ -692,7 +812,8 @@ class InvestmentHistoryPreparationServiceTest {
 
         assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("transport timeout");
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
@@ -727,20 +848,19 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
-    void rawSeriesMustCoverEveryResearchDateBeforeEitherSeriesIsWritten() {
+    void successfulPriceSeriesAreStoredEvenWhenTheirDatesDiffer() {
         InvestmentProduct product = product();
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 28));
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
                 .thenReturn(evaluation(LocalDate.of(2026, 7, 29), LocalDate.of(2026, 7, 29)));
 
-        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("原始价格未覆盖");
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
-        verify(dataQualityService, never()).claim(any());
+        service.prepareProduct(product, "STOCK_HISTORY", false);
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
-    void rawQualityBlockStopsBothSeriesBeforePersistence() {
+    void rawQualityBlockPreservesTheSuccessfullyStoredResearchSeries() {
         InvestmentProduct product = product();
         when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(LocalDate.of(2026, 7, 28));
         InvestmentDataQualityService.Evaluation blocked = evaluation(LocalDate.of(2026, 7, 29), TODAY);
@@ -749,11 +869,117 @@ class InvestmentHistoryPreparationServiceTest {
 
         assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
                 .isInstanceOf(InvestmentHistoryPreparationService.QualityBlockedException.class);
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+        verify(quoteService, never()).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
-    void secondSeriesWriteFailureRollsBackTheFirstSeriesAndTheCoverageMarker() {
+    void fetchedOverlapCorrectionsAreStoredWithTheNewObservation() {
+        var product = product();
+        var anchorDay = TODAY.minusDays(2);
+        when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(anchorDay);
+        var anchor = new ProductDailyQuote();
+        anchor.setTradeDate(anchorDay); anchor.setClosePrice(java.math.BigDecimal.ONE);
+        when(quoteMapper.selectOne(any())).thenReturn(anchor);
+
+        service.prepareProduct(product, "STOCK_HISTORY", false);
+
+        var written = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(quoteService).persistDailyQuotes(eq(product), written.capture(), eq("QFQ"));
+        assertThat(InvestmentHistoryPreparationService.recordDates(written.getValue())).contains(anchorDay, TODAY);
+    }
+
+    @Test
+    void aFailedPrimaryWriteCannotPublishAPreparedReceipt() {
+        var product = product();
+        product.setListingDate(TODAY.minusDays(10));
+        org.mockito.Mockito.doThrow(new IllegalStateException("storage failed"))
+                .when(quoteService).persistDailyQuotes(any(), any(), anyString());
+
+        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
+                .hasMessageContaining("storage failed");
+        verify(dataQualityService, never()).persistPrepared(any());
+    }
+
+    @Test
+    void eachPreparedReceiptIsPublishedOnlyAfterItsOwnQuoteWrite() {
+        var product = product();
+        product.setListingDate(TODAY.minusDays(10));
+        service.prepareProduct(product, "STOCK_HISTORY", false);
+
+        var order = org.mockito.Mockito.inOrder(quoteService, dataQualityService);
+        order.verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+        order.verify(dataQualityService).persistPrepared(any());
+        order.verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+        order.verify(dataQualityService).persistPrepared(any());
+    }
+
+    @Test
+    void aSuccessfullyRefetchedDateUpdatesExistingPricesWithoutNeedingANewerDate() {
+        var product = product(); product.setMarket("NASDAQ");
+        when(dataQualityService.adjustType(product)).thenReturn("NONE");
+        when(quoteMapper.latestTradeDate(21L, "NONE")).thenReturn(TODAY);
+
+        var result = service.prepareProduct(product, "STOCK_HISTORY", false, TODAY, TODAY);
+
+        assertThat(result.skipped()).isFalse();
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+    }
+
+    @Test
+    void anEmptyResearchResponseStillCollectsAvailableRawPrices() {
+        var product = product(); product.setListingDate(TODAY.minusDays(10));
+        when(dataQualityService.resolve(any(), any(), any(), eq("QFQ"), eq(true)))
+                .thenThrow(new AnalysisServiceClient.SourceEmptyException("research response empty"));
+
+        var result = service.prepareProduct(product, "STOCK_HISTORY", false);
+
+        assertThat(result.skipped()).isTrue();
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+        verify(quoteService, never()).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+    }
+
+    @Test
+    void aFailedResearchRequestStillStoresAvailableRawPricesAndReportsTheFailure() {
+        var product = product(); product.setListingDate(TODAY.minusDays(10));
+        when(dataQualityService.resolve(any(), any(), any(), eq("QFQ"), eq(true)))
+                .thenThrow(new IllegalStateException("research transport timeout"));
+
+        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
+                .hasMessageContaining("research transport timeout");
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+        verify(quoteService, never()).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+    }
+
+    @Test
+    void aNormalEmptyRawResponseKeepsTheStoredResearchSeriesWithoutInventingRawPrices() {
+        var product = product(); product.setListingDate(TODAY.minusDays(10));
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
+                .thenThrow(new AnalysisServiceClient.SourceEmptyException("raw response contains no rows"));
+
+        var result = service.prepareProduct(product, "STOCK_HISTORY", false);
+
+        assertThat(result.skipped()).isFalse();
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+        verify(quoteService, never()).persistDailyQuotes(eq(product), any(), eq("NONE"));
+        verify(dataQualityService).persistPrepared(any());
+    }
+
+    @Test
+    void rawRequestFailureDoesNotDiscardSuccessfullyFetchedResearchPrices() {
+        var product = product();
+        when(quoteMapper.latestTradeDate(21L, "QFQ")).thenReturn(TODAY.minusDays(2));
+        when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
+                .thenThrow(new IllegalStateException("raw transport timeout"));
+
+        assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false))
+                .hasMessageContaining("raw transport timeout");
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
+        verify(quoteService, never()).persistDailyQuotes(eq(product), any(), eq("NONE"));
+    }
+
+    @Test
+    void secondSeriesWriteFailureRollsBackOnlyTheFailingSeries() {
         var dataSource = new DriverManagerDataSource(
                 "jdbc:sqlite:" + temporaryDirectory.resolve("history-atomic.db").toAbsolutePath(), "", "");
         var jdbc = new JdbcTemplate(dataSource);
@@ -781,12 +1007,12 @@ class InvestmentHistoryPreparationServiceTest {
         assertThatThrownBy(() -> transactionalService.prepareProduct(product, "STOCK_HISTORY", false))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("raw persistence failed");
 
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM prepared_quotes", Integer.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT adjust_type FROM prepared_quotes", String.class)).containsExactly("QFQ");
         assertThat(jdbc.queryForObject("SELECT coverage_complete FROM prepared_product WHERE id=21", Integer.class))
-                .isZero();
+                .isEqualTo(1);
         verify(quoteService).persistDailyQuotes(eq(product), any(), eq("QFQ"));
         verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
-        verify(productMapper, never()).updateById(any());
+        verify(productMapper).updateById(any());
     }
 
     @Test
@@ -801,12 +1027,10 @@ class InvestmentHistoryPreparationServiceTest {
         assertThat(result.requestedStartDate()).isEqualTo(start);
         assertThat(result.sampleEndDate()).isEqualTo(target);
         assertThat(result.coverageComplete()).isFalse();
-        assertThat(result.datasetVersion()).isNull();
-        verify(analysisClient).marketDailyQuotes(product, start, target, "QFQ");
-        verify(analysisClient).marketDailyQuotes(product, start, target, "NONE");
-        verify(dataQualityService, never()).resolve(any(), any(), any(), anyString(), anyBoolean());
-        verify(dataQualityService, never()).claim(any());
-        verify(analysisClient, never()).resolveProduct(anyString(), anyString());
+        assertThat(result.datasetVersion()).isEqualTo("dataset-v1");
+        verify(dataQualityService).resolve(product, start, target, "QFQ", true);
+        verify(dataQualityService).resolve(product, start, target, "NONE", true);
+                verify(analysisClient, never()).resolveProduct(anyString(), anyString());
         verify(classificationService, never()).enrichIfMissing(any());
     }
 
@@ -822,7 +1046,7 @@ class InvestmentHistoryPreparationServiceTest {
         Map<String, Object> response = Map.of("records", List.of(
                 Map.of("data_date", actualStart.toString(), "close", "1.20", "total_return_index", "100"),
                 Map.of("data_date", TODAY.toString(), "close", "1.24", "total_return_index", "108")));
-        when(analysisClient.marketDailyQuotes(product, placeholderStart, TODAY, "NONE")).thenReturn(response);
+        when(dataQualityService.resolve(product, placeholderStart, TODAY, "NONE", true)).thenReturn(new InvestmentDataQualityService.Evaluation(evaluation(placeholderStart, TODAY).snapshot(), response, List.of(), List.of()));
 
         InvestmentHistoryPreparationService.PreparationResult result =
                 service.prepareProduct(product, "FUND_NAV_HISTORY", false, placeholderStart, TODAY);
@@ -832,17 +1056,15 @@ class InvestmentHistoryPreparationServiceTest {
         assertThat(product.getHistoryStartDate()).isEqualTo(actualStart);
         assertThat(product.getInceptionDate()).isNull();
         assertThat(result.coverageComplete()).isFalse();
-        assertThat(result.datasetVersion()).isNull();
-        verify(analysisClient).marketDailyQuotes(product, placeholderStart, TODAY, "NONE");
+        assertThat(result.datasetVersion()).isEqualTo("dataset-v1");
+        verify(dataQualityService).resolve(product, placeholderStart, TODAY, "NONE", true);
         verify(quoteService).persistDailyQuotes(product, response, "NONE");
-        verify(dataQualityService, never()).resolve(any(), any(), any(), anyString(), anyBoolean());
-        verify(dataQualityService, never()).claim(any());
-        verify(analysisClient, never()).resolveProduct(anyString(), anyString());
+                verify(analysisClient, never()).resolveProduct(anyString(), anyString());
         verify(classificationService, never()).enrichIfMissing(any());
     }
 
     @Test
-    void unknownFundFullWindowWithOneMissingTotalReturnRejectsTheWholeBatchBeforeAnyWrite() {
+    void validNavIsCollectedEvenWhenTotalReturnInputIsUnavailable() {
         InvestmentProduct product = product();
         product.setProductType("MUTUAL_FUND");
         product.setMarket("FUND_CN");
@@ -852,20 +1074,13 @@ class InvestmentHistoryPreparationServiceTest {
         Map<String, Object> response = Map.of("records", List.of(
                 Map.of("data_date", "2018-06-01", "close", "1.20", "total_return_index", "100"),
                 Map.of("data_date", TODAY.toString(), "close", "1.24")));
-        when(analysisClient.marketDailyQuotes(product, placeholderStart, TODAY, "NONE")).thenReturn(response);
+        when(dataQualityService.resolve(product, placeholderStart, TODAY, "NONE", true)).thenReturn(new InvestmentDataQualityService.Evaluation(evaluation(placeholderStart, TODAY).snapshot(), response, List.of(), List.of()));
 
-        assertThatThrownBy(() -> service.prepareProduct(
-                product, "FUND_NAV_HISTORY", false, placeholderStart, TODAY))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("累计收益");
-
-        assertThat(product.getHistoryStartDate()).isNull();
-        assertThat(product.getHistoryEndDate()).isNull();
-        assertThat(product.getHistoryCoverageComplete()).isFalse();
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
-        verify(productMapper, never()).updateById(any());
-        verify(dataQualityService, never()).resolve(any(), any(), any(), anyString(), anyBoolean());
-        verify(dataQualityService, never()).claim(any());
-        verify(analysisClient, never()).resolveProduct(anyString(), anyString());
+        var result = service.prepareProduct(product, "FUND_NAV_HISTORY", false, placeholderStart, TODAY);
+        assertThat(result.checkedThrough()).isEqualTo(TODAY);
+        assertThat(result.sampleEndDate()).isEqualTo(TODAY);
+        verify(quoteService).persistDailyQuotes(product,response,"NONE");
+        assertThat(((List<Map<String,Object>>)response.get("records")).get(1)).doesNotContainKey("total_return_index");
     }
 
     @Test
@@ -880,30 +1095,29 @@ class InvestmentHistoryPreparationServiceTest {
         Map<String, Object> response = Map.of("records", List.of(
                 Map.of("data_date", start.toString(), "close", "1.21", "total_return_index", "121.5"),
                 Map.of("data_date", target.toString(), "close", "1.22", "total_return_index", "124.0")));
-        when(analysisClient.marketDailyQuotes(product, start, target, "NONE")).thenReturn(response);
+        when(dataQualityService.resolve(product, start, target, "NONE", true)).thenReturn(new InvestmentDataQualityService.Evaluation(evaluation(start, target).snapshot(), response, List.of(), List.of()));
 
         InvestmentHistoryPreparationService.PreparationResult result =
                 service.prepareProduct(product, "FUND_NAV_HISTORY", false, start, target);
 
         assertThat(result.sampleStartDate()).isEqualTo(start);
         assertThat(result.sampleEndDate()).isEqualTo(target);
-        assertThat(result.datasetVersion()).isNull();
+        assertThat(result.datasetVersion()).isEqualTo("dataset-v1");
         assertThat(result.coverageComplete()).isFalse();
         verify(quoteService).persistDailyQuotes(product, response, "NONE");
-        verify(dataQualityService, never()).resolve(any(), any(), any(), anyString(), anyBoolean());
-    }
+            }
 
     @Test
     void historicalAcquisitionStillRejectsOutOfWindowRowsBeforePersistence() {
         InvestmentProduct product = product();
         LocalDate start = LocalDate.of(2026, 7, 10);
         LocalDate target = LocalDate.of(2026, 7, 20);
-        when(analysisClient.marketDailyQuotes(product, start, target, "QFQ"))
-                .thenReturn(evaluation(start.minusDays(1), target).response());
+        when(dataQualityService.resolve(product, start, target, "QFQ", true)).thenReturn(new InvestmentDataQualityService.Evaluation(evaluation(start, target).snapshot(), evaluation(start.minusDays(1), target).response(), List.of(), List.of()));
 
         assertThatThrownBy(() -> service.prepareProduct(product, "STOCK_HISTORY", false, start, target))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("区间之外");
-        verify(quoteService, never()).persistDailyQuotes(any(), any(), anyString());
+        verify(quoteService, never()).persistDailyQuotes(any(), any(), eq("QFQ"));
+        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
     }
 
     @Test
@@ -946,27 +1160,16 @@ class InvestmentHistoryPreparationServiceTest {
     }
 
     @Test
-    void fundIncrementalStartRepairsTheEarliestMissingReturnInsteadOfSkippingAtLatestNav() {
-        InvestmentProduct product = product();
-        product.setProductType("MUTUAL_FUND");
-        product.setMarket("FUND_CN");
-        product.setCode("010736");
+    void missingAnalysisReturnsDoNotForceRepeatedNavBackfills() {
+        var product=product();product.setProductType("MUTUAL_FUND");product.setMarket("FUND_CN");
         when(dataQualityService.adjustType(product)).thenReturn("NONE");
-        when(quoteMapper.latestCompleteFundTradeDate(21L)).thenReturn(TODAY);
-        LocalDate gap = LocalDate.of(2026, 7, 15);
-        when(quoteMapper.earliestMissingFundReturnDate(21L)).thenReturn(gap);
-
-        InvestmentHistoryPreparationService.PreparationResult result =
-                service.prepareProduct(product, "FUND_NAV_HISTORY", false);
-
-        assertThat(result.requestedStartDate()).isEqualTo(gap);
-        assertThat(result.skipped()).isFalse();
-        verify(dataQualityService).resolve(product, gap, TODAY, "NONE", true);
-        verify(quoteService).persistDailyQuotes(eq(product), any(), eq("NONE"));
+        when(quoteMapper.latestTradeDate(21L,"NONE")).thenReturn(TODAY);
+        assertThat(service.prepareProduct(product,"FUND_NAV_HISTORY",false).skipped()).isTrue();
+        verify(dataQualityService,never()).resolve(any(),any(),any(),anyString(),anyBoolean());
     }
 
     @Test
-    void completeHistoryRequiresAnExplicitCalendarProofForBothSeries() {
+    void completedOriginQueryDoesNotDependOnEstimatedCalendarGaps() {
         InvestmentProduct product = product();
         product.setListingDate(LocalDate.of(2001, 8, 27));
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
@@ -975,8 +1178,8 @@ class InvestmentHistoryPreparationServiceTest {
         InvestmentHistoryPreparationService.PreparationResult result =
                 service.prepareProduct(product, "STOCK_HISTORY", false);
 
-        assertThat(result.coverageComplete()).isFalse();
-        assertThat(product.getHistoryCoverageComplete()).isFalse();
+        assertThat(result.coverageComplete()).isTrue();
+        assertThat(product.getHistoryCoverageComplete()).isTrue();
     }
 
     private static InvestmentProduct product() {

@@ -41,7 +41,7 @@ class InvestmentDataJobServiceTest {
     @BeforeEach
     void setUp() {
         mapper = mock(InvestmentDataJobMapper.class);
-        when(mapper.requeueTerminal(any())).thenReturn(1);
+        when(mapper.requeueForRefresh(any())).thenReturn(1);
         when(mapper.requeueTerminalIncremental(any())).thenReturn(1);
         productMapper = mock(InvestmentProductMapper.class);
         quoteMapper = mock(ProductDailyQuoteMapper.class);
@@ -183,7 +183,7 @@ class InvestmentDataJobServiceTest {
         assertThat(job.getLeaseToken()).isNull();
         assertThat(job.getStartedAt()).isNull();
         assertThat(job.getFinishedAt()).isNull();
-        verify(mapper).requeueTerminal(existing.getId());
+        verify(mapper).requeueForRefresh(existing.getId());
     }
 
     @Test
@@ -214,7 +214,7 @@ class InvestmentDataJobServiceTest {
 
         assertThat(job.getStatus()).isEqualTo("FAILED");
         assertThat(job.getAttemptCount()).isEqualTo(3);
-        verify(mapper, never()).requeueTerminal(any());
+        verify(mapper, never()).requeueForRefresh(any());
     }
 
     @Test
@@ -225,7 +225,7 @@ class InvestmentDataJobServiceTest {
 
         assertThat(service.ensureRecoveryQueued(7L, 11L, 21L, "STOCK").getStatus())
                 .isEqualTo("PARTIAL");
-        verify(mapper, never()).requeueTerminal(any());
+        verify(mapper, never()).requeueForRefresh(any());
     }
 
     @Test
@@ -257,7 +257,7 @@ class InvestmentDataJobServiceTest {
         assertThat(result.getForceRefresh()).isFalse();
         assertThat(result.getAttemptCount()).isZero();
         verify(mapper).requeueTerminalIncremental(91L);
-        verify(mapper, never()).requeueTerminal(any());
+        verify(mapper, never()).requeueForRefresh(any());
     }
 
     @Test
@@ -375,7 +375,7 @@ class InvestmentDataJobServiceTest {
         assertThat(job.getStatus()).isEqualTo("SUCCEEDED");
         assertThat(job.getForceRefresh()).isFalse();
         assertThat(job.getAttemptCount()).isZero();
-        verify(mapper, never()).requeueTerminal(any());
+        verify(mapper, never()).requeueForRefresh(any());
     }
 
     private static InvestmentDataJob job(String status, String jobType) {

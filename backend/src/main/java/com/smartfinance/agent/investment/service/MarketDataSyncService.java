@@ -96,6 +96,8 @@ public class MarketDataSyncService {
     }
     @Value("${market-data.worker.failed-retry-hours:6}")
     private int failedRetryHours = 6;
+    @Value("${investment.runtime.market.daily-quote-lookback-days:10}")
+    private int dailyQuoteLookbackDays = 10;
     @Value("${market-data.research.refresh-overlap-years:2}")
     private int researchOverlapYears = 2;
 
@@ -302,7 +304,7 @@ public class MarketDataSyncService {
         if (enabled) queueDaily(Set.of("FUND_CN"), LocalDate.now(CN_ZONE));
     }
 
-    /** 正常运行为增量：只从本地最后有效日期的次日开始。 */
+    /** 增量更新同时重查近期窗口，接收迟披露或修订的行情。 */
     public int queueDaily(Set<String> markets, LocalDate target) {
         if (markets.isEmpty()) return 0;
         if (!scopeProperties.isEnabled()) return reconcileDemand();
@@ -326,9 +328,17 @@ public class MarketDataSyncService {
             queueResearch(product, target);
             if (!scopeProperties.getDatasets().contains("PRICE")) continue;
             if (start == null) {
-                if (enqueue(product.getId(), "BACKFILL", initialStart(product, target), target)) queued++;
+                var completedEmpty = db.queryForList("SELECT target_date FROM market_data_job WHERE product_id=? "
+                        + "AND job_type='BACKFILL' AND status='SUCCEEDED' AND last_error='NO_NEW_DATA'",product.getId());
+                LocalDate requestStart = completedEmpty.isEmpty() ? initialStart(product,target)
+                        : target.minusDays(dailyQuoteLookbackDays);
+                if (enqueue(product.getId(), "BACKFILL", requestStart, target)) queued++;
                 continue;
             }
+            LocalDate recentStart = target.minusDays(dailyQuoteLookbackDays);
+            if (recentStart.isBefore(start)) start = recentStart;
+            LocalDate origin = product.getListingDate() == null ? product.getInceptionDate() : product.getListingDate();
+            if (origin != null && origin.isAfter(start)) start = origin;
             if (start.isAfter(target)) continue;
             if (enqueue(product.getId(), "DAILY_UPDATE", start, target)) queued++;
         }
@@ -391,7 +401,20 @@ public class MarketDataSyncService {
     private List<MarketDataRequirementService.Window> preparationWindows(InvestmentProduct product, String data, LocalDate target) {
         var refresh = refreshWindows(product, data, target);
         if (!refresh.isEmpty()) return refresh;
-        return requirements.missingWindows(product.getId(), data, target);
+        var missing = requirements.missingWindows(product.getId(), data, target);
+        if (!missing.isEmpty() || !"PRICE".equals(data)) return missing;
+        var jobs = db.queryForList("SELECT status,updated_at FROM market_data_job WHERE product_id=? "
+                + "AND job_type='BACKFILL' AND status IN ('SUCCEEDED','QUEUED','RUNNING')", product.getId());
+        if (jobs.isEmpty()) return List.of();
+        var job = jobs.get(0);
+        if ("SUCCEEDED".equals(value(job,"status")) && timestamp(job.get("updated_at"))
+                .plusHours(Math.max(1,failedRetryHours)).isAfter(LocalDateTime.now(CN_ZONE))) return List.of();
+        boolean follows = requirements.active().stream().anyMatch(row -> ((Number)row.get("product_id")).longValue()==product.getId()
+                && "PRICE".equals(value(row,"dataset")) && (Boolean.TRUE.equals(row.get("follow_latest")) || "1".equals(String.valueOf(row.get("follow_latest")))));
+        if (!follows) return List.of();
+        LocalDate recent = target.minusDays(dailyQuoteLookbackDays);
+        return requirements.windows(product.getId(),data,target).stream().filter(window -> !recent.isAfter(window.end()))
+                .map(window -> new MarketDataRequirementService.Window(recent.isAfter(window.start()) ? recent : window.start(),window.end())).toList();
     }
 
     private List<MarketDataRequirementService.Window> refreshWindows(InvestmentProduct product, String data, LocalDate target) {
@@ -428,16 +451,16 @@ public class MarketDataSyncService {
         if ("FAILED".equals(value(row, "status")) && !explicitRepair
                 && timestamp(row.get("updated_at")).plusHours(Math.max(1, failedRetryHours)).isAfter(now)) return false;
         String lastError = value(row, "last_error");
-        if (("NO_NEW_DATA".equals(lastError) || "UNVERIFIED_WINDOW".equals(lastError)) && !explicitRepair
+        if ("NO_NEW_DATA".equals(lastError) && !explicitRepair
                 && timestamp(row.get("updated_at")).plusHours(Math.max(1,failedRetryHours)).isAfter(now)) return false;
         boolean resume = "FAILED".equals(value(row, "status"))
                 && !"NO_HISTORY_DATA".equals(value(row, "last_error"))
                 && !REQUIRED_SERIES_MISSING.equals(value(row, "last_error"));
         return db.update("UPDATE market_data_job SET status='QUEUED',start_date=?,target_date=?,checkpoint_date=?,"
-                        + "attempt_count=0,next_retry_at=NULL,last_error=NULL,lease_until=NULL,lease_token=NULL,updated_at=? "
+                        + "attempt_count=0,next_retry_at=NULL,last_error=?,lease_until=NULL,lease_token=NULL,updated_at=? "
                         + "WHERE id=? AND status=?",
                 resume ? row.get("start_date") : start, target, resume ? row.get("checkpoint_date") : null,
-                now, row.get("id"), row.get("status")) == 1;
+                !explicitRepair && "NO_NEW_DATA".equals(lastError) ? lastError : null, now, row.get("id"), row.get("status")) == 1;
     }
 
     // ------------------------------------------------------------ 任务执行
@@ -565,14 +588,13 @@ public class MarketDataSyncService {
             LocalDate target = demand==null ? priceTarget(candidateProduct(product),LocalDate.now(CN_ZONE)) : demand.target(((Number)job.get("product_id")).longValue());
             var refreshWindows = refreshWindows(candidateProduct(product), data, target);
             if (!full || Boolean.TRUE.equals(job.get("prefer_demand")) || !refreshWindows.isEmpty()) {
-                var windows = refreshWindows.isEmpty() ? requirements.missingWindows(
-                        ((Number) job.get("product_id")).longValue(), data, target) : refreshWindows;
+                var windows = refreshWindows.isEmpty() ? preparationWindows(candidateProduct(product), data, target) : refreshWindows;
                 if (windows.isEmpty()) {
                     finish(((Number) job.get("id")).longValue(), token, "SKIPPED", null, "DEMAND_SATISFIED");
                     return false;
                 }
                 var window = windows.get(0);
-                boolean refresh = !refreshWindows.isEmpty();
+                boolean refresh = !refreshWindows.isEmpty() || requirements.missingWindows(candidateProduct(product).getId(),data,target).isEmpty();
                 job.put("refresh_prepared", refresh);
                 if(full){
                     job.put("resume_full", !refresh || day(job.get("start_date")).isBefore(window.start())
@@ -640,7 +662,7 @@ public class MarketDataSyncService {
         boolean wholeWindow = refreshPrepared || fund || (unknownOrigin && "BACKFILL".equals(value(job, "job_type")));
         LocalDate end = wholeWindow ? target : start.plusDays(chunkDays - 1L);
         if (end.isAfter(target)) end = target;
-        boolean forceRefresh = !refreshPrepared && "BACKFILL".equals(value(job, "job_type")) && checkpoint == null;
+        boolean forceRefresh = !refreshPrepared && !"NO_NEW_DATA".equals(value(job,"last_error")) && "BACKFILL".equals(value(job, "job_type")) && checkpoint == null;
         if(requirements!=null&&forceRefresh) {
             LocalDate next=historyPreparation.incrementalStart(product);
             if(next!=null&&!start.isBefore(next))forceRefresh=false;
@@ -650,20 +672,14 @@ public class MarketDataSyncService {
                 !scoped ? historyPreparation.prepareProduct(product, jobTypeFor(product), forceRefresh, start, end)
                         : historyPreparation.prepareDemandProduct(product,jobTypeFor(product),forceRefresh,start,end);
         boolean completed = !end.isBefore(target);
-        boolean emptyHistory = completed && "BACKFILL".equals(value(job, "job_type")) && result.recordCount() == 0;
-        boolean missingSeries = completed && "BACKFILL".equals(value(job, "job_type"))
-                && historyPreparation.incrementalStart(product) == null;
-        boolean closedTail=!scoped && historyPreparation.closedAfter(product,result.sampleEndDate(),end);
-        LocalDate verified=scoped ? result.verifiedThrough() : null;
-        boolean resumeFull=Boolean.TRUE.equals(job.get("resume_full"));
-        LocalDateTime retry=resumeFull&&(verified==null||verified.isBefore(end))?LocalDateTime.now(CN_ZONE).plusHours(Math.max(1,failedRetryHours)):null;
-        String next=emptyHistory||missingSeries?"FAILED":resumeFull?(retry==null?"QUEUED":"RETRY_WAIT"):completed||(scoped&&verified==null)?"SUCCEEDED":"QUEUED";
-        completeWindow(jobId, token, next, resumeFull?day(job.get("full_checkpoint")):end,
-                emptyHistory ? "NO_HISTORY_DATA" : missingSeries ? REQUIRED_SERIES_MISSING
-                        : scoped && verified==null ? "UNVERIFIED_WINDOW"
-                        : !closedTail && (result.skipped() || (result.sampleEndDate()!=null && result.sampleEndDate().isBefore(end))) ? "NO_NEW_DATA" : null, product.getId(), start,
-                verified,
-                !result.skipped() || ANALYSIS_QUEUE_FAILED.equals(value(job, "last_error")),retry);
+        LocalDate checked = result.checkedThrough();
+        if (checked == null || checked.isBefore(end))
+            throw new IllegalStateException("采集请求窗口未完成，保留检查点等待重试");
+        boolean resumeFull = Boolean.TRUE.equals(job.get("resume_full"));
+        completeWindow(jobId, token, resumeFull || !completed ? "QUEUED" : "SUCCEEDED",
+                resumeFull ? day(job.get("full_checkpoint")) : end,
+                (result.skipped() || result.sampleEndDate() == null || result.sampleEndDate().isBefore(end)) ? "NO_NEW_DATA" : null, product.getId(), start, checked,
+                result.recordCount() > 0 && (!result.skipped() || ANALYSIS_QUEUE_FAILED.equals(value(job, "last_error"))), null);
     }
 
     private void completeWindow(long jobId, String token, String status, LocalDate checkpoint,

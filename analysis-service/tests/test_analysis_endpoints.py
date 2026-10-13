@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +22,8 @@ from app.main import (
     app,
     QuoteRequest,
     DataQualityValidateRequest,
+    DataQualityReplayRequest,
+    replay_data_quality,
     daily_quotes,
     validate_data_quality,
 )
@@ -29,6 +32,22 @@ from tests.test_analysis_engine import price_records
 
 
 class AnalysisEndpointsTest(unittest.TestCase):
+    def test_replay_passes_actual_dates_and_keeps_legacy_arguments_unchanged(self):
+        original = dict(datasetVersion="a" * 64, qualityConfigVersion="data-quality-v7")
+        with patch("app.main.quality_service.replay", return_value={}) as replay:
+            replay_data_quality(DataQualityReplayRequest(**original))
+            replay.assert_called_once_with(dataset_version="a" * 64, secondary_dataset_version=None,
+                fund_category=None, quality_config_version="data-quality-v7")
+            replay.reset_mock()
+            replay_data_quality(DataQualityReplayRequest(**original, startDate="2026-01-02", endDate="2026-01-04",
+                observedDates=["2026-01-02", "2026-01-04"]))
+            replay.assert_called_once_with(dataset_version="a" * 64, secondary_dataset_version=None,
+                fund_category=None, quality_config_version="data-quality-v7", continuation_dataset_versions=None,
+                continuation_secondary_versions=None, start_date=date(2026, 1, 2), end_date=date(2026, 1, 4),
+                observed_dates=[date(2026, 1, 2), date(2026, 1, 4)])
+        with self.assertRaises(ValidationError):
+            DataQualityReplayRequest(**original, observedDates=[])
+
     def test_us_fundamentals_are_unavailable_without_querying_the_a_share_source(self):
         def a_share_source(**kwargs):
             self.fail('US symbols must not reach the A-share financial source')
@@ -62,27 +81,24 @@ class AnalysisEndpointsTest(unittest.TestCase):
                 self.assertEqual(400,error.exception.status_code)
                 self.assertIn('非正价格',str(error.exception.detail))
 
-    def test_market_empty_window_is_structured_and_transport_failure_is_not_empty(self):
+    def test_market_empty_window_is_successful_query_and_failure_stays_error(self):
         request = QuoteRequest(code="SPY", market="AMEX", product_type="ETF",
-                               start_date="2026-07-17", end_date="2026-07-18", adjust_type="NONE")
-        for outcome, expected in (([], "SOURCE_EMPTY"),
-                                  (ProviderUnavailable("no records due to timeout"), "SOURCE_ERROR")):
-            with patch("app.main.daily_history", **({"side_effect": outcome} if isinstance(outcome, Exception)
-                                                    else {"return_value": outcome})):
-                with self.assertRaises(HTTPException) as error:
-                    daily_quotes(request)
-                self.assertEqual(503, error.exception.status_code)
-                self.assertEqual(expected, error.exception.detail["code"])
-
-    def test_quality_empty_result_retains_the_structured_empty_code(self):
-        request = DataQualityValidateRequest(productType="MUTUAL_FUND", code="010736", market="FUND_CN",
-                                             frequency="DAY", adjustType="NONE", startDate="2026-07-17",
-                                             endDate="2026-07-18", qualityConfigVersion="data-quality-v4")
-        with patch("app.main.quality_service.validate", side_effect=ProviderEmpty("no records")):
+            start_date="2026-07-17", end_date="2026-07-18", adjust_type="NONE")
+        with patch("app.main.daily_history", return_value=[]):
+            self.assertEqual("EMPTY", daily_quotes(request)["result"])
+            self.assertEqual([], daily_quotes(request)["records"])
+        with patch("app.main.daily_history", side_effect=ProviderUnavailable("no records due to timeout")):
             with self.assertRaises(HTTPException) as error:
-                validate_data_quality(request)
+                daily_quotes(request)
             self.assertEqual(503, error.exception.status_code)
-            self.assertEqual("SOURCE_EMPTY", error.exception.detail["code"])
+            self.assertEqual("SOURCE_ERROR", error.exception.detail["code"])
+
+    def test_quality_normal_empty_is_not_an_http_failure(self):
+        request = DataQualityValidateRequest(productType="MUTUAL_FUND", code="010736", market="FUND_CN",
+            frequency="DAY", adjustType="NONE", startDate="2026-07-17", endDate="2026-07-18",
+            qualityConfigVersion="data-quality-v7")
+        with patch("app.main.quality_service.validate", side_effect=ProviderEmpty("no records")):
+            self.assertEqual("EMPTY", validate_data_quality(request)["result"])
 
     def test_benchmark_history_contract_is_available_to_backend(self):
         request = BenchmarkHistoryRequest(

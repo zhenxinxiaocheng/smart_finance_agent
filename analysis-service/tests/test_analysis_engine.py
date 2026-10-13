@@ -32,6 +32,18 @@ def price_records(count: int = 320, *, step: float = 0.18) -> list[dict[str, str
 
 
 class AnalysisEngineTest(unittest.TestCase):
+    def test_complete_horizon_requires_the_baseline_observation_at_the_capacity_limit(self):
+        records = price_records(2500)
+        limited = analyze_technical(records, {"EDGE": [120, 2500]}, "EDGE")["horizons"]["EDGE"]
+        self.assertEqual("LIMITED", limited["status"])
+        self.assertEqual(2499, limited["effectiveLookbackDays"])
+        self.assertIn("HORIZON_HISTORY_INCOMPLETE", limited["outlook"]["missingInputs"])
+
+        complete = analyze_technical(price_records(2501), {"EDGE": [120, 2500]}, "EDGE")["horizons"]["EDGE"]
+        self.assertEqual("READY", complete["status"])
+        self.assertEqual(2500, complete["effectiveLookbackDays"])
+        self.assertNotIn("HORIZON_HISTORY_INCOMPLETE", complete["outlook"]["missingInputs"])
+
     def test_nonpositive_prices_cannot_be_deleted_to_splice_return_observations(self):
         for value in ('-1','0'):
             records=price_records(320);records[160]['close']=value;records[160]['nav']='10'

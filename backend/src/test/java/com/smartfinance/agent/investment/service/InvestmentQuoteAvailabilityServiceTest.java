@@ -35,7 +35,15 @@ class InvestmentQuoteAvailabilityServiceTest {
         when(client.quoteAvailability(any(),any(),any(),any())).thenThrow(new IllegalStateException("analysis unavailable"));
         var service=new InvestmentQuoteAvailabilityService(client);
         assertThat(service.target(product("SSE","STOCK",null),LocalDate.of(2026,10,6),Instant.parse("2026-10-06T08:00:00Z")))
-                .isEqualTo(LocalDate.of(2026,10,5));
+                .isEqualTo(LocalDate.of(2026,10,6));
+    }
+    @Test void unknownFundCalendarCannotHideActuallyPublishedNav() {
+        var client = mock(AnalysisServiceClient.class);
+        when(client.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of(
+                "calendarKnown",false,"targetDate","2026-09-29"));
+        var service = new InvestmentQuoteAvailabilityService(client);
+        assertThat(service.target(product("FUND_CN","MUTUAL_FUND","QDII_INDEX_FUND"),
+                LocalDate.of(2026,10,8),Instant.parse("2026-10-08T14:00:00Z"))).isEqualTo(LocalDate.of(2026,10,8));
     }
     private static InvestmentProduct product(String market,String type,String category) {
         var p=new InvestmentProduct();p.setMarket(market);p.setProductType(type);p.setFundCategory(category);return p;

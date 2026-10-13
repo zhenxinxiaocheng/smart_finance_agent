@@ -130,7 +130,7 @@ test('已有行情等待分析时不误报数据不足', () => {
   vm.runInContext(source.slice(start, end) + '\nglobalThis.headline = activeHeadline', context)
   assert.equal(context.headline.value, '—')
   activeAnalysis.value = { status: 'INSUFFICIENT' }
-  assert.equal(context.headline.value, '数据不足')
+  assert.equal(context.headline.value, '历史样本不足')
 })
 
 test('技术分析不再伪造金额和买卖数量', () => {
@@ -165,4 +165,15 @@ test('基金短中长期分别展示各自窗口的回撤和基准相对指标',
   assert.match(template, /R²/)
   assert.match(template, /信息比率 IR/)
   assert.match(template, /v-if="hasMetric\(activeFundPeriod\.benchmarkReturn\)"/)
+})
+
+
+test('失败状态和样本不足分别显示真实原因', () => {
+  const start = source.indexOf('const activeHeadline = computed(')
+  const end = source.indexOf('const activePeriodText', start)
+  for (const [status, expected] of [['BLOCKED', '数据校验未通过'], ['UNAVAILABLE', '分析暂不可用'], ['INSUFFICIENT', '历史样本不足']]) {
+    const context = vm.createContext({ computed, activeAnalysis: { value: { status } }, fundAdviceUnavailable: { value: false } })
+    vm.runInContext(source.slice(start, end), context)
+    assert.equal(vm.runInContext('activeHeadline.value', context), expected)
+  }
 })

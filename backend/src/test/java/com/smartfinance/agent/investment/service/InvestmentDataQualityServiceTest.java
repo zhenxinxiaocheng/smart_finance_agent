@@ -48,6 +48,22 @@ class InvestmentDataQualityServiceTest {
     }
 
     @Test
+    void fetchingAValidatedBatchDoesNotPublishItAsStoredData() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1);
+        var end = LocalDate.of(2026, 6, 30);
+        when(fixture.client().validateDataQuality(fixture.product(), start, end, "DAY", "NONE", "config-v2"))
+                .thenReturn(upgradeResponse("fetched-only", start, end, "ALLOW"));
+
+        var fetched = fixture.service().resolve(fixture.product(), start, end, true);
+
+        assertThat(fetched.datasetVersion()).isEqualTo("fetched-only");
+        assertThat(fetched.snapshot().getId()).isNull();
+        assertThat(fixture.snapshots().selectCount(null)).isZero();
+        assertThat(fixture.service().preparedEvaluation(fixture.product(), start, end)).isNull();
+    }
+
+    @Test
     void legacyRecheckFailureCannotCreateANewApprovedReceipt() throws Exception {
         var fixture = upgradeFixture();
         var start = LocalDate.of(2026, 6, 1);
@@ -102,7 +118,7 @@ class InvestmentDataQualityServiceTest {
     }
 
     private record UpgradeFixture(InvestmentDataQualityService service, InvestmentDataQualitySnapshotMapper snapshots,
-                                  AnalysisServiceClient client, InvestmentProduct product) { }
+                                  AnalysisServiceClient client, InvestmentProduct product, javax.sql.DataSource dataSource) { }
 
     @Test
     void incompatibleCollectionVersionsRequirePreparationEvenAfterLegacyRulesWereRechecked() throws Exception {
@@ -111,19 +127,19 @@ class InvestmentDataQualityServiceTest {
         var base = saved("legacy", start, "config-v1", "ALLOW", 1);
         base.setRequestedEndDate(end.minusDays(1)); base.setAdapterVersion("1");
         fixture.snapshots().insert(base);
-        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end.minusDays(1))).isFalse();
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end.minusDays(1), List.of())).isFalse();
         var tail = saved("tail", end, "config-v2", "ALLOW", 2);
         tail.setAdapterVersion("2"); tail.setQualityRuleSetVersion("rules-v2");
         fixture.snapshots().insert(tail);
-        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isTrue();
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end, List.of())).isTrue();
         // Rechecking rules does not change the older collection units.
         base.setDatasetVersion("rechecked"); base.setId(null); base.setQualityConfigVersion("config-v2");
         base.setQualityRuleSetVersion("rules-v2"); fixture.snapshots().insert(base);
-        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isTrue();
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end, List.of())).isTrue();
         var repaired = saved("repaired", start, "config-v2", "ALLOW", 3);
         repaired.setAdapterVersion("2"); repaired.setQualityRuleSetVersion("rules-v2");
         fixture.snapshots().insert(repaired);
-        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end)).isFalse();
+        assertThat(fixture.service().requiresPreparation(fixture.product(), start, end, List.of())).isFalse();
         org.mockito.Mockito.verifyNoInteractions(fixture.client());
     }
 
@@ -148,7 +164,7 @@ class InvestmentDataQualityServiceTest {
         var service = new InvestmentDataQualityService(snapshots, session.getMapper(InvestmentDataQualityIssueMapper.class),
                 client, runtime, new ObjectMapper().findAndRegisterModules());
         var product = new InvestmentProduct(); product.setProductType("STOCK"); product.setMarket("SSE"); product.setCode("600000");
-        return new UpgradeFixture(service, snapshots, client, product);
+        return new UpgradeFixture(service, snapshots, client, product, source);
     }
 
     private static Map<String, Object> upgradeResponse(String dataset, LocalDate start, LocalDate end, String decision) {
@@ -212,6 +228,103 @@ class InvestmentDataQualityServiceTest {
         verify(client, never()).validateDataQuality(any(), any(), any(), any(), any(), any());
         assertThat(service.analysisStatus(product, "missing-dataset")).containsEntry("status", "NOT_EVALUATED")
                 .doesNotContainKey("decision");
+    }
+
+    @Test
+    void missingOptionalSourceValuesDoNotBlockStoredPricesOrGetInventedInSnapshot() {
+        var product=new InvestmentProduct();product.setProductType("STOCK");
+        var input=new com.smartfinance.agent.investment.entity.ProductDailyQuote();input.setTradeDate(LocalDate.of(2026,6,30));
+        input.setClosePrice(java.math.BigDecimal.TEN);input.setAmount(java.math.BigDecimal.TEN);input.setTurnoverRate(java.math.BigDecimal.ONE);
+        var row=new java.util.LinkedHashMap<String,Object>();row.put("data_date","2026-06-30");row.put("close","10");row.put("amount",null);row.put("turnover_rate",null);
+        var evaluation=new InvestmentDataQualityService.Evaluation(new InvestmentDataQualitySnapshot(),Map.of(),List.of(row),List.of());
+        assertThat(evaluation.matchesInputs(product,List.of(input))).isTrue();
+        assertThat(evaluation.records().get(0)).containsEntry("amount",null).containsEntry("turnover_rate",null);
+        row.put("amount","11");assertThat(evaluation.matchesInputs(product,List.of(input))).isFalse();
+    }
+
+    @Test
+    void actualAnalysisDatesCanUseIntactReceiptsAcrossEmptyWindowsAndEmptyTail() throws Exception {
+        var fixture=upgradeFixture();var first=LocalDate.of(2026,6,1);var last=first.plusDays(10);
+        var base=saved("base",first,"config-v1","ALLOW",1);base.setRequestedEndDate(first);fixture.snapshots().insert(base);
+        var tail=saved("tail",last,"config-v1","ALLOW",2);tail.setRequestedEndDate(last);fixture.snapshots().insert(tail);
+        var inputs=java.util.stream.Stream.of(first,last).map(day->{var q=new com.smartfinance.agent.investment.entity.ProductDailyQuote();q.setTradeDate(day);q.setClosePrice(java.math.BigDecimal.TEN);return q;}).toList();
+        var response = new java.util.LinkedHashMap<String,Object>(upgradeResponse("actual",first,last,"ALLOW"));
+        response.put("records",List.of(Map.of("data_date",first.toString(),"close","10"),Map.of("data_date",last.toString(),"close","10")));
+        when(fixture.client().replayDataQuality(any(),anyList(),anyList(),anyString(),any(),any(),eq(List.of(first,last)))).thenReturn(response);
+        var result=fixture.service().preparedEvaluation(fixture.product(),first.minusDays(10),last.plusDays(10),inputs);
+        assertThat(result).isNotNull();
+        assertThat(result.snapshot().getRequestedStartDate()).isEqualTo(first);
+        assertThat(result.snapshot().getRequestedEndDate()).isEqualTo(last);
+        assertThat(result.matchesInputs(fixture.product(),inputs)).isTrue();
+        verify(fixture.client(),never()).validateDataQuality(any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
+    void storedObservationsWithoutPreparedReceiptsRequireRecoveryButEmptyQueriesDoNot() throws Exception {
+        var fixture = upgradeFixture(); var day = LocalDate.of(2026, 6, 30);
+        var input = new com.smartfinance.agent.investment.entity.ProductDailyQuote();
+        input.setTradeDate(day); input.setClosePrice(java.math.BigDecimal.TEN);
+
+        assertThat(fixture.service().requiresPreparation(fixture.product(), day, day, List.of(input))).isTrue();
+        assertThat(fixture.service().requiresPreparation(fixture.product(), day, day, List.of())).isFalse();
+        verifyNoInteractions(fixture.client());
+    }
+
+    @Test
+    void sparseStoredObservationsNeedReceiptsOnlyForTheirActualDates() throws Exception {
+        var fixture = upgradeFixture(); var first = LocalDate.of(2026, 6, 1); var last = first.plusDays(10);
+        var base = saved("first", first, "config-v2", "ALLOW", 1); base.setRequestedEndDate(first);
+        var tail = saved("last", last, "config-v2", "ALLOW", 2); tail.setRequestedEndDate(last);
+        fixture.snapshots().insert(base); fixture.snapshots().insert(tail);
+        var inputs = java.util.stream.Stream.of(first, last).map(day -> {
+            var row = new com.smartfinance.agent.investment.entity.ProductDailyQuote(); row.setTradeDate(day); return row;
+        }).toList();
+
+        assertThat(fixture.service().requiresPreparation(fixture.product(), first, last, inputs)).isFalse();
+        verifyNoInteractions(fixture.client());
+    }
+
+    @Test
+    void preparedReceiptSharesTheQuoteTransactionAndRollsBackOnFailure() throws Exception {
+        var fixture = upgradeFixture();
+        var start = LocalDate.of(2026, 6, 1); var end = LocalDate.of(2026, 6, 30);
+        when(fixture.client().validateDataQuality(fixture.product(), start, end, "DAY", "NONE", "config-v2"))
+                .thenReturn(upgradeResponse("stored", start, end, "ALLOW"));
+        var fetched = fixture.service().resolve(fixture.product(), start, end, true);
+        var jdbc = new org.springframework.jdbc.core.JdbcTemplate(fixture.dataSource());
+        jdbc.execute("CREATE TABLE transaction_quotes (close_price NUMERIC NOT NULL)");
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(fixture.dataSource()));
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            jdbc.update("INSERT INTO transaction_quotes VALUES (10)");
+            fixture.service().persistPrepared(fetched);
+            throw new IllegalStateException("commit failed");
+        })).hasMessageContaining("commit failed");
+        assertThat(fixture.snapshots().selectCount(null)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transaction_quotes", Integer.class)).isZero();
+
+        transaction.executeWithoutResult(status -> {
+            jdbc.update("INSERT INTO transaction_quotes VALUES (10)");
+            fixture.service().persistPrepared(fetched);
+        });
+        assertThat(fixture.snapshots().selectCount(null)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transaction_quotes", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void anUnappliedLegacyBatchCannotCreateAnotherPreparedReceipt() throws Exception {
+        var fixture = upgradeFixture(); var day = LocalDate.of(2026, 6, 30);
+        fixture.snapshots().insert(saved("legacy-unapplied", day, "config-v1", "ALLOW", 1));
+        var input = new com.smartfinance.agent.investment.entity.ProductDailyQuote();
+        input.setTradeDate(day); input.setClosePrice(java.math.BigDecimal.ONE);
+        when(fixture.client().replayDataQuality(any(), anyList(), anyList(), anyString(), any(), any(), eq(List.of(day))))
+                .thenReturn(upgradeResponse("unapplied-derived", day, day, "ALLOW"));
+
+        assertThatThrownBy(() -> fixture.service().preparedEvaluation(fixture.product(), day, day, List.of(input)))
+                .hasMessageContaining("已保存行情不一致");
+        assertThat(fixture.snapshots().selectCount(null)).isEqualTo(1);
+        verify(fixture.client(), never()).claimDataQuality(anyString(), anyString());
     }
 
     @Test

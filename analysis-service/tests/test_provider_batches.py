@@ -429,6 +429,50 @@ class FakeProvider:
 
 
 class ProviderRegistryBatchTest(unittest.TestCase):
+    def test_legacy_daily_entry_uses_the_same_empty_error_and_fallback_contract(self):
+        request = dict(code="000001", market="SZSE", product_type="STOCK",
+                       start_date=date(2026, 7, 1), end_date=date(2026, 7, 18))
+        empty = FakeProvider("EMPTY", None)
+        with self.assertRaises(ProviderEmpty):
+            ProviderRegistry([empty]).daily_quotes(**request)
+        outage = FakeProvider("OUTAGE", TimeoutError("offline"))
+        with self.assertRaises(ProviderUnavailable) as error:
+            ProviderRegistry([empty, outage]).daily_quotes(**request)
+        self.assertNotIsInstance(error.exception, ProviderEmpty)
+        valid = FakeProvider("VALID", lambda: batch(provider="VALID", records=[quote(provider="VALID")]))
+        rows, warnings = ProviderRegistry([outage, valid]).daily_quotes(**request)
+        self.assertEqual("VALID", rows[0].provider)
+        self.assertTrue(any("offline" in value for value in warnings))
+
+    def test_legacy_catalog_products_reuse_the_catalog_adapter(self):
+        for product, market in (("ETF", "SSE"), ("INDEX", "CN_INDEX")):
+            with self.subTest(product=product), patch("app.market_catalog.daily_history", return_value=[quote()]) as history:
+                rows, _ = ProviderRegistry([]).daily_quotes("000001", market, product, date(2026, 7, 1), date(2026, 7, 18))
+                self.assertEqual(1, len(rows))
+                self.assertEqual("NONE", history.call_args.args[5])
+        with patch("app.market_catalog.daily_history", return_value=[]), self.assertRaises(ProviderEmpty):
+            ProviderRegistry([]).daily_quotes("000001", "SSE", "ETF", date(2026, 7, 1), date(2026, 7, 18))
+
+    def test_incomplete_primary_shape_uses_valid_backup(self):
+        bad = FakeProvider("BAD", batch(provider="BAD", records=[quote(provider="BAD", open=None)]))
+        valid = FakeProvider("VALID", batch(provider="VALID", records=[quote(provider="VALID")]))
+        batches, warnings = ProviderRegistry([bad, valid]).daily_quality_batches(code="000001", market="SZSE",
+            product_type="STOCK", start_date=date(2026, 7, 1), end_date=date(2026, 7, 18),
+            adjust_type="QFQ", clock=lambda: FETCHED_AT, maximum_batches=1)
+        self.assertEqual("VALID", batches[0].provider)
+        self.assertTrue(any("required" in value for value in warnings))
+
+    def test_tencent_malformed_response_is_error_instead_of_empty(self):
+        for payload in ({"code": 1, "msg": "limited", "data": {}},
+                        {"code": 0, "data": {}},
+                        {"code": 0, "data": {"sz000001": {"qfqday": [["2026-07-17", "10"]]}}}):
+            provider = TencentHistoryProvider(opener=lambda *a, **k: FakeJsonResponse(json.dumps(payload)))
+            with self.subTest(payload=payload), self.assertRaises(ProviderUnavailable) as error:
+                ProviderRegistry([provider]).daily_quality_batches(code="000001", market="SZSE",
+                    product_type="STOCK", start_date=date(2026, 7, 17), end_date=date(2026, 7, 17),
+                    adjust_type="QFQ", clock=lambda: FETCHED_AT)
+            self.assertNotIsInstance(error.exception, ProviderEmpty)
+
     def test_only_successfully_empty_supported_sources_are_source_empty(self):
         request = dict(code="000001", market="SZSE", product_type=ProductType.STOCK,
                        start_date=date(2026, 7, 1), end_date=date(2026, 7, 18),
