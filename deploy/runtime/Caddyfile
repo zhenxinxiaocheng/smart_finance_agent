@@ -1,0 +1,11 @@
+{$SERVER_DOMAIN}, http://82.156.246.3 {
+    handle /api/* {
+        reverse_proxy backend:8080
+    }
+    handle {
+        root * /srv
+        encode zstd gzip
+        try_files {path} /index.html
+        file_server
+    }
+}

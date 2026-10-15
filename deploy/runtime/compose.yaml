@@ -1,0 +1,121 @@
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+services:
+  mysql:
+    <<: *common
+    image: mysql:8.4
+    mem_limit: 640m
+    command: ["--innodb-buffer-pool-size=128M", "--max-connections=30", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?missing password}
+      MYSQL_DATABASE: smart_finance
+      MYSQL_USER: smart_finance
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?missing password}
+      TZ: Asia/Shanghai
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --user=$$MYSQL_USER --database=$$MYSQL_DATABASE --execute='SELECT 1' --silent >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 30s
+  redis:
+    <<: *common
+    image: redis:7.4-alpine
+    mem_limit: 128m
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  analysis:
+    <<: *common
+    image: smart-finance-agent-analysis:local
+    build:
+      context: ${PROJECT_DIR}
+      dockerfile: ${RUNTIME_DIR}/Dockerfile.analysis
+    mem_limit: 1280m
+    environment:
+      ANALYSIS_INTERNAL_TOKEN: ${ANALYSIS_INTERNAL_TOKEN:?missing token}
+      ANALYSIS_DATA_ROOT: /app/.data/market-snapshots
+      QUANT_V2_MODEL_DIR: /app/.data/quant-v2-models
+      AKSHARE_WORKER_COUNT: "1"
+      TZ: Asia/Shanghai
+    volumes: ["analysis-data:/app/.data"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+  backend:
+    <<: *common
+    image: smart-finance-agent-backend:local
+    build:
+      context: ${PROJECT_DIR}
+      dockerfile: ${RUNTIME_DIR}/Dockerfile.backend
+    mem_limit: 896m
+    environment:
+      SPRING_PROFILES_ACTIVE: mysql
+      SPRING_CONFIG_IMPORT: file:/run/sfa/application-local.yml
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/smart_finance?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_USERNAME: smart_finance
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "8"
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PASSWORD: ""
+      ANALYSIS_SERVICE_URL: http://analysis:8090
+      ANALYSIS_INTERNAL_TOKEN: ${ANALYSIS_INTERNAL_TOKEN}
+      BILL_UPLOAD_DIR: /app/uploads/bills
+      MARKET_DATA_WORKER_CONCURRENCY: "1"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=20
+      TZ: Asia/Shanghai
+    volumes:
+      - ${CONFIG_FILE}:/run/sfa/application-local.yml:ro
+      - uploads:/app/uploads
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      analysis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$(curl --max-time 4 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/auth/me)\" = 401"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+  web:
+    <<: *common
+    image: smart-finance-agent-web:local
+    build:
+      context: ${PROJECT_DIR}
+      dockerfile: ${RUNTIME_DIR}/Dockerfile.web
+    mem_limit: 128m
+    environment:
+      SERVER_DOMAIN: ${SERVER_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ${RUNTIME_DIR}/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+volumes:
+  mysql-data:
+  redis-data:
+  analysis-data:
+  uploads:
+  caddy-data:
+  caddy-config:

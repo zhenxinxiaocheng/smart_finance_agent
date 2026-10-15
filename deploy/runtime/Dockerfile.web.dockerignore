@@ -1,0 +1,16 @@
+.git
+.data
+**/application-local.yml
+**/.env
+**/.env.*
+**/node_modules
+**/target
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/uploads
+frontend/dist
+deploy/tests
+logs
+output
+outputs

@@ -1,0 +1,14 @@
+FROM maven:3.9-eclipse-temurin-17 AS build
+ENV MAVEN_OPTS="-Xmx512m"
+WORKDIR /src
+COPY backend/pom.xml backend/pom.xml
+COPY backend/src/main backend/src/main
+COPY analysis-service/config analysis-service/config
+RUN mvn -B -ntp -f backend/pom.xml -Dmaven.test.skip=true package
+FROM eclipse-temurin:17-jre-jammy
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
+    && useradd -u 10001 -m app && mkdir -p /app/uploads/bills && chown -R app:app /app
+WORKDIR /app
+COPY --from=build /src/backend/target/*.jar app.jar
+USER 10001
+ENTRYPOINT ["java","-jar","app.jar"]

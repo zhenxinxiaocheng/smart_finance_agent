@@ -1,244 +1,121 @@
-# 智财 Agent
+# 智财 Agent · Smart Finance Agent
 
-**核心产品定位：** 智财 Agent：以个人财务为边界、以量化研究为决策引擎、以 Agent 为交互和编排核心的智能投资与财富管理系统。
+**基于 AI Agent 的个人财务管理与自主投资研究平台**
 
-智财 Agent 是一个个人智能财务代理系统，覆盖记账、账单导入、统计分析、财务画像、投资分析、量化研究与模拟运行，以及 Agent 对话、长期记忆、反思、周期任务、待确认动作和 Skills 管理。
+智财 Agent 面向具有财务管理意识、希望管理个人收支并开展股票、ETF 和基金自主研究的个人用户，以财务数据为基础、AI Agent 为财务交互和任务执行入口，将账务管理、财务分析、资产信息与投资研究集中到统一的工作台。
 
-项目不是单纯的聊天机器人，而是把个人财务工作流逐步 Agent 化：
+平台由个人财务管理、Agent 助手和投资研究三部分组成，覆盖日常账务整理、自然语言查询、经确认的财务操作，以及建设中的策略研究、回测与模拟交易流程。
 
-- 关键写操作需要确认
-- 聊天链路可追踪
-- 长期偏好可沉淀
-- 稳定流程可以包装成 Skill
-- 账单截图可以先识别候选结果，再人工确认入库
+> **开发中：** 项目尚未达到上线标准。Agent 持续完善，量化工作台正在重构，安全与账号验证等配套能力尚未完成。详见 [开发状态](#开发状态)。
 
-## 数据采集范围
+[面向用户](#面向用户) · [平台组成](#平台组成) · [界面展示](#界面展示) · [开发状态](#开发状态) · [本地运行](#本地运行) · [服务器部署](#服务器部署) · [开发文档](#开发文档)
 
-正常启动会更新证券目录，历史数据按实际使用范围在后台准备：持仓使用分析周期所需区间，打开市场详情产生有时限的需求，提交研究任务按冻结的资产池、研究区间和指标预热长度补数。保存资产池本身不触发全池下载。研究数据准备完成后才冻结行情快照并执行；等待中的任务不会挡住其他已就绪任务。
+![月度财务统计：收支、结余、分类占比与每日明细](frontend/public/readme-statistics.png)
 
-退出详情页后不再续期，默认 30 分钟后停止其独占采集；删除持仓、取消研究任务、停止模拟组合后，对应需求失效。多人需要同一产品时共享行情，已存数据保留。普通启动不会继续执行以前遗留的无有效需求全市场积压。
+## 面向用户
 
-页面、持仓需求优先于研究任务，完整库按 `MARKET_DATA_FOREGROUND_QUOTA` 保留执行机会，默认每 8 个业务任务允许一个全库任务。数据中心分别显示当前任务和按需暂停的旧积压。暂停模拟组合只继续维护持仓和待处理事项；纯现金结算不要求下载整个资产池。
+核心用户是具有财务管理意识、关注股票或基金投资，并希望借助 AI 和数据工具提高管理与研究效率的个人投资者。
 
-需要建设全市场研究库时，显式设置 `MARKET_DATA_FULL_LIBRARY_ENABLED=true`；用 `MARKET_DATA_FULL_LIBRARY_MARKETS` 和 `MARKET_DATA_FULL_LIBRARY_DATASETS` 选择市场及数据集。默认关闭全库模式，仅使用现有免费源。首次启动新版会执行 Flyway V9，升级时应同时更新后端和分析服务。
-
-免费源缺失、限流和未发布记录仍可能使任务等待或失败；系统不会用填充值冒充真实数据，也不把采集进度等同于质量验证。当前因子引擎的数据依赖是价格、复权/累计收益、成交量与成交额，其他研究资料通过可选全库配置采集。
-
-区间准备状态需要逐日覆盖证据，不能仅凭最后一条行情确认。基金模拟使用已确认区间内的真实净值和发布滞后规则，不要求当天尚未公布的净值。A 股日历仅用于匹配的市场及基金类别；美股、QDII、货币基金和分类未知基金的采集结果不会借用该日历宣称完整，缺少相应证据时仍需后续补齐。局部前复权回补会检查已有价格基准；基准变化时只有覆盖所有已存日期的替换序列才会写入。
-
-## 演示截图
-
-### 登录页
-
-![登录页](frontend/public/readme-login.png)
-
-### 统计页
-
-![统计页](frontend/public/readme-statistics.png)
-
-### 财务画像
-
-![财务画像](frontend/public/readme-profile.png)
-
-### Agent 技能
-
-![Agent 技能](frontend/public/readme-skills.png)
-
-### 新对话
-
-![新对话](frontend/public/readme-chat.png)
-
-## 核心能力
-
-- 注册、登录、JWT 鉴权和当前用户信息
-- 收入/支出记录的新增、编辑、删除、分页查询和分类汇总
-- 日、月、年统计图表，展示收支趋势、结余和分类占比
-- 财务画像配置，维护收入、预算、储蓄目标、风险偏好和长期指令
-- 预算预警和未读通知，支持查看、已读、批量已读
-- 账单截图导入，通过多模态模型识别候选交易，确认后再写入正式消费记录
-- AI 财务助手，支持普通对话、SSE 流式输出、ReAct 工具调用和历史记录
-- Agent 长期记忆，支持用户偏好维护、自动沉淀、禁用和重置
-- Agent 反思，针对对话结果生成可采纳记忆候选和技能改进建议
-- Agent 周期任务，支持创建、启停、重试和运行记录查看
-- Agent Skills，支持内置 Skill、外部说明型 Skill 和自定义 Skill
-- 待确认动作，保证记账、预算设置、自定义 Skill 安装等关键写操作先审后执
-- 投资资产管理，支持股票、ETF 和场外基金的行情、历史数据及分析结果
-- 指数关注列表，支持搜索、添加、排序和行情更新
-- 量化工作台，支持资产池、因子组合、策略配置、训练、回测和结果比较
-- 模拟交易组合，基于已验证回测持续生成信号、模拟成交并记录完整账本
-- 侧边栏默认进入新对话页，登录后主页直接落到 `/chat`
-
-## 技术栈
-
-| 模块 | 技术 |
+| 用户 | 主要使用场景 |
 | --- | --- |
-| 前端 | Vue 3, Vite 8, Pinia, Vue Router, Tailwind CSS 4, Reka UI, VueUse, ECharts 6 |
-| 后端 | Java 17, Spring Boot 3.2.5, MyBatis-Plus, MySQL, JWT |
-| 分析服务 | Python 3, FastAPI, Pandas, NumPy, SciPy, scikit-learn, XGBoost |
-| AI | LangChain4j, DashScope Chat/Embedding, RAG, Tavily Search |
-| 测试 | JUnit 5, Mockito, Spring Boot Test, H2 |
+| 个人投资者 | 整理收入与支出、管理预算、跟踪资产、进行日常财务复盘 |
+| 自主投资研究爱好者 | 整理市场数据、研究投资方案、配置策略并关注回测与模拟结果 |
+| 金融与计算机相关专业学生、开发者 | 学习财务业务、金融数据处理及 Agent 工具集成，参与功能开发 |
 
-## 项目结构
+## 平台组成
 
-```text
-smart_finance_agent/
-├── backend/                 # Spring Boot 后端
-│   ├── src/main/java/       # Controller、Service、Entity、DTO、Mapper、Agent 逻辑
-│   ├── src/main/resources/  # application.yml、db/migration
-│   └── src/test/            # 后端测试
-├── frontend/                # Vue 3 前端
-│   ├── public/              # README 演示图和静态资源
-│   ├── src/api/             # API 请求封装
-│   ├── src/components/      # 业务组件与通用组件
-│   ├── src/layouts/         # Admin 风格主布局
-│   ├── src/router/          # 页面路由
-│   └── src/views/           # 页面视图
-├── analysis-service/        # 行情适配、投资分析和量化计算服务
-│   ├── app/                 # FastAPI、数据提供器和量化引擎
-│   └── tests/               # Python 测试
-├── env.example              # 本地配置示例
-└── README.md
-```
+### 个人财务管理
 
-## 页面路由
+围绕账目、预算和财务目标组织个人财务信息。
 
-| 路由 | 说明 |
+- **账务记录：** 收入与支出管理、分类、筛选和账目查询。
+- **账单导入：** 从支付流水截图提取候选交易，经人工核对后入账。
+- **财务统计：** 按日、月、年查看收支趋势、结余和分类占比。
+- **财务画像：** 管理收入、固定支出、预算、储蓄目标与风险偏好。
+
+### Agent 财务助手
+
+通过自然语言查询业务数据、调用财务工具和办理明确的财务任务。
+
+- **工具调用：** 查询账目、汇总消费、查看预算及已有投资信息。
+- **操作确认：** 记账、预算设置等关键写操作提交用户确认。
+- **运行记录：** 查看对话历史、工具步骤与执行过程。
+- **工作流管理：** 长期记忆、Skills 和周期任务持续完善，支持常用财务流程的维护与复用。
+
+### 金融数据与投资研究
+
+金融数据中心按实际需求组织行情采集，围绕产品类型管理数据契约、来源、标准化与采集记录，为个人资产管理和研究任务准备数据。
+
+量化工作台围绕资产池、因子组合、策略配置、训练、回测、结果比较和模拟组合组织研究流程。当前以数据拉取和工作台重构为主，进一步的量化分析及 Agent 接入尚未完成。
+
+## 界面展示
+
+截图采集于 2026-10-15，使用独立演示账号与示例账目。界面中的 Logo 为暂用设计。
+
+### Agent 收支查询
+
+通过自然语言查询本月收入、支出、结余和主要消费分类，并查看运行步骤。
+
+![Agent 查询示例账目的月度收支与主要支出分类](frontend/public/readme-chat.png)
+
+### 待确认记账
+
+核对金额、分类、日期和备注后，选择执行或取消。图中午餐记录尚未入账。
+
+![Agent 记账请求的确认与取消界面](frontend/public/readme-confirmation.png)
+
+<details>
+<summary>Agent Skills</summary>
+
+按财务场景管理技能，查看使用方式、启停状态与调用记录。
+
+![Agent 技能列表与启停开关](frontend/public/readme-skills.png)
+
+</details>
+
+<details>
+<summary>量化工作台 · 因子配置</summary>
+
+重构中的因子组合编辑器，图中选择了动量与低波动因子，尚未提交研究任务。
+
+![量化工作台中的动量与低波动因子配置](frontend/public/readme-quant-factors.png)
+
+</details>
+
+## 开发状态
+
+| 模块 | 当前进度 |
 | --- | --- |
-| `/login` | 登录页 |
-| `/register` | 注册页 |
-| `/chat` | 新对话、历史对话和 ReAct 运行态 |
-| `/statistics` | 收支统计 |
-| `/transactions` | 消费记录 |
-| `/profile` | 财务画像 |
-| `/bill-import` | 账单导入 |
-| `/skills` | Agent 技能 |
-| `/agent-audit` | Agent 审计总览 |
-| `/schedules` | 周期任务 |
-| `/reflections` | Agent 反思 |
-| `/pending-actions` | 待确认动作 |
-| `/stocks` | 投资资产列表、指数关注和资产导入 |
-| `/stocks/:assetId` | 资产详情、历史行情与投资分析 |
-| `/quant` | 量化策略列表和策略配置 |
-| `/quant/universes` | 量化资产池 |
-| `/quant/factors` | 因子组合与因子研究 |
-| `/quant/tasks` | 训练、回测、因子任务及结果比较 |
-| `/quant/deployments` | 模拟交易组合和运行账本 |
+| Agent | 类 Hermes Agent 的能力持续开发，工具编排、记忆、Skills、周期任务和交互体验仍在完善 |
+| 金融数据与分析 | 当前主要实现数据拉取，相关分析尚缺乏科学依据与有效性验证 |
+| 量化工作台 | 正在重构，进一步的量化分析尚未完成重构，尚未接入 Agent |
+| 安全与上线准备 | 面向上线的安全技术引入与系统性安全建设尚未开展 |
+| 登录与注册 | 已有基础页面和接口，验证码、接码等验证流程尚未实现 |
+| 品牌与界面 | 产品 Logo 尚未确定，界面与其他功能持续开发 |
 
-## 后端接口
-
-| 模块 | 接口前缀 | 说明 |
-| --- | --- | --- |
-| 认证 | `/api/auth` | 注册、登录、当前用户 |
-| 交易 | `/api/transactions` | 收支记录和分类汇总 |
-| 分类 | `/api/categories` | 消费分类管理 |
-| 预算 | `/api/budgets` | 预算查询、保存、删除 |
-| 通知 | `/api/alerts` | 预算提醒和已读标记 |
-| 财务画像 | `/api/financial-profile` | 财务资料读取和保存 |
-| 账单导入 | `/api/bills` | 截图上传、识别结果查询、确认入库 |
-| 聊天 | `/api/chat` | 会话列表、历史记录、ReAct 流式对话 |
-| Agent 运行 | `/api/agent-runs` | 按 traceId 查询运行步骤 |
-| Agent 记忆 | `/api/agent-memories` | 长期指令、自动记忆、禁用、重置 |
-| Agent Skills | `/api/agent-skills` | Skill 列表、安装、启停、删除、调用历史 |
-| Agent 周期任务 | `/api/agent-schedules` | 创建、更新、启停、重试、删除、运行记录 |
-| Agent 审计 | `/api/agent-audit` | 审计总览 |
-| Agent 反思 | `/api/agent-reflections` | 反思结果确认/忽略 |
-| Agent 上下文 | `/api/agent-context` | 上下文压缩、配置和使用情况 |
-| 待确认动作 | `/api/pending-actions` | 确认或取消 AI 生成动作 |
-| 投资资产 | `/api/investment` | 资产、行情、历史数据和投资分析 |
-| 指数关注 | `/api/investment/indexes` | 指数搜索、关注列表和排序 |
-| 量化工作台 | `/api/quant/v2` | 资产池、因子、策略、任务、回测和模拟组合 |
-
-## 量化工作台
-
-量化工作台采用“研究 → 验证 → 模拟运行”的流程：
-
-1. 从已有投资资产创建资产池。
-2. 选择规则策略、多因子策略或机器学习策略，并保存不可变版本。
-3. 使用共同有效交易日期训练或回测，查看收益、回撤、基准和交易明细。
-4. 只有验证通过的回测可以创建模拟组合。
-5. 模拟组合跟随本地已入库行情运行，记录信号、委托、成交、持仓和现金账本。
-
-模拟结果只用于研究和验证。其完整性取决于行情采集、复权、基金净值公布和交易规则假设，不代表真实券商成交或未来收益。
-
-## Agent 机制
-
-### Chat / ReAct
-
-聊天页通过 `POST /api/chat/react/stream` 进入流式 ReAct 执行链路。
-
-基本流程是：
-
-1. `ChatController` 接收请求
-2. `ChatServiceImpl` 组织会话、历史和上下文
-3. `ReActAgentService` 选择工具并生成步骤
-4. `ToolRegistry` 负责实际可用工具
-5. 运行结果、步骤和 traceId 写入后端记录
-
-### 长期记忆
-
-长期记忆分两类：
-
-- 用户直接维护的长期指令，例如回答风格、偏好和固定约束
-- 自动沉淀的低风险偏好，例如分类习惯和回答偏好
-
-资产、密码、API Key、银行卡等敏感信息不会自动沉淀到 Agent 记忆中。
-
-### 反思
-
-反思模块会基于本次对话和运行结果生成：
-
-- 可采纳的记忆候选
-- 技能改进建议
-- 风险提醒
-
-当前实现只会自动处理低风险偏好，敏感财务事实不会自动写入记忆或技能。
-
-### Skills
-
-Skills 是 Agent 可读取的能力说明和工具绑定，不直接执行第三方脚本。当前支持：
-
-- 内置 Skill：由后端安全工具生成
-- 外部说明型 Skill：通过安装接口纳入管理
-- 自定义 Skill：用户在聊天中描述稳定流程，确认后写入 Skill 列表
-
-### 周期任务
-
-周期任务支持：
-
-- 创建任务
-- 启用/停用
-- 失败重试
-- 查看运行记录
-
-### 待确认动作
-
-所有会改变用户数据的重要动作都要走待确认流程，例如：
-
-- 记录交易
-- 设置预算
-- 安装对话生成的自定义 Skill
-
-## 账单导入流程
-
-1. 用户在前端上传微信、支付宝或银行卡流水截图。
-2. 前端调用 `POST /api/bills/import`。
-3. 后端保存原始图片，并通过 DashScope 多模态模型识别账单信息。
-4. 系统返回账单类型、置信度、摘要和候选交易。
-5. 用户在前端检查金额、分类、日期、描述等内容。
-6. 用户确认后，系统才写入正式消费记录。
+当前版本用于本地开发与演示，投资分析结果不用于实际投资决策。
 
 ## 本地运行
 
-### 环境要求
+以下为本地开发环境的启动步骤，命令以 Windows PowerShell 为例，从项目根目录开始执行。
 
-- JDK 17+
-- Maven 3.8+
-- MySQL 8.0+
-- Node.js 18+
-- npm 9+
-- Python 3.11+
+### 1. 准备依赖
 
-### 数据库
+| 依赖 | 要求或用途 |
+| --- | --- |
+| Java / Maven | JDK 17+，Maven 3.8+ |
+| Node.js / npm | Node.js 22.12+，使用 npm 安装前端依赖 |
+| Python | Python 3.12+，安装 `analysis-service/requirements.txt` |
+| MySQL | MySQL 8.0+，保存业务数据 |
+| Redis | 建议配置，用于缓存、限流和账单确认协调 |
+| DashScope | 配置 API Key；图片识别还需配置可用的视觉模型名 |
+| Tavily | 可选，用于联网搜索 |
+
+当前 NumPy、SciPy 依赖要求 Python 3.12+。聊天、图片识别和联网搜索使用外部服务，可能产生相应服务费用。
+
+### 2. 创建数据库并配置后端
+
+在 MySQL 中执行：
 
 ```sql
 CREATE DATABASE smart_finance
@@ -246,104 +123,221 @@ CREATE DATABASE smart_finance
   COLLATE utf8mb4_unicode_ci;
 ```
 
-配置数据库账号密码后启动：
-
-```bash
-java -jar backend/target/smart-finance-agent-1.0.0-MVP.jar --spring.profiles.active=mysql
-```
-
-Flyway 自动执行 V1 创建当前完整结构，不创建测试用户。再次启动不会重复迁移。后续结构变更新增 `V2__描述.sql`、`V3__描述.sql`，不要修改已执行的迁移。
-
-### 本地配置
-
-复制 `env.example` 的内容到：
-
-```text
-backend/src/main/resources/application-local.yml
-```
-
-至少需要配置：
+新建 `backend/src/main/resources/application-local.yml`，填入本机配置。该文件已被 Git 忽略；也可参考根目录的 [env.example](env.example)。
 
 ```yaml
 spring:
   datasource:
-    username: 你的数据库账号
-    password: 你的数据库密码
+    username: 你的数据库用户名
+    password: "你的数据库密码"
 
 jwt:
-  secret: 你的 JWT 密钥
+  secret: "替换为至少32字节的随机密钥"
 
 langchain4j:
   dashscope:
-    api-key: 你的 DashScope API Key
+    api-key: "你的DashScope API Key"
 
-search:
-  api-key: 你的 Tavily API Key
+bill:
+  ai:
+    multimodal-model: "你的DashScope视觉模型名"
 ```
 
-`search.api-key` 可选；如果不使用联网搜索，可以留空。`application-local.yml` 不应提交到 Git。
+默认连接本机 `smart_finance` 数据库；地址不同时补充 `spring.datasource.url`。视觉模型也可通过 `DASHSCOPE_VL_MODEL` 环境变量配置。需要联网搜索时配置 `TAVILY_API_KEY` 或 `search.api-key`。
 
-### 手动启动
+### 3. 在三个独立终端启动服务
 
-后端：
+**终端一：分析服务**
+
+```powershell
+cd analysis-service
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090
+```
+
+**终端二：后端**
 
 ```powershell
 cd backend
 mvn spring-boot:run "-Dspring-boot.run.profiles=mysql"
 ```
 
-分析服务：
+MySQL 模式启动时，Flyway 按顺序应用尚未执行的迁移。不要修改已经执行的迁移，也不要在已有数据库中手动重复导入建表 SQL。
 
-```powershell
-cd analysis-service
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090
-```
-
-前端：
+**终端三：前端**
 
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-## 验证命令
+打开 [http://localhost:3000](http://localhost:3000)，注册自己的账号后登录。默认后端端口为 `8080`，分析服务为 `8090`；服务健康检查、端口调整和共享令牌配置见 [开发与运行说明](DEVELOPMENT.md)。
 
-前端构建：
+## 服务器部署
 
-```powershell
-cd frontend
-npm run build
+使用 Docker Compose 在单台 Linux 服务器部署。Caddy 提供前端页面、API 代理和自动 HTTPS，Java 后端、Python 分析服务、MySQL 与 Redis 通过容器网络通信。
+
+### 1. 准备环境
+
+- Linux x86_64 服务器，安装 [Docker Engine](https://docs.docker.com/engine/install/)、[Docker Compose 插件](https://docs.docker.com/compose/install/linux/)、Git、Bash 和 OpenSSL。
+- 将自己的域名解析到服务器公网 IP，开放 TCP 80、443，并确保端口未被其他服务占用。配置了 AAAA 记录时，IPv6 也需可达。
+- 服务器需能访问 Docker 镜像仓库、Maven、npm 和 Python 依赖源。镜像在服务器上串行构建，需预留构建所需的内存与磁盘空间。
+
+以下命令在服务器上以 root 身份执行。示例域名 `finance.example.com` 替换为自己的域名。
+
+```bash
+docker version
+docker compose version
+git clone https://github.com/zhenxinxiaocheng/smart_finance_agent.git /opt/smart-finance-agent
+cd /opt/smart-finance-agent
 ```
 
-后端测试：
+服务器无需单独安装 Java、Node.js、Python、MySQL 或 Redis，这些运行环境由镜像提供。
 
-```powershell
-cd backend
-mvn test
+### 2. 设置域名
+
+将 [deploy/runtime/start.sh](deploy/runtime/start.sh) 中的 `export SERVER_DOMAIN=...` 修改为：
+
+```bash
+export SERVER_DOMAIN=finance.example.com
 ```
 
-后端编译：
+该值由脚本直接设置，需要修改文件中的这一行。然后将 [Caddyfile](deploy/runtime/Caddyfile) 的站点首行改为 `{$SERVER_DOMAIN} {`，删除原有的固定 IP 入口，完整配置如下：
 
-```powershell
-cd backend
-mvn clean compile
+```caddyfile
+{$SERVER_DOMAIN} {
+    handle /api/* {
+        reverse_proxy backend:8080
+    }
+    handle {
+        root * /srv
+        encode zstd gzip
+        try_files {path} /index.html
+        file_server
+    }
+}
 ```
 
-分析服务测试：
+Caddy 自动申请和续期证书，具体要求见 [自动 HTTPS 文档](https://caddyserver.com/docs/automatic-https)。
 
-```powershell
-cd analysis-service
-.\.venv\Scripts\python.exe -m pytest
+### 3. 创建应用配置
+
+```bash
+install -d -m 700 .data/deploy
+openssl rand -hex 32
 ```
 
-## 开发备注
+新建 `.data/deploy/application-local.yml`，将上一条命令生成的随机值填入 `jwt.secret`，并填写自己的 API Key 和可用的视觉模型名：
 
-- 前端通过 Vite 代理把 `/api` 请求转发到后端。
-- 聊天页、审计页、周期任务页和反思页都围绕同一套 Agent 运行链路工作。
-- 账单导入识别结果只作为候选数据，必须经过用户确认才会写入正式交易表。
-- 投资分析和量化工作台依赖分析服务；使用一键启动脚本时会同时启动三个服务。
-- 涉及实时行情、新闻、政策、汇率的问题需要联网检索后再回答。
-- 外部 Skill 当前只读取说明和元数据；如果未来支持脚本型 Skill，需要单独设计沙箱、权限、超时和审计。
+```yaml
+jwt:
+  secret: "生成的随机密钥"
+
+langchain4j:
+  dashscope:
+    api-key: "你的DashScope API Key"
+
+bill:
+  ai:
+    multimodal-model: "你的DashScope视觉模型名"
+
+search:
+  api-key: ""
+```
+
+不使用联网搜索时，将 `search.api-key` 设置为 `""`。数据库、Redis 和分析服务连接由 Compose 配置，无需在此填写本地数据库账号。
+
+如使用 `${DASHSCOPE_API_KEY}` 等环境变量占位符，需同时在 [compose.yaml](deploy/runtime/compose.yaml) 中为对应容器配置该变量；默认配置不会自动将宿主机的模型密钥传入容器。
+
+### 4. 初始化并启动
+
+```bash
+cd /opt/smart-finance-agent
+chmod 600 .data/deploy/application-local.yml
+bash deploy/runtime/start.sh prepare "$PWD"
+bash deploy/runtime/start.sh up "$PWD"
+```
+
+`prepare` 生成数据库密码和分析服务内部令牌，保存在 `.data/deploy/.env`；重复执行保留已有凭据。JWT 密钥和模型 Key 使用上一步的 YAML 配置。
+
+`up` 检查配置，按分析服务、后端、前端的顺序构建镜像，启动容器并等待健康检查，等待上限为 360 秒。MySQL 首次启动创建业务数据库和账号，后端通过 Flyway 应用数据库迁移。
+
+启动后访问 `https://finance.example.com`，注册账号并登录。
+
+### 5. 状态检查与日常管理
+
+在项目根目录设置以下管理函数。新开终端后需重新执行，域名与 `start.sh` 保持一致：
+
+```bash
+cd /opt/smart-finance-agent
+export PROJECT_DIR="$(pwd -P)"
+export RUNTIME_DIR="$PROJECT_DIR/deploy/runtime"
+export CONFIG_FILE="$PROJECT_DIR/.data/deploy/application-local.yml"
+export SERVER_DOMAIN=finance.example.com
+sfa() {
+  docker compose -p smart-finance-agent \
+    --env-file "$PROJECT_DIR/.data/deploy/.env" \
+    -f "$RUNTIME_DIR/compose.yaml" "$@"
+}
+sfa config --quiet
+sfa ps
+sfa logs --tail=100 backend analysis web
+curl -I "https://$SERVER_DOMAIN"
+curl -s -o /dev/null -w '%{http_code}\n' "https://$SERVER_DOMAIN/api/auth/me"
+```
+
+未登录访问 `/api/auth/me` 返回 `401`。如 HTTPS 无法访问，检查域名解析、80/443 端口和 `sfa logs --tail=100 web`。
+
+`sfa stop` 停止服务；`sfa down` 移除容器但保留命名卷。对外仅映射 Web 的 80、443 端口，其余服务不映射主机端口。
+
+### 6. 更新与备份
+
+保存自定义域名设置后拉取新版本。如 Git 提示部署文件存在本地冲突，先合并自定义配置，再启动更新：
+
+```bash
+cd /opt/smart-finance-agent
+git pull --ff-only &&
+bash deploy/runtime/start.sh up "$PWD"
+```
+
+原 MySQL 容器运行时，脚本会暂停 Web、后端和分析服务，将数据库导出到 `.data/deploy/backups/`，然后构建并启动新版本，更新期间服务会中断。备份或构建失败时，脚本尝试恢复原容器并中止更新。启动失败不自动回滚已迁移的数据库。
+
+| 保存位置 | 数据 |
+| --- | --- |
+| `.data/deploy/application-local.yml`、`.data/deploy/.env` | 应用配置、数据库密码与内部令牌 |
+| `.data/deploy/backups/` | 更新时生成的 MySQL 备份 |
+| `mysql-data`、`redis-data` | 数据库与 Redis 持久化数据 |
+| `analysis-data`、`uploads` | 分析快照、模型文件与上传账单 |
+| `caddy-data`、`caddy-config` | HTTPS 证书与 Caddy 状态 |
+
+备份时同时保存应用配置和需要保留的命名卷数据。脚本的自动备份仅覆盖运行中的 MySQL，不包含上传文件、分析文件和证书，未配置定时或异地备份。已有数据库部署需保留原 `.env` 凭据；勿执行 `down -v` 删除运行数据。
+
+## 技术与模块
+
+| 模块 | 技术 |
+| --- | --- |
+| 前端 | Vue 3、Vite 8、Pinia、Tailwind CSS 4、Reka UI、ECharts 6 |
+| 后端 | Java 17、Spring Boot 3.2、MyBatis-Plus、MySQL、Flyway、Redis |
+| 分析服务 | Python、FastAPI、Pandas、NumPy、SciPy、scikit-learn、XGBoost、Optuna |
+| Agent | LangChain4j、DashScope、ReAct 工具调用、SSE |
+
+Vue 负责页面交互与可视化，Java 后端负责业务数据、权限、事务和任务状态，Python 分析服务负责数据适配与计算。各模块通过接口协作，业务数据由后端统一持久化。
+
+## 开发文档
+
+- [开发与运行说明](DEVELOPMENT.md)：目录、配置、页面与接口入口、验证命令及常见启动问题。
+- [分析服务](analysis-service/README.md)：来源适配、采集进程与数据质量规则。
+- [量化工作台后端](backend/src/main/java/com/smartfinance/agent/investment/quant/workbench/README.md)：模块职责、调用边界与测试入口。
+- [市场数据规则与存储](backend/src/main/java/com/smartfinance/agent/investment/marketdata/README.md)：共享数据契约、采集事实与升级规则。
+
+## 反馈与贡献
+
+欢迎通过 [Issues](https://github.com/zhenxinxiaocheng/smart_finance_agent/issues) 提交问题反馈、功能建议和使用体验。问题反馈请附复现步骤、预期与实际表现、相关版本和脱敏日志，勿上传密钥或真实账单。
+
+提交改动前请运行与变更相关的检查，命令见 [开发文档](DEVELOPMENT.md#验证命令)。涉及业务行为的修复应附能够复现问题的测试；架构或数据结构调整建议先通过 Issue 讨论。
+
+## 许可证
+
+仓库目前未提供许可证文件，使用、修改与分发的授权条件尚未明确；请先联系维护者确认。
