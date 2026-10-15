@@ -12,6 +12,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
@@ -301,20 +303,79 @@ class InvestmentDataJobServiceTest {
         assertThat(query.getValue().getParamNameValuePairs().values()).contains(21L, 0);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"SUCCEEDED", "FAILED", "PARTIAL", "CANCELLED", "QUEUED", "RETRY_WAIT", "RUNNING"})
+    void repeatedStartupPreservesExistingJobsAndDetailCaches(String status) {
+        InvestmentAssetMapper assets = mock(InvestmentAssetMapper.class);
+        InvestmentAsset asset = new InvestmentAsset();
+        asset.setId(11L);
+        asset.setUserId(7L);
+        asset.setProductId(21L);
+        when(assets.selectList(any())).thenReturn(List.of(asset));
+        InvestmentDataJob existing = job(status, "STOCK_HISTORY");
+        existing.setId(91L);
+        existing.setRecordCount(526);
+        existing.setAttemptCount(3);
+        existing.setErrorMessage("previous outcome");
+        LocalDateTime retry = LocalDateTime.of(2026, 10, 15, 9, 0);
+        existing.setNextRetryAt(retry);
+        existing.setLeaseToken("existing-worker");
+        existing.setLeaseUntil(retry.plusMinutes(2));
+        when(mapper.selectOne(any())).thenReturn(existing);
+        InvestmentDataJobService startup = new InvestmentDataJobService(mapper, productMapper, quoteMapper, assets);
+        MarketDataDemandService demand = mock(MarketDataDemandService.class);
+        InvestmentDetailCacheService cache = mock(InvestmentDetailCacheService.class);
+        startup.configureDemand(demand);
+        startup.configureDetailCache(cache);
+
+        startup.resumeHeldData();
+        startup.resumeHeldData();
+
+        assertThat(existing.getStatus()).isEqualTo(status);
+        assertThat(existing.getRecordCount()).isEqualTo(526);
+        assertThat(existing.getAttemptCount()).isEqualTo(3);
+        assertThat(existing.getErrorMessage()).isEqualTo("previous outcome");
+        assertThat(existing.getNextRetryAt()).isEqualTo(retry);
+        assertThat(existing.getLeaseToken()).isEqualTo("existing-worker");
+        assertThat(existing.getLeaseUntil()).isEqualTo(retry.plusMinutes(2));
+        verify(demand, times(2)).asset(7L, 11L, 21L);
+        verify(mapper, never()).insert(any());
+        verify(mapper, never()).requeueTerminalIncremental(any());
+        verify(mapper, never()).requeueForRefresh(any());
+        verify(mapper, never()).updateById(any());
+        verifyNoInteractions(cache);
+    }
+
     @Test
-    void startupResumesEachHeldProductOnceWithoutASecondQueue() {
+    void startupCreatesMissingJobsForEachHeldAssetWithoutForcingAFullRepair() {
         InvestmentAssetMapper assets = mock(InvestmentAssetMapper.class);
         InvestmentAsset first = new InvestmentAsset();
+        first.setId(11L);
+        first.setUserId(7L);
         first.setProductId(21L);
         InvestmentAsset second = new InvestmentAsset();
+        second.setId(12L);
+        second.setUserId(8L);
         second.setProductId(21L);
         when(assets.selectList(any())).thenReturn(List.of(first, second));
-        InvestmentDataJobService startup = spy(new InvestmentDataJobService(mapper, productMapper, quoteMapper, assets));
-        doNothing().when(startup).queueAnalysisForProduct(any());
+        InvestmentDataJobService startup = new InvestmentDataJobService(mapper, productMapper, quoteMapper, assets);
+        startup.configureDemand(mock(MarketDataDemandService.class));
+        InvestmentDetailCacheService cache = mock(InvestmentDetailCacheService.class);
+        startup.configureDetailCache(cache);
 
         startup.resumeHeldData();
 
-        verify(startup, times(1)).queueAnalysisForProduct(21L);
+        ArgumentCaptor<InvestmentDataJob> created = ArgumentCaptor.forClass(InvestmentDataJob.class);
+        verify(mapper, times(2)).insert(created.capture());
+        assertThat(created.getAllValues()).extracting(InvestmentDataJob::getAssetId).containsExactly(11L, 12L);
+        assertThat(created.getAllValues()).extracting(InvestmentDataJob::getUserId).containsExactly(7L, 8L);
+        assertThat(created.getAllValues()).allSatisfy(queued -> {
+            assertThat(queued.getProductId()).isEqualTo(21L);
+            assertThat(queued.getJobType()).isEqualTo("STOCK_HISTORY");
+            assertThat(queued.getStatus()).isEqualTo("QUEUED");
+            assertThat(queued.getForceRefresh()).isFalse();
+        });
+        verifyNoInteractions(cache);
     }
 
     @Test

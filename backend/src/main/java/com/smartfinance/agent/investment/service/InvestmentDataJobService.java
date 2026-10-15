@@ -158,15 +158,20 @@ public class InvestmentDataJobService {
         }
     }
 
-    /** 启动后核对既有持仓，补齐停机期间遗漏的数据或分析更新。 */
+    /** 启动只恢复持仓需求和缺失任务；已有任务由 Worker 续跑，真实输入变化才重排终态分析。 */
     @EventListener(ApplicationReadyEvent.class)
     @Transactional
     public void resumeHeldData() {
         if (assetMapper == null) return;
-        assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
-                        .select(InvestmentAsset::getProductId).eq(InvestmentAsset::getDeleted, 0))
-                .stream().map(InvestmentAsset::getProductId).filter(java.util.Objects::nonNull)
-                .distinct().forEach(this::queueAnalysisForProduct);
+        for (InvestmentAsset asset : assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
+                .select(InvestmentAsset::getId, InvestmentAsset::getUserId, InvestmentAsset::getProductId)
+                .eq(InvestmentAsset::getDeleted, 0))) {
+            if (asset.getId() == null || asset.getUserId() == null || asset.getProductId() == null) continue;
+            InvestmentProduct product = productMapper.selectById(asset.getProductId());
+            if (product != null && isAssetHistoryProduct(product)) {
+                ensureRecoveryQueued(asset.getUserId(), asset.getId(), product.getId(), product.getProductType());
+            }
+        }
     }
 
     private InvestmentDataJob requeue(InvestmentDataJob existing, boolean forceRefresh) {
