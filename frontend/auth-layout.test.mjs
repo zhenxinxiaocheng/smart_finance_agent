@@ -53,6 +53,8 @@ for (const route of ['/login', '/register']) {
   test(`${route}: 大屏内容和控件随视口增大，保持两列靠近`, async () => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
     try {
+      // Exercise fallback fonts without depending on the external font service.
+      await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, request => request.abort())
       await page.addInitScript(() => {
         localStorage.setItem('sfa-mode', 'dark')
         localStorage.setItem('sfa-theme-color', 'rose')
@@ -78,6 +80,7 @@ for (const route of ['/login', '/register']) {
   test(`${route}: 手机、平板和低高度窗口无横向溢出，表单可操作`, async () => {
     const page = await browser.newPage({ reducedMotion: 'reduce' })
     try {
+      await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, request => request.abort())
       for (const viewport of [
         { width: 375, height: 812 },
         { width: 768, height: 1024 },

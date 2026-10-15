@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { investmentHelpText } from '../src/lib/investmentHelpText.js'
 
 const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
 const pageSource = readFileSync(new URL('../src/views/InvestmentAssetDetail.vue', import.meta.url), 'utf8')
-const chartSource = readFileSync(new URL('../src/components/investment/InvestmentKlineChart.vue', import.meta.url), 'utf8')
 const tooltipSource = readFileSync(new URL('../src/components/ui/tooltip/InfoTooltip.vue', import.meta.url), 'utf8')
 const horizonDialogSource = readFileSync(new URL('../src/components/investment/HorizonProfileDialog.vue', import.meta.url), 'utf8')
 const investmentApiSource = readFileSync(new URL('../src/api/investment.js', import.meta.url), 'utf8')
@@ -55,10 +55,90 @@ test('股票中性结论无确认歧义且基金使用专用动作布局', () =>
   assert.match(pageSource, /v-if="asset\.productType !== 'MUTUAL_FUND'" class="[^"]*space-y-3"/)
 })
 
-test('平板改为上下布局且手机端压缩关键指标和图表高度', () => {
-  assert.match(pageSource, /<section class="[^"]*xl:grid-cols-12">\s*<Card class="gap-0 py-4 shadow-sm xl:col-span-9">/)
-  assert.match(pageSource, /text-\[15px\].*sm:text-xl/)
-  assert.match(chartSource, /h-\[360px\].*sm:h-\[420px\].*md:h-\[500px\]/)
+test('平板改为上下布局且手机端压缩关键指标和图表高度', { timeout: 60000 }, async () => {
+  const { chromium } = await import('playwright-core')
+  const { createServer } = await import('vite')
+  const server = await createServer({
+    root: fileURLToPath(new URL('../', import.meta.url)),
+    cacheDir: fileURLToPath(new URL('../node_modules/.vite-investment-detail-layout', import.meta.url)),
+    server: { host: '127.0.0.1', port: 0, hmr: false },
+  })
+  let browser
+  try {
+    await server.listen()
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+        ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+        : { channel: 'chrome' }),
+    })
+    const page = await browser.newPage({ reducedMotion: 'reduce' })
+    const errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.addInitScript(() => {
+      localStorage.setItem('token', 'layout-fixture')
+      localStorage.setItem('user', JSON.stringify({ id: 1, username: 'layout-fixture' }))
+      if (!localStorage.getItem('sfa-density')) localStorage.setItem('sfa-density', 'comfortable')
+    })
+    const detail = {
+      asset: { id: 1, name: '布局回归测试股票', code: '600000', productType: 'STOCK', market: 'SSE', latestPrice: 10 },
+      quoteSeries: Array.from({ length: 20 }, (_, index) => ({
+        date: `2026-01-${String(index + 5).padStart(2, '0')}`,
+        open: 10 + index / 10, close: 10.05 + index / 10,
+        high: 10.1 + index / 10, low: 9.9 + index / 10, volume: 1000,
+      })),
+      analysisPreference: { settings: [{ code: 'SHORT', displayName: '短期', primary: true }] },
+      technicalAnalysis: { status: 'READY', horizons: { SHORT: { status: 'READY' } } },
+      sourceStatus: { dataState: 'READY' },
+    }
+    // Match the API prefix only; /src/api/*.js must remain real application modules.
+    await page.route(url => url.pathname.startsWith('/api/'), route => route.fulfill({
+      json: { code: 200, data: new URL(route.request().url()).pathname === '/api/investment/assets/1/detail' ? detail : [] },
+    }))
+    const url = `http://127.0.0.1:${server.httpServer.address().port}/stocks/1`
+    // External fonts must not make a local layout regression depend on the network.
+    await page.route(remote => remote.origin !== new URL(url).origin, route => route.abort())
+    async function measure(width) {
+      await page.setViewportSize({ width, height: 1000 })
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
+      await page.locator('.investment-chart canvas').waitFor()
+      return page.evaluate(() => {
+        const chart = document.querySelector('.investment-chart')
+        const card = chart.closest('[data-slot="card"]')
+        const metric = document.querySelector('.app-page > section .tabular-nums')
+        const rect = element => {
+          const { x, y, width, height, right, bottom } = element.getBoundingClientRect()
+          return { x, y, width, height, right, bottom }
+        }
+        return {
+          chart: rect(chart), card: rect(card), panel: rect(card.nextElementSibling),
+          fontSize: parseFloat(getComputedStyle(metric).fontSize),
+          padding: parseFloat(getComputedStyle(card).paddingTop),
+          overflow: document.querySelector('.app-page').scrollWidth - document.querySelector('.app-page').clientWidth,
+        }
+      })
+    }
+    const desktop = await measure(1440)
+    assert.ok(desktop.card.x >= 0 && desktop.panel.right <= 1441, '桌面图表和侧栏应位于视口内')
+    assert.ok(Math.abs(desktop.card.y - desktop.panel.y) < 1, '桌面图表与研判面板应并排对齐')
+    assert.ok(desktop.panel.x >= desktop.card.right && desktop.card.width > desktop.panel.width * 2, '桌面应保留主图与侧栏的宽度层级')
+    for (const width of [1024, 768, 375]) {
+      const layout = await measure(width)
+      assert.ok(layout.panel.y >= layout.card.bottom, `${width}px 下研判面板应位于图表下方`)
+      assert.ok(Math.abs(layout.panel.x - layout.card.x) < 1 && Math.abs(layout.panel.width - layout.card.width) < 1, '上下布局应等宽对齐')
+      assert.ok(layout.overflow <= 1, `${width}px 下详情内容不应横向溢出`)
+      assert.ok(layout.card.x >= 0 && layout.panel.x >= 0 && layout.card.right <= width + 1 && layout.panel.right <= width + 1, `${width}px 下卡片不能超出视口后被裁切`)
+      assert.ok(layout.chart.height >= 360 && layout.chart.height < desktop.chart.height, '窄容器图表应缩小并保留可读高度')
+      if (width === 375) assert.ok(layout.fontSize >= 14 && layout.fontSize < desktop.fontSize, '手机关键指标应缩小且保持可读')
+    }
+    await page.evaluate(() => localStorage.setItem('sfa-density', 'compact'))
+    const compact = await measure(1440)
+    assert.ok(compact.padding > 0 && compact.padding < desktop.padding, '刷新后卡片内边距应遵循紧凑密度，不能被固定 py 类覆盖')
+    assert.deepEqual(errors, [], '布局与图表渲染不应出现运行时错误')
+  } finally {
+    await browser?.close()
+    await server.close()
+  }
 })
 
 test('复杂模块提供可悬停和键盘访问的问号说明', () => {
