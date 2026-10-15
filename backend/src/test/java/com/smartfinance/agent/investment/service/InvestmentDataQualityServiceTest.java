@@ -17,6 +17,22 @@ import static org.mockito.Mockito.*;
 class InvestmentDataQualityServiceTest {
     @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary;
 
+    @Test void oldDataContractsCannotAuthorizeCurrentAnalysis() {
+        var snapshots=mock(InvestmentDataQualitySnapshotMapper.class);
+        var client=mock(AnalysisServiceClient.class);
+        var runtime=new InvestmentRuntimeProperties();
+        runtime.getDataQuality().setConfigVersion("config-v2");
+        runtime.getDataQuality().setStockAdjustType("NONE");
+        var service=new InvestmentDataQualityService(snapshots,null,client,runtime,new ObjectMapper());
+        var product=new InvestmentProduct(); product.setProductType("STOCK");product.setMarket("SSE");product.setCode("600000");
+        var first=LocalDate.of(2026,6,1);
+        var receipt=saved("old-contract",first,"config-v2","ALLOW",1);
+        receipt.setManifestJson("{}");
+        when(snapshots.selectList(any())).thenReturn(List.of(receipt));
+        assertThat(service.preparedEvaluation(product,first,LocalDate.of(2026,6,30))).isNull();
+        verifyNoInteractions(client);
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"ALLOW,ALLOW", "BLOCK,ALLOW", "ALLOW,BLOCK", "BLOCK,BLOCK"})
     void legacyReceiptsAreRecheckedWithoutNewQuotesAndOldReportsRemainIntact(String oldDecision, String newDecision) throws Exception {
@@ -169,6 +185,7 @@ class InvestmentDataQualityServiceTest {
 
     private static Map<String, Object> upgradeResponse(String dataset, LocalDate start, LocalDate end, String decision) {
         return Map.of("datasetVersion", dataset, "manifest", Map.ofEntries(
+                Map.entry("dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version()),
                 Map.entry("productType", "STOCK"), Map.entry("code", "600000"), Map.entry("market", "SSE"),
                 Map.entry("frequency", "DAY"), Map.entry("adjustType", "NONE"), Map.entry("provider", "TEST"),
                 Map.entry("adapterVersion", "v1"), Map.entry("requestedStartDate", start.toString()),
@@ -277,7 +294,8 @@ class InvestmentDataQualityServiceTest {
         var tail = saved("last", last, "config-v2", "ALLOW", 2); tail.setRequestedEndDate(last);
         fixture.snapshots().insert(base); fixture.snapshots().insert(tail);
         var inputs = java.util.stream.Stream.of(first, last).map(day -> {
-            var row = new com.smartfinance.agent.investment.entity.ProductDailyQuote(); row.setTradeDate(day); return row;
+            var row = new com.smartfinance.agent.investment.entity.ProductDailyQuote(); row.setTradeDate(day);
+            row.setDataContractVersion(com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version());return row;
         }).toList();
 
         assertThat(fixture.service().requiresPreparation(fixture.product(), first, last, inputs)).isFalse();
@@ -392,7 +410,8 @@ class InvestmentDataQualityServiceTest {
         value.setSampleEndDate(value.getRequestedEndDate());
         value.setFetchedAt(java.time.LocalDateTime.of(2026, 7, day, 0, 0)); value.setEvaluatedAt(value.getFetchedAt());
         value.setCreatedAt(value.getFetchedAt()); value.setUpdatedAt(value.getFetchedAt());
-        value.setManifestJson("{}"); value.setReportJson("{}"); value.setSecondaryDatasetVersionsJson("[]");
+        value.setManifestJson("{\"dataContractVersion\":\""+com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version()+"\"}");
+        value.setReportJson("{}"); value.setSecondaryDatasetVersionsJson("[]");
         return value;
     }
 

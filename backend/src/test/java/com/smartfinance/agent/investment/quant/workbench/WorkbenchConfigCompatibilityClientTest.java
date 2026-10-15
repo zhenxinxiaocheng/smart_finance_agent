@@ -1,4 +1,5 @@
 package com.smartfinance.agent.investment.quant.workbench;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.*;

@@ -78,6 +78,7 @@ class DataQualityDecision(StrEnum):
 
 
 class DataSnapshotContext(StrictContract):
+    data_contract_version: NonBlank | None = Field(default=None, alias="dataContractVersion")
     product_type: ProductType = Field(alias="productType")
     market: NonBlank
     code: NonBlank
@@ -166,6 +167,7 @@ class DataQualityConfig(StrictContract):
 
 
 class DataQualityManifest(StrictContract):
+    data_contract_version: NonBlank | None = Field(default=None, alias="dataContractVersion")
     dataset_version: NonBlank = Field(alias="datasetVersion")
     product_type: ProductType = Field(alias="productType")
     market: NonBlank
@@ -190,6 +192,9 @@ class DataQualityManifest(StrictContract):
     @model_serializer(mode="wrap")
     def serialize_manifest(self, handler):
         payload = handler(self)
+        if self.data_contract_version is None:
+            payload.pop("dataContractVersion", None)
+            payload.pop("data_contract_version", None)
         if not self.source_units:
             payload.pop("sourceUnits", None)
             payload.pop("source_units", None)

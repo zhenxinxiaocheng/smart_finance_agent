@@ -1,7 +1,7 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

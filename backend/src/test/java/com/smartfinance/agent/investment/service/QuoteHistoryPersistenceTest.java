@@ -42,6 +42,28 @@ class QuoteHistoryPersistenceTest {
     @TempDir Path temporary;
 
     @Test
+    void replacingAnIncompatibleQuoteClearsOldOptionalValuesAndRecordsTheCurrentContract() throws Exception {
+        var fixture=fixture("sqlite");
+        fixture.jdbc().update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,amount,source,adapter_version) VALUES(1,'2026-09-29','NONE',9,999,'OLD','old')");
+        String contract=com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version();
+        fixture.persist(Map.of("provider","NEW","adapterVersion","2","dataContractVersion",contract,
+                "records",List.of(Map.of("data_date","2026-09-29","open","10","high","11","low","9","close","10","volume","100"))),"NONE");
+        assertThat(fixture.jdbc().queryForMap("SELECT data_contract_version,amount,source FROM product_daily_quote"))
+                .containsEntry("data_contract_version",contract).containsEntry("amount",null).containsEntry("source","NEW");
+    }
+
+    @Test
+    void anOldContractPredecessorCannotSupplyNewContractDerivedPrices() throws Exception {
+        var fixture=fixture("sqlite");
+        fixture.jdbc().update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source,data_contract_version) VALUES(1,'2026-09-28','NONE',10,'OLD','old')");
+        String contract=com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version();
+        fixture.persist(Map.of("provider","NEW","adapterVersion","2","dataContractVersion",contract,
+                "records",List.of(Map.of("data_date","2026-09-29","open","99","high","101","low","98","close","100","volume","100"))),"NONE");
+        assertThat(fixture.jdbc().queryForMap("SELECT previous_close,change_percent FROM product_daily_quote WHERE trade_date='2026-09-29'"))
+                .containsEntry("previous_close",null).containsEntry("change_percent",null);
+    }
+
+    @Test
     void silentlyDroppedRowFailsReadbackAndRollsBackTheWholeBatch() throws Exception {
         var fixture = fixture("sqlite");
         fixture.jdbc().execute("CREATE TRIGGER drop_quote BEFORE INSERT ON product_daily_quote "
@@ -72,7 +94,7 @@ class QuoteHistoryPersistenceTest {
                     var factory = context.getBean(SqlSessionFactory.class);
                     factory.getConfiguration().addMapper(ProductDailyQuoteMapper.class);
                     var mapper = new SqlSessionTemplate(factory).getMapper(ProductDailyQuoteMapper.class);
-                    var writer = new ProductDailyQuoteService(mapper, new InvestmentRuntimeProperties());
+                    var writer = new ProductDailyQuoteService(mapper, new InvestmentRuntimeProperties(),new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(fixture.jdbc()));
                     fixture.transaction().execute(status -> writer.persistDailyQuotes(fixture.product(),
                             Map.of("provider", "SINA", "adapterVersion", "fixture", "records",
                                     List.of(Map.of("data_date", "2026-09-30", "close", "12.34"))), "NONE"));
@@ -91,7 +113,7 @@ class QuoteHistoryPersistenceTest {
     @ValueSource(strings={"h2","sqlite"})
     void signedQfqRebuildClearsInvalidReturnRatiosAndKeepsPositiveRatios(String dialect) throws Exception {
         var fixture=fixture(dialect);
-        var writer=new ProductDailyQuoteService(fixture.mapper(), new InvestmentRuntimeProperties());
+        var writer=new ProductDailyQuoteService(fixture.mapper(), new InvestmentRuntimeProperties(),new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(fixture.jdbc()));
         for(String first:List.of("10","-10")) fixture.transaction().execute(status->writer.persistDailyQuotes(fixture.product(),
                 Map.of("provider","TEST","adapterVersion","fixture","records",List.of(
                         Map.of("data_date","2026-07-01","close",first),Map.of("data_date","2026-07-02","close","12"))),"QFQ"));
@@ -259,7 +281,7 @@ class QuoteHistoryPersistenceTest {
         var sessions = Objects.requireNonNull(factory.getObject());
         sessions.getConfiguration().addMapper(ProductDailyQuoteMapper.class);
         var mapper = new SqlSessionTemplate(sessions).getMapper(ProductDailyQuoteMapper.class);
-        var writer = new ProductDailyQuoteService(mapper, new InvestmentRuntimeProperties());
+        var writer = new ProductDailyQuoteService(mapper, new InvestmentRuntimeProperties(),new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(jdbc));
         return new Fixture(dialect, jdbc, mapper, writer, product, counter,
                 new TransactionTemplate(new DataSourceTransactionManager(source)));
     }

@@ -1,6 +1,6 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
-import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;

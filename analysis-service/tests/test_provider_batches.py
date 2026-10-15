@@ -460,7 +460,7 @@ class ProviderRegistryBatchTest(unittest.TestCase):
             product_type="STOCK", start_date=date(2026, 7, 1), end_date=date(2026, 7, 18),
             adjust_type="QFQ", clock=lambda: FETCHED_AT, maximum_batches=1)
         self.assertEqual("VALID", batches[0].provider)
-        self.assertTrue(any("required" in value for value in warnings))
+        self.assertTrue(any("required" in value.lower() for value in warnings))
 
     def test_tencent_malformed_response_is_error_instead_of_empty(self):
         for payload in ({"code": 1, "msg": "limited", "data": {}},

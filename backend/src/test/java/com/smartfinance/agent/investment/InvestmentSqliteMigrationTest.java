@@ -71,7 +71,7 @@ class InvestmentSqliteMigrationTest {
             try (var statement = connection.createStatement(); var rows = statement.executeQuery(tableQuery)) {
                 var names = new java.util.HashSet<String>();
                 while (rows.next()) names.add(rows.getString(1));
-                assertThat(names).hasSize(59).contains("market_data_requirement")
+                assertThat(names).hasSize(60).contains("market_data_requirement", "market_data_collection_batch")
                         .doesNotContain("product_quote_coverage", "market_data_scope_product",
                                 "investment_analysis_preference", "quant_job", "quant_prediction", "quant_paper_order");
             }
@@ -174,10 +174,9 @@ class InvestmentSqliteMigrationTest {
             Flyway.configure().dataSource(url, null, null).locations("classpath:db/migration/sqlite")
                     .load().migrate();
             try (var connection = DriverManager.getConnection(url); var statement = connection.createStatement()) {
-                try (var rows = statement.executeQuery("SELECT catalog_market,history_coverage_complete FROM investment_product")) {
+                try (var rows = statement.executeQuery("SELECT catalog_market FROM investment_product")) {
                     assertThat(rows.next()).isTrue();
                     assertThat(rows.getString(1)).isEqualTo("US");
-                    assertThat(rows.getBoolean(2)).isFalse();
                 }
                 try (var rows = statement.executeQuery("SELECT COUNT(*) FROM product_daily_quote")) {
                     assertThat(rows.next()).isTrue();

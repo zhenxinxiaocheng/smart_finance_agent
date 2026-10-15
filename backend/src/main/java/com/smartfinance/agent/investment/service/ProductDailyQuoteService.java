@@ -5,6 +5,8 @@ import com.smartfinance.agent.investment.config.InvestmentRuntimeProperties;
 import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+import com.smartfinance.agent.investment.marketdata.contract.MarketDataContract;
+import com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,10 +24,24 @@ import java.util.Map;
 public class ProductDailyQuoteService {
     private final ProductDailyQuoteMapper quoteMapper;
     private final InvestmentRuntimeProperties runtimeProperties;
+    private final MarketDataCollectionRepository collections;
 
-    public ProductDailyQuoteService(ProductDailyQuoteMapper quoteMapper, InvestmentRuntimeProperties runtimeProperties) {
+    public ProductDailyQuoteService(ProductDailyQuoteMapper quoteMapper, InvestmentRuntimeProperties runtimeProperties, MarketDataCollectionRepository collections) {
         this.quoteMapper = quoteMapper;
         this.runtimeProperties = runtimeProperties;
+        this.collections = collections;
+    }
+
+    @Transactional
+    public ProductDailyQuote persistBatch(InvestmentProduct product,Map<String,Object> response,String adjustment,LocalDate start,LocalDate end) {
+        var stored=persistDailyQuotes(product,response,adjustment);
+        collections.record(product.getId(),"PRICE",adjustment,start,end,response);
+        return stored;
+    }
+
+    @Transactional
+    public void recordEmpty(InvestmentProduct product,String adjustment,LocalDate start,LocalDate end,Map<String,Object> response) {
+        collections.record(product.getId(),"PRICE",adjustment,start,end,response);
     }
 
     /**
@@ -43,6 +59,8 @@ public class ProductDailyQuoteService {
         InvestmentHistoryPreparationService.recordDates(response, adjustType);
         String provider = responseMetadata(response, "provider");
         String adapterVersion = responseMetadata(response, "adapterVersion");
+        String contractVersion=optionalMetadata(response,"dataContractVersion");
+        if(contractVersion!=null)MarketDataContract.forProduct("PRICE",product.getProductType()).validate(response,records);
         List<Map<String, Object>> orderedRecords = records.stream()
                 .sorted(Comparator.comparing(record -> String.valueOf(record.get("data_date"))))
                 .toList();
@@ -53,7 +71,8 @@ public class ProductDailyQuoteService {
                 .eq(ProductDailyQuote::getAdjustType, adjustType)
                 .lt(ProductDailyQuote::getTradeDate, firstDate)
                 .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
-        BigDecimal previousClose = previous == null ? null : previous.getClosePrice();
+        BigDecimal previousClose = previous == null || contractVersion!=null&&!contractVersion.equals(previous.getDataContractVersion())
+                ? null : previous.getClosePrice();
         LocalDate lastDate = LocalDate.parse(String.valueOf(orderedRecords.get(orderedRecords.size() - 1)
                 .get("data_date")).substring(0, 10));
         Map<LocalDate, ProductDailyQuote> existing = new HashMap<>();
@@ -66,7 +85,10 @@ public class ProductDailyQuoteService {
         List<ProductDailyQuote> prepared = new ArrayList<>(orderedRecords.size());
         for (Map<String, Object> record : orderedRecords) {
             LocalDate day = LocalDate.parse(String.valueOf(record.get("data_date")).substring(0, 10));
-            latest = prepareQuote(existing.get(day), product, record, provider, adapterVersion, adjustType, previousClose);
+            var old=existing.get(day);
+            if(contractVersion!=null&&old!=null&&!contractVersion.equals(old.getDataContractVersion()))old=null;
+            latest = prepareQuote(old, product, record, provider, adapterVersion, adjustType, previousClose);
+            latest.setDataContractVersion(contractVersion);
             existing.put(day, latest);
             prepared.add(latest);
             previousClose = latest.getClosePrice();
@@ -74,6 +96,7 @@ public class ProductDailyQuoteService {
         if (latest == null) throw new IllegalStateException("未返回行情记录");
         int batchSize = runtimeProperties.getSync().getQuoteBatchSize();
         if (batchSize < 1 || batchSize > 2000) throw new IllegalStateException("行情写入批量配置无效");
+        if(contractVersion!=null)quoteMapper.deleteIncompatible(product.getId(),adjustType,firstDate,lastDate,contractVersion);
         for (int start = 0; start < prepared.size(); start += batchSize) {
             quoteMapper.upsertHistory(prepared.subList(start, Math.min(start + batchSize, prepared.size())));
         }
@@ -91,7 +114,8 @@ public class ProductDailyQuoteService {
                     || !same(expected.getAmount(), actual.getAmount(), 8)
                     || !same(expected.getTurnoverRate(), actual.getTurnoverRate(), 8)
                     || !java.util.Objects.equals(expected.getSource(), actual.getSource())
-                    || !java.util.Objects.equals(expected.getAdapterVersion(), actual.getAdapterVersion()))
+                    || !java.util.Objects.equals(expected.getAdapterVersion(), actual.getAdapterVersion())
+                    || !java.util.Objects.equals(expected.getDataContractVersion(), actual.getDataContractVersion()))
                 throw new IllegalStateException("行情保存核对失败：" + expected.getTradeDate());
         }
         return stored.get(lastDate);
@@ -167,7 +191,8 @@ public class ProductDailyQuoteService {
         if (returnIndex != null && returnIndex.signum() > 0) {
             quote.setTotalReturnIndex(returnIndex);
         }
-        BigDecimal effectivePrevious = previousClose == null ? quote.getPreviousClose() : previousClose;
+        BigDecimal effectivePrevious = decimal(record.get("previous_close"));
+        if(effectivePrevious==null)effectivePrevious = previousClose == null ? quote.getPreviousClose() : previousClose;
         quote.setPreviousClose(effectivePrevious);
         if (effectivePrevious != null && quote.getClosePrice() != null) {
             BigDecimal changeAmount = quote.getClosePrice().subtract(effectivePrevious);
@@ -203,12 +228,18 @@ public class ProductDailyQuoteService {
     }
 
     static String responseMetadata(Map<String, Object> response, String key) {
+        String value=optionalMetadata(response,key);
+        if(value==null)throw new IllegalStateException("行情响应缺少 " + key);
+        return value;
+    }
+
+    private static String optionalMetadata(Map<String,Object> response,String key) {
         Object direct = response.get(key);
         if (direct != null) return String.valueOf(direct);
         Object manifest = response.get("manifest");
         if (manifest instanceof Map<?, ?> map && map.get(key) != null) {
             return String.valueOf(map.get(key));
         }
-        throw new IllegalStateException("行情响应缺少 " + key);
+        return null;
     }
 }

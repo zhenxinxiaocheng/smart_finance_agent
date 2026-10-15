@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository;
 import java.time.*;
 import java.util.*;
 
@@ -13,10 +14,15 @@ public class MarketDataRequirementService {
     private static final Set<String> SOURCES=Set.of("ASSET","INDEX_WATCH","DETAIL","QUANT_TASK","DEPLOYMENT","FULL_LIBRARY");
     private final JdbcTemplate db;
     private final Clock clock;
-    @Autowired public MarketDataRequirementService(JdbcTemplate db) {
-        this(db,Clock.system(ZoneId.of("Asia/Shanghai")));
+    private final MarketDataCollectionRepository collections;
+    @Autowired public MarketDataRequirementService(JdbcTemplate db,MarketDataCollectionRepository collections) {
+        this(db,Clock.system(ZoneId.of("Asia/Shanghai")),collections);
     }
-    public MarketDataRequirementService(JdbcTemplate db,Clock clock) { this.db=db;this.clock=clock; }
+    public MarketDataRequirementService(JdbcTemplate db) { this(db,Clock.system(ZoneId.of("Asia/Shanghai"))); }
+    public MarketDataRequirementService(JdbcTemplate db,Clock clock) { this(db,clock,new MarketDataCollectionRepository(db,clock)); }
+    private MarketDataRequirementService(JdbcTemplate db,Clock clock,MarketDataCollectionRepository collections) {
+        this.db=db;this.clock=clock;this.collections=collections;
+    }
     public record Window(LocalDate start,LocalDate end) { }
     public LocalDateTime now() { return LocalDateTime.now(clock); }
 
@@ -37,13 +43,8 @@ public class MarketDataRequirementService {
         if(updated==0) db.update("INSERT INTO market_data_requirement(user_id,source_type,source_id,product_id,dataset,"
                 +"adjust_type,start_date,target_date,follow_latest,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 user,source,owner,product,dataset,adjustment,start,end,followLatest,expires,time,time);
-        // Reuse one actually collected interval. Do not bridge separate receipts with MIN/MAX.
-        var receipts=db.queryForList("SELECT prepared_start_date,prepared_end_date FROM market_data_requirement "
-                +"WHERE product_id=? AND dataset=? AND adjust_type=? AND prepared_start_date<=? AND prepared_end_date>=? "
-                +"ORDER BY prepared_end_date DESC LIMIT 1",product,dataset,adjustment,start,start);
-        if(!receipts.isEmpty())db.update("UPDATE market_data_requirement SET prepared_start_date=?,prepared_end_date=? "
-                +"WHERE user_id=? AND source_type=? AND source_id=? AND product_id=? AND dataset=? AND adjust_type=? AND prepared_start_date IS NULL",
-                receipts.get(0).get("prepared_start_date"),receipts.get(0).get("prepared_end_date"),user,source,owner,product,dataset,adjustment);
+        refreshPreparedRow(db.queryForMap("SELECT * FROM market_data_requirement WHERE user_id=? AND source_type=? AND source_id=? AND product_id=? AND dataset=? AND adjust_type=? AND frequency='DAILY'",
+                user,source,owner,product,dataset,adjustment));
     }
     public void release(long user,String source,String owner) {
         db.update("UPDATE market_data_requirement SET released_at=?,revision=revision+1,updated_at=? "
@@ -75,7 +76,7 @@ public class MarketDataRequirementService {
     }
     public static String businessDemand(String j) {
         return "EXISTS(SELECT 1 FROM market_data_requirement r WHERE r.product_id="+j+".product_id AND r.dataset=("
-                +jobDataset(j)+") AND r.source_type<>'FULL_LIBRARY' AND (r.prepared_start_date IS NULL OR r.prepared_end_date IS NULL "
+                +jobDataset(j)+") AND r.source_type<>'FULL_LIBRARY' AND (r.prepared_contract_version IS NULL OR r.prepared_start_date IS NULL OR r.prepared_end_date IS NULL "
                 +"OR r.prepared_start_date>r.start_date OR r.prepared_end_date<r.target_date) AND "+activePredicate("r")+")";
     }
     public static String priorityExpression(String j) {
@@ -95,6 +96,7 @@ public class MarketDataRequirementService {
         return new SqlScope(sql+")",args);
     }
     public List<Map<String,Object>> active() {
+        for(var row:db.queryForList("SELECT r.* FROM market_data_requirement r WHERE "+activePredicate("r"),now()))refreshPreparedRow(row);
         return db.queryForList("SELECT r.* FROM market_data_requirement r WHERE "+activePredicate("r")
                 +" ORDER BY CASE r.source_type WHEN 'DETAIL' THEN 0 WHEN 'ASSET' THEN 1 WHEN 'INDEX_WATCH' THEN 1 "
                 +"WHEN 'FULL_LIBRARY' THEN 3 ELSE 2 END,r.product_id,r.start_date",now());
@@ -131,13 +133,15 @@ public class MarketDataRequirementService {
             LocalDate end=follows?target:day(row.get("target_date"));
             if(end.isAfter(target))end=target;
             if(start.isAfter(end))continue;
-            LocalDate doneStart=row.get("prepared_start_date")==null?null:day(row.get("prepared_start_date"));
-            LocalDate doneEnd=row.get("prepared_end_date")==null?null:day(row.get("prepared_end_date"));
-            if(doneStart==null||doneEnd.isBefore(start)||doneStart.isAfter(end))gaps.add(new Window(start,end));
-            else {
-                if(start.isBefore(doneStart))gaps.add(new Window(start,doneStart.minusDays(1)));
-                if(end.isAfter(doneEnd))gaps.add(new Window(doneEnd.plusDays(1),end));
+            LocalDate cursor=start;
+            for(var receipt:collections.windows(product,dataset,row.get("adjust_type").toString(),start,end)) {
+                if(receipt.end().isBefore(cursor))continue;
+                if(receipt.start().isAfter(end))break;
+                if(receipt.start().isAfter(cursor))gaps.add(new Window(cursor,receipt.start().minusDays(1)));
+                if(!receipt.end().isBefore(cursor))cursor=receipt.end().plusDays(1);
+                if(cursor.isAfter(end))break;
             }
+            if(!cursor.isAfter(end))gaps.add(new Window(cursor,end));
         }
         gaps.sort(Comparator.comparing(Window::start));
         List<Window> result=new ArrayList<>();
@@ -160,17 +164,25 @@ public class MarketDataRequirementService {
         db.update("UPDATE investment_product SET id=id WHERE id=?",product);
         for(var row:db.queryForList("SELECT r.* FROM market_data_requirement r WHERE r.product_id=? AND r.dataset=? AND "
                 +activePredicate("r"),product,dataset,now())) {
-            LocalDate requiredStart=day(row.get("start_date"));
-            boolean follows=Boolean.TRUE.equals(row.get("follow_latest"))||"1".equals(String.valueOf(row.get("follow_latest")));
-            LocalDate requiredEnd=follows?now().toLocalDate():day(row.get("target_date"));
-            if(end.isBefore(requiredStart)||start.isAfter(requiredEnd))continue;
-            LocalDate doneStart=row.get("prepared_start_date")==null?null:day(row.get("prepared_start_date"));
-            LocalDate doneEnd=row.get("prepared_end_date")==null?null:day(row.get("prepared_end_date"));
-            if(doneStart!=null&&(start.isAfter(doneEnd.plusDays(1))||end.isBefore(doneStart.minusDays(1))))continue;
-            LocalDate first=doneStart==null||start.isBefore(doneStart)?start:doneStart;
-            LocalDate last=doneEnd==null||end.isAfter(doneEnd)?end:doneEnd;
-            db.update("UPDATE market_data_requirement SET prepared_start_date=?,prepared_end_date=? WHERE id=? AND revision=?",
-                    first,last,row.get("id"),row.get("revision"));
+            refreshPreparedRow(row);
         }
+    }
+
+    public boolean covers(Map<String,Object> row,LocalDate end) {
+        return collections.covers(((Number)row.get("product_id")).longValue(),row.get("dataset").toString(),
+                row.get("adjust_type").toString(),day(row.get("start_date")),end);
+    }
+    public String currentVersion(long product,String dataset) { return collections.currentVersion(product,dataset); }
+    public void recordCollection(long product,String dataset,String adjustment,LocalDate start,LocalDate end,Map<String,Object> response) {
+        collections.record(product,dataset,adjustment,start,end,response);
+    }
+    private void refreshPreparedRow(Map<String,Object> row) {
+        long product=((Number)row.get("product_id")).longValue();String dataset=row.get("dataset").toString();
+        LocalDate start=day(row.get("start_date")),end=day(row.get("target_date"));
+        com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository.Window first=null;
+        for(var item:collections.windows(product,dataset,row.get("adjust_type").toString(),start,end))
+            if(!item.start().isAfter(start)&&!item.end().isBefore(start)){first=item;break;}
+        db.update("UPDATE market_data_requirement SET prepared_start_date=?,prepared_end_date=?,prepared_contract_version=? WHERE id=? AND revision=?",
+                first==null?null:first.start(),first==null?null:first.end(),first==null?null:collections.currentVersion(product,dataset),row.get("id"),row.get("revision"));
     }
 }

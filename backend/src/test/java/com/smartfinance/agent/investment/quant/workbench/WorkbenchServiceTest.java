@@ -1,5 +1,11 @@
 package com.smartfinance.agent.investment.quant.workbench;
 
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.market.WorkbenchTrackingIndex;
+import com.smartfinance.agent.investment.quant.workbench.scheduling.WorkbenchWorker;
+import com.smartfinance.agent.investment.quant.workbench.support.WorkbenchValues;
+
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,7 +33,7 @@ class WorkbenchServiceTest {
                 null, null, null, properties, new ObjectMapper());
     }
     private JdbcTemplate db;
-    private WorkbenchService service;
+    private WorkbenchTestContext service;
     private DriverManagerDataSource source;
     private WorkbenchTrackingIndex tracking;
 
@@ -37,16 +43,16 @@ class WorkbenchServiceTest {
                 + ";DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "sa", "");
         db = new JdbcTemplate(source);
         new ResourceDatabasePopulator(new ClassPathResource("schema-h2.sql")).execute(source);
-        db.update("INSERT INTO investment_product(id,name,code,product_type,market,fund_category,history_coverage_complete) "
-                + "VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN','INDEX_FUND',FALSE)");
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market,fund_category) "
+                + "VALUES(1,'ETF联接基金测试','fixture','MUTUAL_FUND','FUND_CN','INDEX_FUND')");
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(1,1,1,1,0),(2,2,2,1,0)");
         for (int index = 0; index < 60; index++) {
-            db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) "
-                    + "VALUES(?,?,?,?,?,?)", 1L, LocalDate.of(2023, 1, 2).plusDays(index).toString(),
-                    BigDecimal.valueOf(1.25), BigDecimal.valueOf(1.25), "NONE", "TEST");
+            db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source,data_contract_version) "
+                    + "VALUES(?,?,?,?,?,?,?)", 1L, LocalDate.of(2023, 1, 2).plusDays(index).toString(),
+                    BigDecimal.valueOf(1.25), BigDecimal.valueOf(1.25), "NONE", "TEST", fundContract());
         }
         tracking = org.mockito.Mockito.mock(WorkbenchTrackingIndex.class);
-        service = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
+        service = new WorkbenchTestContext(db, new ObjectMapper(), new DataSourceTransactionManager(source),
                 tracking, null, qualityService(), marketData());
     }
 
@@ -57,7 +63,7 @@ class WorkbenchServiceTest {
     }
 
     private Map<String,Object> universe() {
-        return service.save(1L, "universes", null,
+        return service.configuration.save(1L, "universes", null,
                 Map.of("name", "基金池", "assetClass", "FUND", "assetIds", List.of(1)));
     }
     private com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService historyPreparation() {
@@ -67,17 +73,17 @@ class WorkbenchServiceTest {
 
     @Test void marketPoolRejectsUnsupportedMarketsBeforeDataPreparation() {
         db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'foreign','AAPL','STOCK','NASDAQ')");
-        assertThatThrownBy(() -> service.save(1L,"universes",null,
+        assertThatThrownBy(() -> service.configuration.save(1L,"universes",null,
                 Map.of("name","foreign pool","assetClass","STOCK","productIds",List.of(3))))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("国内市场");
-        assertThatThrownBy(() -> service.members(1L,Map.of("productIds",List.of(3))))
+        assertThatThrownBy(() -> service.market.members(1L,Map.of("productIds",List.of(3))))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("国内市场");
     }
 
     @Test void preparationMembersRetainTheProductClassificationForBothPoolKinds() {
         db.update("UPDATE investment_product SET fund_category='INDEX_FUND' WHERE id=1");
-        assertThat(service.members(1L,Map.of("productIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
-        assertThat(service.members(1L,Map.of("assetIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
+        assertThat(service.market.members(1L,Map.of("productIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
+        assertThat(service.market.members(1L,Map.of("assetIds",List.of(1))).get(0)).containsEntry("fund_category","INDEX_FUND");
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -93,9 +99,9 @@ class WorkbenchServiceTest {
                 .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
-        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
+        service.configurePreparation(service.preparation(requirements,demand,client,properties,historyPreparation()));
         var pool=universe();var strategy=strategy((String)pool.get("id"));
-        assertThatThrownBy(() -> service.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),
+        assertThatThrownBy(() -> service.tasks.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),
                 "startDate","2023-01-01","endDate","2023-03-02")))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("完整区间准备");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM quant_v2_task",Integer.class)).isZero();
@@ -115,61 +121,75 @@ class WorkbenchServiceTest {
         org.mockito.Mockito.when(client.dataRequirements(org.mockito.ArgumentMatchers.anyMap()))
                 .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
         org.mockito.Mockito.when(client.execute(org.mockito.ArgumentMatchers.anyMap())).thenReturn(Map.of("status","SUCCEEDED"));
-        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
-        var pool=service.save(1L,"universes",null,Map.of("name","catalog fund","assetClass","FUND","productIds",List.of(1)));
+        service.configurePreparation(service.preparation(requirements,demand,client,properties,historyPreparation()));
+        var pool=service.configuration.save(1L,"universes",null,Map.of("name","catalog fund","assetClass","FUND","productIds",List.of(1)));
         var strategy=strategy(pool.get("id").toString());
-        var task=service.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),"startDate","2023-01-01","endDate","2023-03-02"));
+        var task=service.tasks.createTask(1L,"backtests",Map.of("strategyId",strategy.get("id"),"startDate","2023-01-01","endDate","2023-03-02"));
         assertThat(task).containsEntry("stage","DATA_PREPARING");
         assertThat(requirements.active()).hasSize(1);
-        var worker=new WorkbenchWorker(service,client);
+        var worker=service.worker(client);
         worker.tasks();
-        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","QUEUED");
+        assertThat(service.queries.get(1L,"backtests",task.get("id").toString())).containsEntry("status","QUEUED");
         org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).execute(org.mockito.ArgumentMatchers.anyMap());
-        // The existing market worker classifies the product and issues the calendar receipt.
+        // The market worker classifies the product and persists its actual source response.
         db.update("UPDATE investment_product SET fund_category='INDEX_FUND' WHERE id=1");
+        recordFundCollection(1,LocalDate.of(2022,1,1),LocalDate.of(2023,3,2));
         requirements.recordPrepared(1,"PRICE",LocalDate.of(2022,1,1),LocalDate.of(2023,3,2));
         db.update("UPDATE quant_v2_task SET preparation_next_check_at=0 WHERE id=?",task.get("id"));
         worker.tasks();
-        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","SUCCEEDED");
+        assertThat(service.queries.get(1L,"backtests",task.get("id").toString())).containsEntry("status","SUCCEEDED");
         org.mockito.Mockito.verify(client).execute(org.mockito.ArgumentMatchers.anyMap());
     }
 
     private void assertPublishedDeploymentScope(String status,boolean onlyHeld) {
         LocalDate today=LocalDate.now(),published=today.minusDays(1),start=today.minusDays(10);
         db.update("INSERT INTO investment_product(id,name,code,product_type,market,fund_category) VALUES(3,'未持有基金','unused','MUTUAL_FUND','FUND_CN','INDEX_FUND')");
-        for(long product:List.of(1L,3L))db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source) VALUES(?,?,1.2,1.2,'NONE','TEST')",product,published.toString());
+        for(long product:List.of(1L,3L))db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,total_return_index,adjust_type,source,data_contract_version) VALUES(?,?,1.2,1.2,'NONE','TEST',?)",product,published.toString(),fundContract());
         var selected=List.of(Map.<String,Object>of("id",1,"product_id",1,"code","fixture","name","held","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"),
                 Map.<String,Object>of("id",3,"product_id",3,"code","unused","name","unused","product_type","MUTUAL_FUND","market","FUND_CN","assetClass","FUND"));
         var request=new java.util.LinkedHashMap<String,Object>(Map.of("config",Map.of("strategyType","TREND","assetClass","FUND"),"startDate",start.toString(),"endDate",today.toString(),
-                "dataStartDate",start.toString(),"warmupCalendarDays",10,"preparedMembers",selected,"assets",service.snapshot(selected,start.toString(),published.toString())));
+                "dataStartDate",start.toString(),"warmupCalendarDays",10,"preparedMembers",selected,"assets",service.market.snapshot(selected,start.toString(),published.toString())));
         var state=Map.of("lastDate",published.toString(),"positions",Map.of("1",Map.of("quantity",100),"3",Map.of("quantity",0)),"pendingOrders",List.of());
         db.update("INSERT INTO quant_v2_deployment(id,user_id,name,backtest_id,strategy_id,universe_id,status,revision,request_json,result_json,claim_token,lease_until,next_run_at,created_at,updated_at) VALUES('deployment',1,'test','test','test','test',?,1,?,?, 'claim',?,0,?,?)",
-                status,service.encode(request),service.encode(Map.of("state",state)),System.currentTimeMillis()+60000,WorkbenchService.now(),WorkbenchService.now());
+                status,service.json.encode(request),service.json.encode(Map.of("state",state)),System.currentTimeMillis()+60000,WorkbenchValues.now(),WorkbenchValues.now());
         var requirements=new com.smartfinance.agent.investment.service.MarketDataRequirementService(db);
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         var demand=new com.smartfinance.agent.investment.service.MarketDataDemandService(db,requirements,null,properties);
-        var preparation=new WorkbenchDataPreparation(requirements,demand,null,properties,historyPreparation());
+        var preparation=service.preparation(requirements,demand,null,properties,historyPreparation());
         requirements.save(1,"DEPLOYMENT","deployment",3,"PRICE","REQUIRED",start,today,true,null);
         var deployment=db.queryForMap("SELECT * FROM quant_v2_deployment WHERE id='deployment'");
-        assertThat(preparation.prepareDeployment(service,deployment,"claim")).isFalse();
+        assertThat(preparation.prepareDeployment(deployment,"claim")).isFalse();
         assertThat(requirements.active()).hasSize(onlyHeld?1:2);
+        recordFundCollection(1,start,published);
         requirements.recordPrepared(1,"PRICE",start,published);
-        if(!onlyHeld)requirements.recordPrepared(3,"PRICE",start,published);
+        if(!onlyHeld) {
+            recordFundCollection(3,start,published);
+            requirements.recordPrepared(3,"PRICE",start,published);
+        }
         // This later row lacks a return index and must stay outside the certified snapshot.
         db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) VALUES(1,?,1.3,'NONE','TEST')",today.toString());
         db.update("UPDATE quant_v2_deployment SET claim_token='claim',lease_until=? WHERE id='deployment'",System.currentTimeMillis()+60000);
-        assertThat(preparation.prepareDeployment(service,deployment,"claim")).isTrue();
-        var ready=service.decode(deployment.get("request_json"));
+        assertThat(preparation.prepareDeployment(deployment,"claim")).isTrue();
+        var ready=service.json.decode(deployment.get("request_json"));
         assertThat(ready.get("endDate")).isEqualTo(today.toString());
         assertThat((List<?>)ready.get("assets")).hasSize(2);
-        for(var asset:(List<?>)ready.get("assets"))for(var bar:(List<?>)WorkbenchService.map(asset).get("bars"))
-            assertThat(WorkbenchService.str(WorkbenchService.map(bar).get("date"))).isLessThanOrEqualTo(published.toString());
+        for(var asset:(List<?>)ready.get("assets"))for(var bar:(List<?>)WorkbenchValues.map(asset).get("bars"))
+            assertThat(WorkbenchValues.str(WorkbenchValues.map(bar).get("date"))).isLessThanOrEqualTo(published.toString());
     }
     @Test void publishedFundReceiptAllowsPaperExecutionBeforeTodaysNavExists() {
         assertPublishedDeploymentScope("RUNNING",false);
     }
     @Test void pausedDeploymentReleasesUnusedMembersAndPreservesItsFrozenUniverse() {
         assertPublishedDeploymentScope("PAUSED",true);
+    }
+    private String fundContract() {
+        return com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","MUTUAL_FUND").version();
+    }
+    private void recordFundCollection(long product,LocalDate start,LocalDate end) {
+        var rows=db.queryForList("SELECT trade_date,close_price FROM product_daily_quote WHERE product_id=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",product,start,end);
+        var records=rows.stream().map(row->Map.<String,Object>of("data_date",row.get("trade_date").toString(),"close",row.get("close_price"))).toList();
+        new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(db).record(product,"PRICE","NONE",start,end,
+                Map.of("dataContractVersion",fundContract(),"records",records,"provider","TEST"));
     }
     @Test void multiDigitAssetOwnershipRemainsActiveAndDeletionReleasesIt() {
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(42,1,1,1,0)");
@@ -191,44 +211,44 @@ class WorkbenchServiceTest {
                 .thenAnswer(call->Map.of("config",call.getArgument(0),"warmupTradingDays",60,"datasets",List.of("PRICE")));
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         properties.setCalendarDaysPerYear(365);properties.setTradingDaysPerYear(240);properties.setCalendarBufferDays(30);
-        service.configurePreparation(new WorkbenchDataPreparation(requirements,demand,client,properties,historyPreparation()));
+        service.configurePreparation(service.preparation(requirements,demand,client,properties,historyPreparation()));
         db.update("DELETE FROM product_daily_quote");
         if(sameProductAcrossAccounts)db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,2,1,0)");
         var selected=sameProductAcrossAccounts
-                ? service.save(1L,"universes",null,Map.of("name","multiple accounts","assetClass","FUND","assetIds",List.of(1,3))) : universe();
+                ? service.configuration.save(1L,"universes",null,Map.of("name","multiple accounts","assetClass","FUND","assetIds",List.of(1,3))) : universe();
         String pool=(String)selected.get("id"), strategy=(String)strategy(pool).get("id");
-        var task=service.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
+        var task=service.tasks.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
         assertThat(task).containsEntry("stage","DATA_PREPARING");
         assertThat(requirements.active()).hasSize(1);
-        var request=service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
+        var request=service.json.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
         assertThat((List<?>)request.get("preparedMembers")).hasSize(sameProductAcrossAccounts?2:1);
-        var worker=new WorkbenchWorker(service,client);
+        var worker=service.worker(client);
         worker.tasks();
-        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("stage","DATA_PREPARING").containsEntry("status","QUEUED");
+        assertThat(service.queries.get(1L,"backtests",task.get("id").toString())).containsEntry("stage","DATA_PREPARING").containsEntry("status","QUEUED");
         org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).execute(org.mockito.ArgumentMatchers.anyMap());
         db.update("UPDATE investment_product SET fund_category='QDII_INDEX_FUND' WHERE id=1");
         db.update("UPDATE quant_v2_task SET preparation_next_check_at=0 WHERE id=?",task.get("id"));
         worker.tasks();
-        assertThat(service.get(1L,"backtests",task.get("id").toString())).containsEntry("status","FAILED");
+        assertThat(service.queries.get(1L,"backtests",task.get("id").toString())).containsEntry("status","FAILED");
         assertThat(requirements.active()).isEmpty();
-        db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,request_json,created_at,updated_at) VALUES('ready',1,'factor-runs','ready','QUEUED','QUEUED','{}',?,?)",WorkbenchService.now(),WorkbenchService.now());
+        db.update("INSERT INTO quant_v2_task(id,user_id,kind,name,status,stage,request_json,created_at,updated_at) VALUES('ready',1,'factor-runs','ready','QUEUED','QUEUED','{}',?,?)",WorkbenchValues.now(),WorkbenchValues.now());
         org.mockito.Mockito.when(client.execute(org.mockito.ArgumentMatchers.anyMap())).thenReturn(Map.of("status","SUCCEEDED"));
         worker.tasks();
         assertThat(db.queryForObject("SELECT status FROM quant_v2_task WHERE id='ready'",String.class)).isEqualTo("SUCCEEDED");
-        service.cancel(1L,"backtests",task.get("id").toString());
+        service.tasks.cancel(1L,"backtests",task.get("id").toString());
         assertThat(requirements.active()).isEmpty();
     }
 
     @Test
     void stockResearchNeverFallsBackToRawClose() {
-        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
-                + "VALUES(2,'股票测试','600000','STOCK','SSE',FALSE)");
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) "
+                + "VALUES(2,'股票测试','600000','STOCK','SSE')");
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) "
                 + "VALUES(3,1,1,2,0)");
         db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
                 + "VALUES(2,'2024-01-02',10,'NONE','TEST')");
 
-        assertThatThrownBy(() -> service.snapshot(1L, Map.of("assetIds", List.of(3)), "2024-01-02"))
+        assertThatThrownBy(() -> service.market.snapshot(1L, Map.of("assetIds", List.of(3)), "2024-01-02"))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("研究行情缺少 QFQ");
     }
@@ -249,7 +269,7 @@ class WorkbenchServiceTest {
                   "bars":[{"date":"2024-01-02","open":10.0,"close":11.0,"high":12.0,"low":9.0,"previousClose":10.0,
                            "researchClose":5.5,"volume":100.0,"amount":1100.0,"adjustType":"NONE","source":"TEST"}]}]
                 """);
-        assertThat(new ObjectMapper().readTree(service.encode(service.snapshot(List.of(first,second),null,"2024-01-03"))))
+        assertThat(new ObjectMapper().readTree(service.json.encode(service.market.snapshot(List.of(first,second),null,"2024-01-03"))))
                 .isEqualTo(expected);
     }
 
@@ -259,15 +279,15 @@ class WorkbenchServiceTest {
         db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
                 + "VALUES(3,'2024-01-02',10,'NONE','TEST'),(3,'2024-01-02',5,'QFQ','TEST'),(3,'2024-01-03',11,'NONE','TEST')");
         var member = Map.<String,Object>of("product_id",3L,"code","600003","product_type","STOCK","market","SSE","assetClass","STOCK");
-        assertThatThrownBy(() -> service.snapshot(List.of(member),null,"2024-01-03"))
+        assertThatThrownBy(() -> service.market.snapshot(List.of(member),null,"2024-01-03"))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("600003 2024-01-03");
     }
 
     @Test
     void marketProductUniverseDoesNotRequirePersonalAssetAndKeepsDatedMembership() {
-        db.update("INSERT INTO investment_product(id,name,code,product_type,market,history_coverage_complete) "
-                + "VALUES(3,'未持有股票','600001','STOCK','SSE',FALSE)");
-        var pool = service.save(1L, "universes", null,
+        db.update("INSERT INTO investment_product(id,name,code,product_type,market) "
+                + "VALUES(3,'未持有股票','600001','STOCK','SSE')");
+        var pool = service.configuration.save(1L, "universes", null,
                 Map.of("name", "研究池", "assetClass", "STOCK", "productIds", List.of(3)));
         var market = new com.smartfinance.agent.investment.service.MarketDataService(
                 db, org.mockito.Mockito.mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class),
@@ -288,25 +308,26 @@ class WorkbenchServiceTest {
         org.mockito.Mockito.when(tracking.resolve(org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(index);
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
-        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
+        var task = service.tasks.createTask(1L,"backtests",Map.of("strategyId",strategy,"startDate","2023-01-01","endDate","2023-03-02"));
+        service.worker(service.client).tasks();
+        var request = service.json.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?",String.class,task.get("id")));
         assertThat(request.get("trackingIndex")).isEqualTo(index);
         org.mockito.Mockito.verify(tracking).resolve(org.mockito.ArgumentMatchers.argThat(members -> members.size()==1 && "fixture".equals(members.get(0).get("code"))),
                 org.mockito.ArgumentMatchers.eq(LocalDate.parse("2023-01-01")),org.mockito.ArgumentMatchers.eq(LocalDate.parse("2023-03-02")));
     }
 
     private Map<String,Object> strategy(String pool) {
-        return service.save(1L, "strategies", null,
+        return service.configuration.save(1L, "strategies", null,
                 Map.of("name", "趋势测试", "universeId", pool, "config", Map.of("strategyType", "TREND")));
     }
 
     @Test
     void ownFundAssetsRemainFundsAndForeignUserAccessIsRejected() {
-        assertThat(service.assets(1L)).hasSize(1);
-        assertThat(service.assets(1L).get(0)).containsEntry("assetClass", "FUND");
+        assertThat(service.market.assets(1L)).hasSize(1);
+        assertThat(service.market.assets(1L).get(0)).containsEntry("assetClass", "FUND");
         String id = (String) universe().get("id");
-        assertThatThrownBy(() -> service.get(2L, "universes", id)).isInstanceOf(ResponseStatusException.class);
-        assertThatThrownBy(() -> service.save(1L, "universes", null,
+        assertThatThrownBy(() -> service.queries.get(2L, "universes", id)).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.configuration.save(1L, "universes", null,
                 Map.of("name", "非法池", "assetClass", "FUND", "assetIds", List.of(2))))
                 .isInstanceOf(ResponseStatusException.class);
     }
@@ -315,25 +336,26 @@ class WorkbenchServiceTest {
     void researchContextUsesFrozenSourcesAndDoesNotInflateLists() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests", Map.of("strategyId", strategy,
+        var task = service.tasks.createTask(1L, "backtests", Map.of("strategyId", strategy,
                 "startDate", "2023-01-01", "endDate", "2023-03-02"));
         String taskId = (String) task.get("id");
-        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
+        service.worker(service.client).tasks();
+        var request = service.json.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
         request.put("modelRef", "frozen-model");
         request.put("modelTaskId", "frozen-training");
-        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.encode(request), taskId);
+        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.json.encode(request), taskId);
         var result = Map.of("provenance", Map.of("modelRef", "different-model", "modelTaskId", "different-training"));
-        db.update("UPDATE quant_v2_task SET result_json=? WHERE id=?", service.encode(Map.of("result", result)), taskId);
-        service.save(1L, "strategies", strategy, Map.of("name", "新策略名称", "universeId", pool,
+        db.update("UPDATE quant_v2_task SET result_json=? WHERE id=?", service.json.encode(Map.of("result", result)), taskId);
+        service.configuration.save(1L, "strategies", strategy, Map.of("name", "新策略名称", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
-        service.cancel(1L, "backtests", taskId);
-        service.deleteStrategy(1L, strategy);
-        service.delete(1L, "universes", pool);
-        var detail = service.get(1L, "backtests", taskId);
+        service.tasks.cancel(1L, "backtests", taskId);
+        service.configuration.delete(1L, "strategies", strategy);
+        service.configuration.delete(1L, "universes", pool);
+        var detail = service.queries.get(1L, "backtests", taskId);
         assertThat(detail).containsKey("researchContext");
-        var context = WorkbenchService.map(detail.get("researchContext"));
-        var lineage = WorkbenchService.map(context.get("lineage"));
-        assertThat(WorkbenchService.map(lineage.get("strategy")))
+        var context = WorkbenchValues.map(detail.get("researchContext"));
+        var lineage = WorkbenchValues.map(context.get("lineage"));
+        assertThat(WorkbenchValues.map(lineage.get("strategy")))
                 .containsEntry("name", "趋势测试").containsEntry("version", 1)
                 .containsEntry("currentStatus", "DELETED");
         assertThat(context).containsEntry("modelRef", "frozen-model").containsEntry("modelTaskId", "frozen-training");
@@ -346,152 +368,152 @@ class WorkbenchServiceTest {
         assertThat(data.get(0)).containsEntry("startDate", "2023-01-02")
                 .containsEntry("endDate", "2023-03-02").containsEntry("observations", 60)
                 .containsEntry("sources", List.of("TEST")).doesNotContainKey("bars");
-        assertThat(service.list(1L, "backtests").get(0)).doesNotContainKey("researchContext");
-        assertThatThrownBy(() -> service.get(2L, "backtests", taskId)).isInstanceOf(ResponseStatusException.class);
+        assertThat(service.queries.list(1L, "backtests").get(0)).doesNotContainKey("researchContext");
+        assertThatThrownBy(() -> service.queries.get(2L, "backtests", taskId)).isInstanceOf(ResponseStatusException.class);
     }
 
     @Test
     void eachTaskKeepsItsOwnUniverseAndFactorVersions() {
         String pool = (String) universe().get("id");
-        var factor = service.save(1L, "factors", null, Map.of("name", "因子一", "assetClass", "FUND",
+        var factor = service.configuration.save(1L, "factors", null, Map.of("name", "因子一", "assetClass", "FUND",
                 "factors", List.of(Map.of("key", "momentum", "weight", 1))));
-        var strategy = service.save(1L, "strategies", null, Map.of("name", "多因子", "universeId", pool,
+        var strategy = service.configuration.save(1L, "strategies", null, Map.of("name", "多因子", "universeId", pool,
                 "factorSetId", factor.get("id"), "config", Map.of("strategyType", "MULTI_FACTOR")));
         var body = Map.<String,Object>of("strategyId", strategy.get("id"), "startDate", "2023-01-01", "endDate", "2023-03-02");
-        var first = service.createTask(1L, "backtests", body);
-        service.save(1L, "universes", pool, Map.of("name", "池二", "assetClass", "FUND", "assetIds", List.of(1)));
-        service.save(1L, "factors", (String) factor.get("id"), Map.of("name", "因子二", "assetClass", "FUND",
+        var first = service.tasks.createTask(1L, "backtests", body);
+        service.configuration.save(1L, "universes", pool, Map.of("name", "池二", "assetClass", "FUND", "assetIds", List.of(1)));
+        service.configuration.save(1L, "factors", (String) factor.get("id"), Map.of("name", "因子二", "assetClass", "FUND",
                 "factors", List.of(Map.of("key", "momentum", "weight", 2))));
-        var second = service.createTask(1L, "backtests", body);
+        var second = service.tasks.createTask(1L, "backtests", body);
         assertThat(first.get("strategyVersionId")).isEqualTo(second.get("strategyVersionId"));
-        var a = WorkbenchService.map(WorkbenchService.map(first.get("researchContext")).get("lineage"));
-        var b = WorkbenchService.map(WorkbenchService.map(second.get("researchContext")).get("lineage"));
-        assertThat(WorkbenchService.map(a.get("universe"))).containsEntry("version", 1);
-        assertThat(WorkbenchService.map(b.get("universe"))).containsEntry("version", 2);
-        assertThat(WorkbenchService.map(a.get("factorSet"))).containsEntry("name", "因子一");
-        assertThat(WorkbenchService.map(b.get("factorSet"))).containsEntry("name", "因子二");
+        var a = WorkbenchValues.map(WorkbenchValues.map(first.get("researchContext")).get("lineage"));
+        var b = WorkbenchValues.map(WorkbenchValues.map(second.get("researchContext")).get("lineage"));
+        assertThat(WorkbenchValues.map(a.get("universe"))).containsEntry("version", 1);
+        assertThat(WorkbenchValues.map(b.get("universe"))).containsEntry("version", 2);
+        assertThat(WorkbenchValues.map(a.get("factorSet"))).containsEntry("name", "因子一");
+        assertThat(WorkbenchValues.map(b.get("factorSet"))).containsEntry("name", "因子二");
     }
 
     @Test
     void invalidOrForeignVersionReferencesNeverExposeSnapshots() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests", Map.of("strategyId", strategy,
+        var task = service.tasks.createTask(1L, "backtests", Map.of("strategyId", strategy,
                 "startDate", "2023-01-01", "endDate", "2023-03-02"));
         String taskId = (String) task.get("id");
-        var request = service.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
+        var request = service.json.decode(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId));
         request.put("universeVersionId", task.get("strategyVersionId"));
         request.put("factorVersionId", "foreign-version");
         db.update("INSERT INTO quant_v2_version VALUES(?,?,?,?,?,?)", "foreign-version", 2L, "foreign-factor", 1,
                 "{\"name\":\"SECRET\"}", "2023-01-01");
-        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.encode(request), taskId);
-        var context = WorkbenchService.map(service.get(1L, "backtests", taskId).get("researchContext"));
+        db.update("UPDATE quant_v2_task SET request_json=? WHERE id=?", service.json.encode(request), taskId);
+        var context = WorkbenchValues.map(service.queries.get(1L, "backtests", taskId).get("researchContext"));
         assertThat(context).containsKey("warnings");
-        var lineage = WorkbenchService.map(context.get("lineage"));
-        assertThat(WorkbenchService.map(lineage.get("universe"))).doesNotContainKey("snapshot");
-        assertThat(WorkbenchService.map(lineage.get("factorSet"))).doesNotContainKey("snapshot");
-        assertThat(service.encode(context)).doesNotContain("SECRET");
+        var lineage = WorkbenchValues.map(context.get("lineage"));
+        assertThat(WorkbenchValues.map(lineage.get("universe"))).doesNotContainKey("snapshot");
+        assertThat(WorkbenchValues.map(lineage.get("factorSet"))).doesNotContainKey("snapshot");
+        assertThat(service.json.encode(context)).doesNotContain("SECRET");
     }
 
     @Test
     void frozenRequestSurvivesEditsAndServiceRecreation() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests",
+        var task = service.tasks.createTask(1L, "backtests",
                 Map.of("strategyId", strategy, "startDate", "2023-01-01", "endDate", "2023-03-02"));
         String snapshot = db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id"));
-        service.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
+        service.configuration.save(1L, "strategies", strategy, Map.of("name", "修改后的策略", "universeId", pool,
                 "config", Map.of("strategyType", "TREND", "lookback", 40)));
-        var restarted = new WorkbenchService(db, new ObjectMapper(), new DataSourceTransactionManager(source),
+        var restarted = new WorkbenchTestContext(db, new ObjectMapper(), new DataSourceTransactionManager(source),
                 org.mockito.Mockito.mock(WorkbenchTrackingIndex.class), null, qualityService(), marketData());
-        assertThat(restarted.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
+        assertThat(restarted.queries.get(1L, "strategies", strategy)).containsEntry("name", "修改后的策略");
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, task.get("id")))
                 .isEqualTo(snapshot);
-        assertThat(restarted.versions(1L, "strategies", strategy)).hasSize(1);
+        assertThat(restarted.queries.versions(1L, "strategies", strategy)).hasSize(1);
     }
 
     @Test
     void deletionEnforcesOwnershipReferencesAndPreservesSnapshots() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        assertThatThrownBy(() -> service.delete(2L, "universes", pool)).isInstanceOf(ResponseStatusException.class);
-        assertThatThrownBy(() -> service.delete(1L, "universes", pool)).hasMessageContaining("仍在使用");
-        var task = service.createTask(1L, "backtests", Map.of("strategyId", strategy,
+        assertThatThrownBy(() -> service.configuration.delete(2L, "universes", pool)).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.configuration.delete(1L, "universes", pool)).hasMessageContaining("仍在使用");
+        var task = service.tasks.createTask(1L, "backtests", Map.of("strategyId", strategy,
                 "startDate", "2023-01-01", "endDate", "2023-03-02"));
         String taskId = (String) task.get("id");
-        assertThatThrownBy(() -> service.delete(1L, "backtests", taskId)).hasMessageContaining("请先取消任务");
-        service.cancel(1L, "backtests", taskId);
+        assertThatThrownBy(() -> service.tasks.delete(1L, "backtests", taskId)).hasMessageContaining("请先取消任务");
+        service.tasks.cancel(1L, "backtests", taskId);
         String snapshot = db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId);
-        service.delete(1L, "backtests", taskId);
-        assertThat(service.list(1L, "backtests")).isEmpty();
-        assertThatThrownBy(() -> service.get(1L, "backtests", taskId)).isInstanceOf(ResponseStatusException.class);
+        service.tasks.delete(1L, "backtests", taskId);
+        assertThat(service.queries.list(1L, "backtests")).isEmpty();
+        assertThatThrownBy(() -> service.queries.get(1L, "backtests", taskId)).isInstanceOf(ResponseStatusException.class);
         assertThat(db.queryForObject("SELECT request_json FROM quant_v2_task WHERE id=?", String.class, taskId)).isEqualTo(snapshot);
-        service.deleteStrategy(1L, strategy);
-        service.delete(1L, "universes", pool);
-        assertThat(service.list(1L, "universes")).isEmpty();
-        assertThat(service.assets(1L)).hasSize(1);
-        String factor = (String) service.save(1L, "factors", null, Map.of("name", "测试因子", "assetClass", "FUND",
+        service.configuration.delete(1L, "strategies", strategy);
+        service.configuration.delete(1L, "universes", pool);
+        assertThat(service.queries.list(1L, "universes")).isEmpty();
+        assertThat(service.market.assets(1L)).hasSize(1);
+        String factor = (String) service.configuration.save(1L, "factors", null, Map.of("name", "测试因子", "assetClass", "FUND",
                 "factors", List.of(Map.of("key", "momentum", "weight", 1)))).get("id");
-        service.delete(1L, "factors", factor);
-        assertThat(service.list(1L, "factors")).isEmpty();
+        service.configuration.delete(1L, "factors", factor);
+        assertThat(service.queries.list(1L, "factors")).isEmpty();
     }
 
     @Test
     void runningTaskPreventsArchivingAndCancelledTaskCannotDeploy() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests",
+        var task = service.tasks.createTask(1L, "backtests",
                 Map.of("strategyId", strategy, "startDate", "2023-01-01", "endDate", "2023-03-02"));
-        assertThatThrownBy(() -> service.archive(1L, "strategies", strategy)).isInstanceOf(ResponseStatusException.class);
-        assertThatThrownBy(() -> service.archive(1L, "universes", pool)).isInstanceOf(ResponseStatusException.class);
-        service.cancel(1L, "backtests", (String) task.get("id"));
-        assertThatThrownBy(() -> service.deploy(1L, Map.of("name", "禁止部署", "backtestId", task.get("id"))))
+        assertThatThrownBy(() -> service.configuration.archive(1L, "strategies", strategy)).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.configuration.archive(1L, "universes", pool)).isInstanceOf(ResponseStatusException.class);
+        service.tasks.cancel(1L, "backtests", (String) task.get("id"));
+        assertThatThrownBy(() -> service.deployments.deploy(1L, Map.of("name", "禁止部署", "backtestId", task.get("id"))))
                 .isInstanceOf(ResponseStatusException.class);
-        assertThat(service.archive(1L, "strategies", strategy)).containsEntry("status", "ARCHIVED");
-        assertThat(service.get(1L, "backtests", (String) task.get("id"))).containsEntry("status", "CANCELLED");
+        assertThat(service.configuration.archive(1L, "strategies", strategy)).containsEntry("status", "ARCHIVED");
+        assertThat(service.queries.get(1L, "backtests", (String) task.get("id"))).containsEntry("status", "CANCELLED");
     }
 
     @Test
     void completedButUnqualifiedBacktestCannotDeploy() {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests",
+        var task = service.tasks.createTask(1L, "backtests",
                 Map.of("strategyId", strategy, "startDate", "2023-01-01", "endDate", "2023-03-02"));
         db.update("UPDATE quant_v2_task SET status='SUCCEEDED',result_json=? WHERE id=?",
                 "{\"status\":\"SUCCEEDED\",\"qualification\":{\"status\":\"UNQUALIFIED\"}}", task.get("id"));
-        assertThatThrownBy(() -> service.deploy(1L, Map.of("name", "禁止部署", "backtestId", task.get("id"))))
+        assertThatThrownBy(() -> service.deployments.deploy(1L, Map.of("name", "禁止部署", "backtestId", task.get("id"))))
                 .isInstanceOf(ResponseStatusException.class);
-        assertThat(service.list(1L, "deployments")).isEmpty();
+        assertThat(service.queries.list(1L, "deployments")).isEmpty();
     }
 
     @Test
     void deploymentUsesEvaluatedDefaultsAndResumeRecordsTimeBoundary() throws Exception {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
-        var task = service.createTask(1L, "backtests",
+        var task = service.tasks.createTask(1L, "backtests",
                 Map.of("strategyId", strategy, "startDate", "2023-01-01", "endDate", "2023-03-02"));
         var evaluated = Map.of("qualification", Map.of("status", "QUALIFIED"), "result",
                 Map.of("provenance", Map.of("config", Map.of("strategyType", "TREND", "assetClass", "FUND",
                         "initialCash", 250000, "lookback", 17))));
         db.update("UPDATE quant_v2_task SET status='SUCCEEDED',result_json=? WHERE id=?",
                 new ObjectMapper().writeValueAsString(evaluated), task.get("id"));
-        var deployment = service.deploy(1L, Map.of("name", "模拟测试", "backtestId", task.get("id")));
+        var deployment = service.deployments.deploy(1L, Map.of("name", "模拟测试", "backtestId", task.get("id")));
         String deploymentId = (String) deployment.get("id");
-        service.lifecycle(1L, deploymentId, "pause", Map.of());
-        service.lifecycle(1L, deploymentId, "resume", Map.of());
+        service.deployments.lifecycle(1L, deploymentId, "pause", Map.of());
+        service.deployments.lifecycle(1L, deploymentId, "resume", Map.of());
         String request = db.queryForObject("SELECT request_json FROM quant_v2_deployment WHERE id=?",
                 String.class, deploymentId);
         var json = new ObjectMapper().readTree(request);
         assertThat(json.path("config").path("lookback").asInt()).isEqualTo(17);
         assertThat(json.path("config").path("initialCash").asInt()).isEqualTo(250000);
         assertThat(json.path("signalStartDate").asText()).isEqualTo(LocalDate.now().toString());
-        assertThat(service.get(1L, "deployments", deploymentId)).containsEntry("status", "RUNNING");
-        assertThatThrownBy(() -> service.delete(1L, "deployments", deploymentId)).hasMessageContaining("请先停止模拟组合");
-        service.lifecycle(1L, deploymentId, "stop", Map.of("mode", "KEEP"));
+        assertThat(service.queries.get(1L, "deployments", deploymentId)).containsEntry("status", "RUNNING");
+        assertThatThrownBy(() -> service.deployments.delete(1L, deploymentId)).hasMessageContaining("请先停止模拟组合");
+        service.deployments.lifecycle(1L, deploymentId, "stop", Map.of("mode", "KEEP"));
         int eventCount = db.queryForObject("SELECT COUNT(*) FROM quant_v2_paper_event WHERE deployment_id=?", Integer.class, deploymentId);
-        service.delete(1L, "deployments", deploymentId);
-        assertThat(service.list(1L, "deployments")).isEmpty();
-        assertThatThrownBy(() -> service.lifecycle(1L, deploymentId, "resume", Map.of())).isInstanceOf(ResponseStatusException.class);
+        service.deployments.delete(1L, deploymentId);
+        assertThat(service.queries.list(1L, "deployments")).isEmpty();
+        assertThatThrownBy(() -> service.deployments.lifecycle(1L, deploymentId, "resume", Map.of())).isInstanceOf(ResponseStatusException.class);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM quant_v2_paper_event WHERE deployment_id=?", Integer.class, deploymentId)).isEqualTo(eventCount);
     }
 
@@ -504,7 +526,7 @@ class WorkbenchServiceTest {
         }
         String pool = (String) universe().get("id");
 
-        var window = service.evaluationWindow(1L, pool, null, null);
+        var window = service.queries.evaluationWindow(1L, pool, null, null);
 
         assertThat(window).containsEntry("minimumEvaluationDays", 60);
         assertThat(window).containsEntry("availableEvaluationDays", 190);
@@ -529,10 +551,16 @@ class WorkbenchServiceTest {
         String pool = (String) universe().get("id");
         String strategy = (String) strategy(pool).get("id");
 
-        assertThatThrownBy(() -> service.createTask(1L, "backtests", Map.of(
-                "strategyId", strategy, "startDate", "2025-01-02", "endDate", "2025-03-01")))
-                .isInstanceOf(ResponseStatusException.class)
-                .hasMessageContaining("有效评估日期不足");
+        var task = service.tasks.createTask(1L, "backtests", Map.of(
+                "strategyId", strategy, "startDate", "2025-01-02", "endDate", "2025-03-01"));
+        assertThat(task).containsEntry("stage", "DATA_PREPARING");
+        service.worker(service.client).tasks();
+        assertThat(service.queries.get(1L, "backtests", task.get("id").toString()))
+                .containsEntry("status", "FAILED")
+                .hasEntrySatisfying("errorMessage", message ->
+                        assertThat(message.toString()).contains("所选区间不足最低评估天数"));
+        org.mockito.Mockito.verify(service.client, org.mockito.Mockito.never())
+                .execute(org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
@@ -541,8 +569,8 @@ class WorkbenchServiceTest {
         LocalDate first=LocalDate.of(2026,1,5),last=first.plusDays(59);
         for(int index=0;index<60;index++)db.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) VALUES(3,?,10,'NONE','TEST')",
                 first.plusDays(index).toString());
-        var pool=service.save(1L,"universes",null,Map.of("name","ETF pool","assetClass","ETF","productIds",List.of(3)));
-        assertThat(service.evaluationWindow(1L,pool.get("id").toString(),first.toString(),last.toString()))
+        var pool=service.configuration.save(1L,"universes",null,Map.of("name","ETF pool","assetClass","ETF","productIds",List.of(3)));
+        assertThat(service.queries.evaluationWindow(1L,pool.get("id").toString(),first.toString(),last.toString()))
                 .containsEntry("availableEvaluationDays",60).containsEntry("selectedEvaluationDays",60).containsEntry("selectedRangeReady",true);
     }
 
@@ -550,7 +578,7 @@ class WorkbenchServiceTest {
     void assetSummariesKeepOwnershipAndMissingHistory() {
         db.update("INSERT INTO investment_product(id,name,code,product_type,market) VALUES(3,'empty','600003','STOCK','SSE'),(4,'foreign','PRIVATE','STOCK','SSE')");
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,1,3,0),(4,2,2,4,0),(5,1,1,4,1)");
-        var assets=service.assets(1L);
+        var assets=service.market.assets(1L);
         assertThat(assets).hasSize(2);
         var empty=assets.stream().filter(row->((Number)row.get("productId")).longValue()==3).findFirst().orElseThrow();
         assertThat(empty).containsEntry("historyStartDate",null).containsEntry("historyEndDate",null);
@@ -563,7 +591,7 @@ class WorkbenchServiceTest {
     @Test
     void snapshotPreservesBothAccountMembersForOneProduct() {
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(3,1,2,1,0)");
-        var selected=service.snapshot(1L,Map.of("assetIds",List.of(3,1)),"2023-03-02");
+        var selected=service.market.snapshot(1L,Map.of("assetIds",List.of(3,1)),"2023-03-02");
         assertThat(selected).extracting(row->row.get("id")).containsExactlyInAnyOrder("1","3");
         assertThat(selected.get(0).get("bars")).isEqualTo(selected.get(1).get("bars"));
         assertThat((List<?>)selected.get(0).get("bars")).hasSize(60);

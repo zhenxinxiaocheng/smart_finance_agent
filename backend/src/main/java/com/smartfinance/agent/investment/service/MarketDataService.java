@@ -146,7 +146,7 @@ public class MarketDataService {
     public Map<String, Object> coverage(long productId, String adjustType) {
         String adjust = adjustment(adjustType);
         List<Map<String, Object>> products = db.queryForList(
-                "SELECT id,market,product_type,fund_category,delisting_date,history_coverage_complete FROM investment_product WHERE id=?", productId);
+                "SELECT id,market,product_type,fund_category,delisting_date FROM investment_product WHERE id=?", productId);
         if (products.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "产品不存在");
         Map<String, Object> product = products.get(0);
         Map<String, Object> stats = db.queryForMap(
@@ -190,13 +190,12 @@ public class MarketDataService {
         result.put("adapterVersion", latest.isEmpty() ? null : latest.get(0).get("adapter_version"));
         result.put("missingTradingDays", missing);
         result.put("coverageRatio", ratio);
-        Object completeFlag = product.get("history_coverage_complete");
-        boolean fullHistoryVerified = Boolean.TRUE.equals(completeFlag)
-                || completeFlag instanceof Number number && number.intValue() == 1;
+        var collections=new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(db);
+        result.put("dataContractVersion",collections.currentVersion(productId,"PRICE"));
+        result.put("prepared",start!=null&&end!=null&&collections.covers(productId,"PRICE",adjust,start,end));
         result.put("coverageScope", "OBSERVED_RANGE");
-        result.put("historyCoverageComplete", fullHistoryVerified);
         String derivedStatus = start == null ? "NO_DATA" : ratio == null ? "CALENDAR_UNAVAILABLE" :
-                missing == 0 ? fullHistoryVerified ? "COMPLETE" : "SAMPLE_COMPLETE" : "GAPS";
+                missing == 0 ? "SAMPLE_COMPLETE" : "GAPS";
         result.put("coverageStatus", derivedStatus);
         List<String> quality = db.queryForList("SELECT quality_status FROM investment_data_quality_snapshot "
                         + "WHERE product_type=? AND market=? AND code=(SELECT code FROM investment_product WHERE id=?) "

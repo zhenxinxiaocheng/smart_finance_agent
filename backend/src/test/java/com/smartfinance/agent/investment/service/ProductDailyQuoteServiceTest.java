@@ -22,7 +22,7 @@ class ProductDailyQuoteServiceTest {
         var saved = new java.util.ArrayList<ProductDailyQuote>();
         doAnswer(call -> {saved.addAll(call.getArgument(0)); return saved.size();}).when(quoteMapper).upsertHistory(any());
         when(quoteMapper.selectSeries(anyList(), any(), any(), anySet())).thenAnswer(call -> List.copyOf(saved));
-        return new ProductDailyQuoteService(quoteMapper, new InvestmentRuntimeProperties());
+        return new ProductDailyQuoteService(quoteMapper, new InvestmentRuntimeProperties(),mock(com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository.class));
     }
 
 

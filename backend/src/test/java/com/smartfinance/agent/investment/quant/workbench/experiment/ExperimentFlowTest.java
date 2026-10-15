@@ -1,5 +1,11 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.market.WorkbenchTrackingIndex;
+import com.smartfinance.agent.investment.quant.workbench.scheduling.WorkbenchWorker;
+import com.smartfinance.agent.investment.quant.workbench.support.WorkbenchValues;
+
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.investment.quant.workbench.*;
 import org.junit.jupiter.api.*;
@@ -17,7 +23,7 @@ import static com.smartfinance.agent.investment.quant.workbench.experiment.Exper
 class ExperimentFlowTest {
     JdbcTemplate db;ExperimentRepository repository;ResearchSnapshotStore snapshots;ExperimentService experiments;
     ExperimentAttemptService attempts;ExperimentExecutionResolver resolver;ExperimentResultValidator validator;
-    ExperimentSummaryService summaries;WorkbenchAnalysisClient client;WorkbenchService ordinary;WorkbenchWorker worker;
+    ExperimentSummaryService summaries;WorkbenchAnalysisClient client;WorkbenchTestContext ordinary;WorkbenchWorker worker;
     Map<String,Object> environment=Map.of("engineVersion","current","codeHash","current-code","parameterCatalogVersion","catalog","candidateRuleVersion","rule");
     String source;Map<String,Object> original;List<Map<String,Object>> calls;
     @BeforeEach void setup() {
@@ -33,14 +39,14 @@ class ExperimentFlowTest {
         resolver=new ExperimentExecutionResolver(repository,snapshots,db);validator=new ExperimentResultValidator();summaries=new ExperimentSummaryService(db,repository,validator,manager);
         var quoteProperties=new com.smartfinance.agent.investment.config.InvestmentRuntimeProperties();
         quoteProperties.getDataQuality().setStockAdjustType("QFQ");
-        ordinary=new WorkbenchService(db,json,manager,
-                org.mockito.Mockito.mock(com.smartfinance.agent.investment.quant.workbench.WorkbenchTrackingIndex.class),
+        ordinary=new WorkbenchTestContext(db,json,manager,
+                org.mockito.Mockito.mock(com.smartfinance.agent.investment.quant.workbench.market.WorkbenchTrackingIndex.class),
                 null,new com.smartfinance.agent.investment.service.InvestmentDataQualityService(
                         null,null,null,quoteProperties,new com.fasterxml.jackson.databind.ObjectMapper()),
                 new com.smartfinance.agent.investment.service.MarketDataService(db,
                         mock(com.smartfinance.agent.investment.service.AnalysisServiceClient.class),
                         com.smartfinance.agent.investment.service.QuoteMapperTestSupport.create(ds)));
-        worker=new WorkbenchWorker(ordinary,client);worker.configureExperiments(resolver,validator,summaries);
+        worker=ordinary.worker(client,resolver,validator,summaries);
         for(String[] object:List.of(new String[]{"strategy","strategies"},new String[]{"universe","universes"})) {
             db.update("INSERT INTO quant_v2_object VALUES(?,7,?,?,'ACTIVE',1,'{}','now','now')",object[0],object[1],object[0]);
             db.update("INSERT INTO quant_v2_version VALUES(?,7,?,1,'{}','now')",object[0]+"-v1",object[0]);
@@ -103,8 +109,8 @@ class ExperimentFlowTest {
     }
     @ParameterizedTest @ValueSource(strings={"retry","delete","cancel","deploy"}) void relationshipGuardsWorkWithoutParsingRequest(String action) {
         var e=create();var id=task(repository.runs(7L,e.id()).get(0));db.update("UPDATE quant_v2_task SET request_json='{}' WHERE id=?",id);
-        assertThatThrownBy(()->{switch(action){case "retry"->ordinary.retry(7L,"backtests",id);case "delete"->ordinary.delete(7L,"backtests",id);case "cancel"->ordinary.cancel(7L,"backtests",id);default->ordinary.deploy(7L,Map.of("backtestId",id));}}).isInstanceOf(RuntimeException.class);
-        assertThat(ordinary.list(7L,"backtests")).hasSize(1);
+        assertThatThrownBy(()->{switch(action){case "retry"->ordinary.tasks.retry(7L,"backtests",id);case "delete"->ordinary.tasks.delete(7L, "backtests",id);case "cancel"->ordinary.tasks.cancel(7L,"backtests",id);default->ordinary.deployments.deploy(7L,Map.of("backtestId",id));}}).isInstanceOf(RuntimeException.class);
+        assertThat(ordinary.queries.list(7L,"backtests")).hasSize(1);
     }
     @Test void corruptedSnapshotFailsAttemptAndInvalidatesEvidence() {
         var e=create();db.update("UPDATE quant_v2_research_snapshot SET payload_blob=? WHERE id=?",new byte[]{1},e.snapshotId());finish();

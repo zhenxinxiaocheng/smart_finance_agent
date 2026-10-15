@@ -57,6 +57,10 @@ class InvestmentHorizonRefreshIntegrationTest {
             assertThat(jobs.markSucceeded(job.getId(), "seed", 500, now)).isTrue();
         }
         var row = receipt();
+        var batches=new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(db);
+        for(String adjustment:List.of("NONE","QFQ"))batches.record(21,"PRICE",adjustment,
+                MarketDataRequirementService.day(row.get("start_date")),MarketDataRequirementService.day(row.get("target_date")),
+                Map.of("dataContractVersion",batches.currentVersion(21,"PRICE"),"records",List.of(),"result","EMPTY"));
         requirements.recordPrepared(21L, "PRICE", MarketDataRequirementService.day(row.get("start_date")),
                 MarketDataRequirementService.day(row.get("target_date")));
         assertThat(demand.preparedForAnalysis(7L, 11L, 21L)).isTrue();
@@ -119,6 +123,7 @@ class InvestmentHorizonRefreshIntegrationTest {
     @EnableAutoConfiguration
     @MapperScan("com.smartfinance.agent.investment.mapper")
     @Import({MyBatisPlusConfig.class, InvestmentHorizonProperties.class, InvestmentHorizonServiceImpl.class,
-            InvestmentDataJobService.class, MarketDataDemandService.class, MarketDataRequirementService.class})
+            InvestmentDataJobService.class, MarketDataDemandService.class, MarketDataRequirementService.class,
+            com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository.class})
     static class Configuration { }
 }

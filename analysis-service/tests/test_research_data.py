@@ -17,6 +17,9 @@ def test_financial_reports_keep_all_periods_and_unknown_publication_time():
     result = research.collect("600000", "SSE", "STOCK", "FINANCIALS", date(2020, 1, 1),
                               date(2026, 10, 4), ak_module=provider, clock=CLOCK)
     assert result["complete"]
+    from app.data_contracts import contract_version
+    assert result["dataContractVersion"] == contract_version("FINANCIALS", "STOCK")
+    assert all(len(r["sourceContentHash"]) == 64 for r in result["records"])
     assert len(result["records"]) == 6
     assert {r["asOfDate"] for r in result["records"]} == {"2023-12-31", "2024-12-31"}
     assert all(r["availabilityBasis"] == "FIRST_OBSERVED" for r in result["records"])

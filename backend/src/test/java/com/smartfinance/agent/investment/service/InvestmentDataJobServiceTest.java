@@ -318,17 +318,6 @@ class InvestmentDataJobServiceTest {
     }
 
     @Test
-    void missingCoverageMetadataDoesNotForceReloadOfRealLocalHistory() {
-        InvestmentProduct product = product(21L, "STOCK", false);
-        when(productMapper.selectById(21L)).thenReturn(product);
-        when(quoteMapper.selectCount(any())).thenReturn(526L);
-
-        InvestmentDataJob queued = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
-
-        assertThat(queued.getForceRefresh()).isFalse();
-    }
-
-    @Test
     void firstDemandJobDoesNotTurnMissingLocalHistoryIntoAnExplicitFullRepair() {
         service.configureDemand(mock(MarketDataDemandService.class));
         when(quoteMapper.selectCount(any())).thenReturn(0L);
@@ -358,25 +347,6 @@ class InvestmentDataJobServiceTest {
         verify(mapper, never()).requeueTerminalIncremental(any());
     }
 
-    @Test
-    void incompleteCoverageDoesNotResetCompletedJobWithoutManualForce() {
-        InvestmentProduct product = new InvestmentProduct();
-        product.setId(21L);
-        product.setProductType("STOCK");
-        product.setHistoryCoverageComplete(false);
-        when(productMapper.selectById(21L)).thenReturn(product);
-        InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
-        existing.setId(91L);
-        existing.setRecordCount(526);
-        when(mapper.selectOne(any())).thenReturn(existing);
-
-        InvestmentDataJob job = service.ensureQueued(7L, 11L, 21L, "STOCK", false);
-
-        assertThat(job.getStatus()).isEqualTo("SUCCEEDED");
-        assertThat(job.getForceRefresh()).isFalse();
-        assertThat(job.getAttemptCount()).isZero();
-        verify(mapper, never()).requeueForRefresh(any());
-    }
 
     private static InvestmentDataJob job(String status, String jobType) {
         InvestmentDataJob job = new InvestmentDataJob();
@@ -391,11 +361,4 @@ class InvestmentDataJobServiceTest {
         return job;
     }
 
-    private static InvestmentProduct product(Long id, String productType, boolean coverageComplete) {
-        InvestmentProduct product = new InvestmentProduct();
-        product.setId(id);
-        product.setProductType(productType);
-        product.setHistoryCoverageComplete(coverageComplete);
-        return product;
-    }
 }

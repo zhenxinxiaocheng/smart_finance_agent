@@ -8,24 +8,24 @@
         @mouseleave="handleHeroLeave"
       >
         <div class="auth-brand auth-rise" style="--d: 0ms">
-          <div class="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+          <div class="auth-brand-icon flex items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <MessageCircle />
           </div>
           <div>
-            <p class="text-sm font-medium text-muted-foreground">智能财务</p>
-            <h1 class="text-xl font-semibold tracking-normal">智财 Agent</h1>
+            <p class="auth-brand-caption font-medium text-muted-foreground">智能财务</p>
+            <h1 class="auth-brand-title font-semibold tracking-normal">智财 Agent</h1>
           </div>
         </div>
 
         <div class="auth-hero-body">
           <div class="auth-rise" style="--d: 90ms">
-            <p class="mb-3 text-sm font-medium text-muted-foreground">个人财务 · 量化研究 · Agent 编排</p>
-            <h2 class="text-balance text-4xl font-semibold leading-tight tracking-normal">
+            <p class="auth-eyebrow mb-3 font-medium text-muted-foreground">个人财务 · 量化研究 · Agent 编排</p>
+            <h2 class="auth-headline text-balance font-semibold leading-tight tracking-normal">
               把记账、分析和投资研究，交给一个会动手的 Agent。
             </h2>
           </div>
 
-          <div class="auth-feature-list text-sm">
+          <div class="auth-feature-list">
             <div
               v-for="(feature, index) in features"
               :key="feature.title"
@@ -59,15 +59,15 @@
           </CardHeader>
 
           <CardContent>
-            <form class="flex flex-col gap-4" :class="{ 'auth-shake': shaking }" @submit.prevent="handleLogin">
+            <form class="auth-form flex flex-col" :class="{ 'auth-shake': shaking }" @submit.prevent="handleLogin">
               <div class="auth-field">
                 <Label for="username" class="auth-field-label">用户名</Label>
                 <div class="relative">
-                  <UserRound class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <UserRound class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="username"
                     v-model="form.username"
-                    class="h-10 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pl-12 transition-[color,box-shadow] duration-200"
                     placeholder="请输入用户名"
                     autocomplete="username"
                     :aria-invalid="Boolean(errors.username)"
@@ -79,11 +79,11 @@
               <div class="auth-field">
                 <Label for="password" class="auth-field-label">密码</Label>
                 <div class="relative">
-                  <LockKeyhole class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <LockKeyhole class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="password"
                     v-model="form.password"
-                    class="h-10 pr-11 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pr-14 pl-12 transition-[color,box-shadow] duration-200"
                     :type="showPassword ? 'text' : 'password'"
                     placeholder="请输入密码"
                     autocomplete="current-password"
@@ -102,7 +102,7 @@
                 <p v-if="errors.password" class="auth-rise text-sm text-destructive">{{ errors.password }}</p>
               </div>
 
-              <Button class="auth-submit mt-2 h-10 w-full" size="lg" type="submit" :disabled="loading">
+              <Button class="auth-submit mt-2 w-full" size="lg" type="submit" :disabled="loading">
                 <Loader2 v-if="loading" class="animate-spin" data-icon="inline-start" />
                 <ArrowRight v-else data-icon="inline-start" />
                 登录

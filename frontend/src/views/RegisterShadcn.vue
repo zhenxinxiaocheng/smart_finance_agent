@@ -18,15 +18,15 @@
           </CardHeader>
 
           <CardContent>
-            <form class="flex flex-col gap-4" :class="{ 'auth-shake': shaking }" @submit.prevent="handleRegister">
+            <form class="auth-form flex flex-col" :class="{ 'auth-shake': shaking }" @submit.prevent="handleRegister">
               <div class="auth-field">
                 <Label for="username" class="auth-field-label">用户名</Label>
                 <div class="relative">
-                  <UserRound class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <UserRound class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="username"
                     v-model="form.username"
-                    class="h-10 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pl-12 transition-[color,box-shadow] duration-200"
                     placeholder="请输入用户名"
                     autocomplete="username"
                     :aria-invalid="Boolean(errors.username)"
@@ -38,11 +38,11 @@
               <div class="auth-field">
                 <Label for="nickname" class="auth-field-label">昵称</Label>
                 <div class="relative">
-                  <Sparkles class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Sparkles class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="nickname"
                     v-model="form.nickname"
-                    class="h-10 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pl-12 transition-[color,box-shadow] duration-200"
                     placeholder="可选"
                     autocomplete="nickname"
                   />
@@ -52,11 +52,11 @@
               <div class="auth-field">
                 <Label for="password" class="auth-field-label">密码</Label>
                 <div class="relative">
-                  <LockKeyhole class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <LockKeyhole class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="password"
                     v-model="form.password"
-                    class="h-10 pr-11 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pr-14 pl-12 transition-[color,box-shadow] duration-200"
                     :type="showPassword ? 'text' : 'password'"
                     placeholder="至少 6 位"
                     autocomplete="new-password"
@@ -78,11 +78,11 @@
               <div class="auth-field">
                 <Label for="confirmPassword" class="auth-field-label">确认密码</Label>
                 <div class="relative">
-                  <ShieldCheck class="auth-field-icon pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <ShieldCheck class="auth-field-icon pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="confirmPassword"
                     v-model="form.confirmPassword"
-                    class="h-10 pr-11 pl-9 transition-[color,box-shadow] duration-200"
+                    class="pr-14 pl-12 transition-[color,box-shadow] duration-200"
                     :type="showConfirm ? 'text' : 'password'"
                     placeholder="再次输入密码"
                     autocomplete="new-password"
@@ -101,7 +101,7 @@
                 <p v-if="errors.confirmPassword" class="auth-rise text-sm text-destructive">{{ errors.confirmPassword }}</p>
               </div>
 
-              <Button class="auth-submit mt-2 h-10 w-full" size="lg" type="submit" :disabled="loading">
+              <Button class="auth-submit mt-2 w-full" size="lg" type="submit" :disabled="loading">
                 <Loader2 v-if="loading" class="animate-spin" data-icon="inline-start" />
                 <UserPlus v-else data-icon="inline-start" />
                 注册
@@ -126,24 +126,24 @@
       >
 
         <div class="auth-brand auth-rise" style="--d: 0ms">
-          <div class="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+          <div class="auth-brand-icon flex items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <WalletCards />
           </div>
           <div>
-            <p class="text-sm font-medium text-muted-foreground">智能财务</p>
-            <h1 class="text-xl font-semibold tracking-normal">智财 Agent</h1>
+            <p class="auth-brand-caption font-medium text-muted-foreground">智能财务</p>
+            <h1 class="auth-brand-title font-semibold tracking-normal">智财 Agent</h1>
           </div>
         </div>
 
         <div class="auth-hero-body">
           <div class="auth-rise" style="--d: 90ms">
-            <p class="mb-3 text-sm font-medium text-muted-foreground">开始前只需要一个账号</p>
-            <h2 class="text-balance text-4xl font-semibold leading-tight tracking-normal">
+            <p class="auth-eyebrow mb-3 font-medium text-muted-foreground">开始前只需要一个账号</p>
+            <h2 class="auth-headline text-balance font-semibold leading-tight tracking-normal">
               让每一笔消费都能被记录、理解和追踪。
             </h2>
           </div>
 
-          <div class="auth-feature-list text-sm">
+          <div class="auth-feature-list">
             <div
               v-for="(feature, index) in features"
               :key="feature.title"

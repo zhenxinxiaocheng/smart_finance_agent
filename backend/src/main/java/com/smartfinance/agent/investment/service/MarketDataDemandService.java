@@ -86,11 +86,10 @@ public class MarketDataDemandService {
         var rows=db.queryForList("SELECT * FROM market_data_requirement r WHERE r.user_id=? AND r.source_type=? AND r.source_id=? AND r.product_id=? AND r.dataset='PRICE' AND "+MarketDataRequirementService.activePredicate("r"),user,source,owner,product,requirements.now());
         if(rows.isEmpty())return false;
         for(var row:rows) {
-            if(row.get("prepared_start_date")==null||row.get("prepared_end_date")==null)return false;
             LocalDate start=MarketDataRequirementService.day(row.get("start_date"));
             LocalDate target=MarketDataRequirementService.day(row.get("target_date"));
             if(Boolean.TRUE.equals(row.get("follow_latest"))||"1".equals(String.valueOf(row.get("follow_latest"))))target=end;
-            if(MarketDataRequirementService.day(row.get("prepared_start_date")).isAfter(start)||MarketDataRequirementService.day(row.get("prepared_end_date")).isBefore(target))return false;
+            if(!requirements.covers(row,target))return false;
         }
         return true;
     }
@@ -102,9 +101,11 @@ public class MarketDataDemandService {
         var rows=db.queryForList("SELECT r.* FROM market_data_requirement r WHERE r.user_id=? AND r.source_type=? AND r.source_id=? AND r.product_id=? AND r.dataset='PRICE' AND "+MarketDataRequirementService.activePredicate("r"),user,source,owner,product,requirements.now());
         if(rows.isEmpty())return null;
         for(var row:rows) {
+            if(!requirements.currentVersion(product,"PRICE").equals(row.get("prepared_contract_version")))return null;
             if(row.get("prepared_start_date")==null||row.get("prepared_end_date")==null
                     ||MarketDataRequirementService.day(row.get("prepared_start_date")).isAfter(MarketDataRequirementService.day(row.get("start_date"))))return null;
             LocalDate last=MarketDataRequirementService.day(row.get("prepared_end_date"));
+            if(!requirements.covers(row,last))return null;
             if(last.isBefore(MarketDataRequirementService.day(row.get("start_date"))))return null;
             if(through==null||last.isBefore(through))through=last;
         }
@@ -116,12 +117,11 @@ public class MarketDataDemandService {
         // Completeness receipts and readiness to analyze published samples are separate.
         // Analysis retains quality, return-series and per-horizon sample gates.
         for(var row:rows) {
-            if(row.get("prepared_start_date")!=null&&row.get("prepared_end_date")!=null
-                    &&!MarketDataRequirementService.day(row.get("prepared_start_date")).isAfter(MarketDataRequirementService.day(row.get("start_date"))))continue;
+            if(requirements.covers(row,MarketDataRequirementService.day(row.get("target_date"))))continue;
             boolean fund=Set.of("FUND","MUTUAL_FUND").contains(String.valueOf(row.get("product_type")));
             String adjustment=qualityService.adjustType(String.valueOf(row.get("product_type")),String.valueOf(row.get("market")));
-            var sample=db.queryForMap("SELECT MIN(trade_date) first_date,COUNT(*) observations FROM product_daily_quote WHERE product_id=? AND adjust_type=? AND close_price>0"
-                    +(fund?" AND total_return_index>0":""),product,adjustment);
+            var sample=db.queryForMap("SELECT MIN(trade_date) first_date,COUNT(*) observations FROM product_daily_quote WHERE product_id=? AND adjust_type=? AND data_contract_version=? AND close_price>0"
+                    +(fund?" AND total_return_index>0":""),product,adjustment,requirements.currentVersion(product,"PRICE"));
             if(((Number)sample.get("observations")).intValue()<properties.getMinimumHistoryTradingDays()
                     ||sample.get("first_date")==null
                     ||MarketDataRequirementService.day(sample.get("first_date")).isAfter(MarketDataRequirementService.day(row.get("start_date"))))return false;

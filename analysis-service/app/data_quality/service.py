@@ -68,6 +68,8 @@ class DataQualityService:
             rows_by_version[manifest.dataset_version] = store.read(manifest.dataset_version)
 
         primary = manifests[0]
+        if any(item.data_contract_version != primary.data_contract_version for item in manifests):
+            raise ValueError("prepared replay mixes data contract versions")
         secondary_rows = rows_by_version[manifests[1].dataset_version] if len(manifests) > 1 else None
         expected_dates = self._expected_dates(config, primary, fund_category)
         report = DataQualityEngine(config, lambda: primary.fetched_at).evaluate(
@@ -144,7 +146,7 @@ class DataQualityService:
         primary = manifests[0]
         # Store reads verify each supported schema and its hashes. v2 adds nullable
         # liquidity fields to v1, so intact legacy rows can enter the current schema.
-        fields = ("product_type", "code", "market", "frequency", "adjust_type")
+        fields = ("product_type", "code", "market", "frequency", "adjust_type", "data_contract_version")
         if not allow_source_switch:
             fields += ("provider", "adapter_version")
         if any(any(getattr(item, field) != getattr(primary, field) for field in fields) for item in manifests):
@@ -186,6 +188,7 @@ class DataQualityService:
         adapters = {unit[1] for unit in units}
         mixed = len(units) > 1
         context = DataSnapshotContext(product_type=primary.product_type, code=primary.code, market=primary.market,
+            data_contract_version=primary.data_contract_version,
             frequency=primary.frequency, adjust_type=primary.adjust_type,
             provider=next(iter(providers)) if len(providers) == 1 else "MULTI_SOURCE",
             adapter_version=next(iter(adapters)) if len(adapters) == 1 else "MULTI_ADAPTER",
@@ -232,8 +235,13 @@ def _covers_window(manifests, start, end, required_dates=None):
 
 
 def _response(primary, secondary, report, records, warnings) -> dict[str, Any]:
+    # Immutable fund snapshots retain nav/factor for replay. Current transport
+    # responses expose the same close field as the ordinary market-data endpoint.
+    if primary.data_contract_version and primary.product_type is ProductType.MUTUAL_FUND:
+        records = [dict(row, close=row.get("nav")) for row in records]
     return {
         "datasetVersion": primary.dataset_version,
+        **({"dataContractVersion": primary.data_contract_version} if primary.data_contract_version else {}),
         "manifest": primary.model_dump(mode="json", by_alias=True, exclude_defaults=True),
         "secondaryDatasetVersions": [item.dataset_version for item in secondary],
         "secondaryManifests": [item.model_dump(mode="json", by_alias=True, exclude_defaults=True) for item in secondary],

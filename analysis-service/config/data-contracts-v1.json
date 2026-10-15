@@ -1,0 +1,12 @@
+{
+  "adjustmentPolicies": [
+    {"productTypes": ["STOCK"], "markets": ["SSE", "SZSE", "BSE", "SH", "SZ", "BJ", "CN"], "researchAdjustment": "QFQ"}
+  ],
+  "defaultResearchAdjustment": "NONE",
+  "contracts": [
+    {"datasets": ["PRICE"], "productTypes": ["STOCK", "ETF"], "version": "stock-daily-v1", "requiredFields": ["data_date", "open", "high", "low", "close", "volume"], "optionalFields": ["amount", "turnover_rate", "previous_close"], "units": {"volume": "SHARES", "amount": "PRODUCT_CURRENCY"}},
+    {"datasets": ["PRICE"], "productTypes": ["MUTUAL_FUND", "FUND"], "version": "fund-daily-v1", "requiredFields": ["data_date", "close"], "optionalFields": ["total_return_index"], "units": {"close": "NAV_PER_SHARE"}},
+    {"datasets": ["PRICE"], "productTypes": ["INDEX"], "version": "index-daily-v1", "requiredFields": ["data_date", "close"], "optionalFields": ["open", "high", "low", "volume", "amount"], "units": {"close": "INDEX_POINTS"}},
+    {"datasets": ["PROFILE", "FINANCIALS", "CORPORATE_ACTIONS", "FUND_HOLDINGS", "FUND_OPERATIONS", "VALUATION", "SHAREHOLDERS", "FUND_NOTICES", "FILINGS"], "productTypes": ["STOCK", "ETF", "MUTUAL_FUND", "FUND", "INDEX"], "version": "research-record-v1", "requiredFields": ["recordKey", "contentHash", "provider", "observedAt", "availabilityBasis", "payload"], "optionalFields": ["asOfDate", "publishedDate"], "units": {"values": "EXPLICIT_PER_FIELD"}}
+  ]
+}

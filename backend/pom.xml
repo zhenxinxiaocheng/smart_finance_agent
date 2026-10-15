@@ -138,6 +138,17 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource><directory>src/main/resources</directory></resource>
+            <resource>
+                <directory>../analysis-service/config</directory>
+                <includes>
+                    <include>data-contracts-v1.json</include>
+                    <include>research-data-v1.json</include>
+                    <include>technical-strategy-v5.json</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

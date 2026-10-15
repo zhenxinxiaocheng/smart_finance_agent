@@ -1,4 +1,6 @@
 package com.smartfinance.agent.investment.service;
+import java.util.List;
+import java.util.Map;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.*;
@@ -9,6 +11,25 @@ import java.time.*;
 import static org.assertj.core.api.Assertions.*;
 
 class MarketDataRequirementServiceTest {
+    @Test void aNewUserCannotReuseCompletionDatesProducedByAnOldRule() {
+        service.save(1,"DETAIL","1",1,"PRICE","REQUIRED",today.minusDays(10),today,false,today.plusDays(1).atStartOfDay());
+        db.update("UPDATE market_data_requirement SET prepared_start_date=start_date,prepared_end_date=target_date,prepared_contract_version='old'");
+        service.save(2,"DETAIL","1",1,"PRICE","REQUIRED",today.minusDays(10),today,false,today.plusDays(1).atStartOfDay());
+        var demand=new MarketDataDemandService(db,service,org.mockito.Mockito.mock(InvestmentHorizonService.class),new com.smartfinance.agent.investment.config.InvestmentHorizonProperties());
+        assertThat(demand.prepared(2,"DETAIL","1",1,today)).isFalse();
+    }
+
+    @Test void sharedCurrentSourceEvidenceSurvivesReleaseOfTheOriginalUsersDemand() {
+        var collections=new com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository(db);
+        for(String adjustment:List.of("NONE","QFQ"))collections.record(1,"PRICE",adjustment,today.minusDays(10),today,
+                Map.of("dataContractVersion",collections.currentVersion(1,"PRICE"),"result","EMPTY","records",List.of()));
+        service.save(1,"DETAIL","1",1,"PRICE","REQUIRED",today.minusDays(10),today,false,today.plusDays(1).atStartOfDay());
+        service.release(1,"DETAIL","1");
+        service.save(2,"DETAIL","1",1,"PRICE","REQUIRED",today.minusDays(10),today,false,today.plusDays(1).atStartOfDay());
+        var demand=new MarketDataDemandService(db,service,org.mockito.Mockito.mock(InvestmentHorizonService.class),new com.smartfinance.agent.investment.config.InvestmentHorizonProperties());
+        assertThat(demand.prepared(2,"DETAIL","1",1,today)).isTrue();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_collection_batch",Integer.class)).isEqualTo(2);
+    }
     Path file; JdbcTemplate db; MarketDataRequirementService service;
     final LocalDate today=LocalDate.of(2026,10,5);
     @BeforeEach void setup() throws Exception {
@@ -49,16 +70,6 @@ class MarketDataRequirementServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_requirement",Integer.class)).isZero();
     }
-    @Test void preparationProgressIsSharedAndExpandedDemandOnlyFetchesTheRemainder() {
-        request(1,"page",today.minusDays(20),today,today.plusDays(1).atStartOfDay());
-        service.recordPrepared(1L,"PRICE",today.minusDays(20),today.minusDays(5));
-        assertThat(service.missingWindows(1L,"PRICE",today)).containsExactly(
-                new MarketDataRequirementService.Window(today.minusDays(4),today));
-        request(1,"page",today.minusDays(30),today,today.plusDays(1).atStartOfDay());
-        assertThat(service.missingWindows(1L,"PRICE",today)).containsExactly(
-                new MarketDataRequirementService.Window(today.minusDays(30),today.minusDays(21)),
-                new MarketDataRequirementService.Window(today.minusDays(4),today));
-    }
     @Test void detailDemandUsesConfiguredHorizonAndClipsKnownListingDate() {
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         properties.setMaxHistoryTradingDays(2500);properties.setMinimumHistoryTradingDays(20);
@@ -79,7 +90,7 @@ class MarketDataRequirementServiceTest {
         db.update("UPDATE investment_product SET product_type='MUTUAL_FUND',market='FUND_CN',inception_date=? WHERE id=1",today.minusDays(30));
         db.update("INSERT INTO investment_asset(id,user_id,account_id,product_id,deleted) VALUES(13,1,1,1,0)");
         service.save(1,"ASSET","13",1,"PRICE","REQUIRED",today.minusDays(30),today,true,null);
-        for(int i=0;i<25;i++)db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,total_return_index,source) VALUES(1,?,'NONE',1,1,'TEST')",today.minusDays(30).plusDays(i));
+        for(int i=0;i<25;i++)db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,total_return_index,source,data_contract_version) VALUES(1,?,'NONE',1,1,'TEST',?)",today.minusDays(30).plusDays(i),service.currentVersion(1,"PRICE"));
         var properties=new com.smartfinance.agent.investment.config.InvestmentHorizonProperties();
         properties.setMinimumHistoryTradingDays(20);
         var demand=new MarketDataDemandService(db,service,org.mockito.Mockito.mock(InvestmentHorizonService.class),properties);

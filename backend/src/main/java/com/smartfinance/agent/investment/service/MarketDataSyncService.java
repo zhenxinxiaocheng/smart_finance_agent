@@ -432,14 +432,15 @@ public class MarketDataSyncService {
             return false;
         }
         List<Map<String, Object>> rows = db.queryForList(
-                "SELECT id,status,start_date,checkpoint_date,last_error,updated_at FROM market_data_job WHERE product_id=? AND job_type=?",
+                "SELECT id,status,start_date,checkpoint_date,last_error,updated_at,data_contract_version FROM market_data_job WHERE product_id=? AND job_type=?",
                 productId, type);
+        String contract=contractVersion(productId,type);
         LocalDateTime now = LocalDateTime.now(CN_ZONE);
         if (rows.isEmpty()) {
             try {
                 return db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
-                                + "attempt_count,updated_at) VALUES(?,?,?,?,?,0,?)",
-                        productId, type, "QUEUED", start, target, now) == 1;
+                                + "attempt_count,updated_at,data_contract_version) VALUES(?,?,?,?,?,0,?,?)",
+                        productId, type, "QUEUED", start, target, now,contract) == 1;
             } catch (DataAccessException concurrentQueue) {
                 if (db.queryForObject("SELECT COUNT(*) FROM market_data_job WHERE product_id=? AND job_type=?",
                         Integer.class, productId, type) == 0) throw concurrentQueue;
@@ -447,6 +448,11 @@ public class MarketDataSyncService {
             }
         }
         Map<String, Object> row = rows.get(0);
+        if(!contract.equals(row.get("data_contract_version")))
+            return db.update("UPDATE market_data_job SET status='QUEUED',start_date=?,target_date=?,checkpoint_date=NULL,attempt_count=0,"
+                    +"next_retry_at=NULL,last_error=NULL,error_code=NULL,lease_until=NULL,lease_token=NULL,updated_at=?,data_contract_version=? "
+                    +"WHERE id=? AND (data_contract_version=? OR (data_contract_version IS NULL AND ? IS NULL))",
+                    start,target,now,contract,row.get("id"),row.get("data_contract_version"),row.get("data_contract_version"))==1;
         if (ACTIVE_JOBS.contains(value(row, "status"))) return false;
         if ("FAILED".equals(value(row, "status")) && !explicitRepair
                 && timestamp(row.get("updated_at")).plusHours(Math.max(1, failedRetryHours)).isAfter(now)) return false;
@@ -550,15 +556,17 @@ public class MarketDataSyncService {
             String message = failure instanceof AnalysisQueueException ? ANALYSIS_QUEUE_FAILED
                     : failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
             db.update("UPDATE market_data_job SET status=?,attempt_count=?,next_retry_at=?,lease_until=NULL,lease_token=NULL,"
-                            + "last_error=?,updated_at=? WHERE id=? AND status='RUNNING' AND lease_token=? AND lease_until>?",
+                            + "last_error=?,error_code=?,updated_at=? WHERE id=? AND status='RUNNING' AND lease_token=? AND lease_until>? AND data_contract_version=?",
                     attempt >= maxAttempts ? "FAILED" : "RETRY_WAIT", attempt,
                     attempt >= maxAttempts ? null : failedAt.plusSeconds(delay),
-                    trim(message), failedAt, job.get("id"), token, failedAt);
+                    trim(message),failureCode(failure),failedAt, job.get("id"), token, failedAt,job.get("data_contract_version"));
             log.warn("Market data job {} failed on attempt {}", job.get("id"), attempt, failure);
         }
     }
 
     private boolean claim(Map<String, Object> job, String token, LocalDateTime now) {
+        String contract=contractVersion(((Number)job.get("product_id")).longValue(),value(job,"job_type"));
+        boolean changed=!contract.equals(job.get("data_contract_version"));
         // 短事务锁住产品，避免不同job_type在多个实例上同时获得执行权。
         db.update("UPDATE investment_product SET id=id WHERE id=?", job.get("product_id"));
         Integer running = db.queryForObject("SELECT COUNT(*) FROM market_data_job WHERE product_id=? AND id<>? "
@@ -569,17 +577,19 @@ public class MarketDataSyncService {
         if ("RUNNING".equals(value(job, "status"))) attempts++;
         boolean exhausted = attempts >= maxAttempts;
         int updated = db.update("UPDATE market_data_job SET status=?,lease_until=?,lease_token=?,updated_at=?,"
-                        + "attempt_count=?,next_retry_at=NULL,last_error=? "
+                        + "attempt_count=?,next_retry_at=NULL,last_error=?,checkpoint_date=CASE WHEN COALESCE(data_contract_version,'')!=? THEN NULL ELSE checkpoint_date END,data_contract_version=? "
                         + "WHERE id=? AND status=? AND updated_at=? AND start_date=? AND target_date=? "
                         + "AND (checkpoint_date=? OR (checkpoint_date IS NULL AND ? IS NULL)) "
                         + "AND (lease_token=? OR (lease_token IS NULL AND ? IS NULL)) "
                         + "AND (?<>'RUNNING' OR lease_until IS NULL OR lease_until<=?)",
                 exhausted ? "FAILED" : "RUNNING", exhausted ? null : now.plusSeconds(leaseSeconds),
-                exhausted ? null : token, now, attempts, exhausted ? "LEASE_EXPIRED" : job.get("last_error"),
+                exhausted ? null : token, now, attempts, exhausted ? "LEASE_EXPIRED" : job.get("last_error"),contract,contract,
                 job.get("id"), job.get("status"), job.get("updated_at"),
                 job.get("start_date"), job.get("target_date"), job.get("checkpoint_date"), job.get("checkpoint_date"),
                 job.get("lease_token"), job.get("lease_token"), job.get("status"), now);
         if (updated != 1 || exhausted) return false;
+        job.put("data_contract_version",contract);
+        if(changed)job.put("checkpoint_date",null);
         job.put("attempt_count", attempts);
         if (requirements != null) {
             var product = db.queryForMap("SELECT * FROM investment_product WHERE id=?", job.get("product_id"));
@@ -639,7 +649,10 @@ public class MarketDataSyncService {
                 research.persist(product.getId(), dataset, response);
                 if (complete && finish(jobId, token, completedThrough.isBefore(target) ? "QUEUED" : "SUCCEEDED", completedThrough, null) != 1)
                     throw new IllegalStateException("研究任务执行权已失效");
-                if (complete && requirements != null) requirements.recordPrepared(product.getId(), dataset, start, completedThrough);
+                if (complete && requirements != null) {
+                    requirements.recordCollection(product.getId(),dataset,"NONE",start,completedThrough,response);
+                    requirements.recordPrepared(product.getId(), dataset, start, completedThrough);
+                }
                 return true;
             };
             boolean saved = claimTransaction == null ? save.get() : Boolean.TRUE.equals(claimTransaction.execute(tx -> save.get()));
@@ -669,8 +682,8 @@ public class MarketDataSyncService {
         }
         boolean scoped=Boolean.TRUE.equals(job.get("scoped_demand"));
         InvestmentHistoryPreparationService.PreparationResult result =
-                !scoped ? historyPreparation.prepareProduct(product, jobTypeFor(product), forceRefresh, start, end)
-                        : historyPreparation.prepareDemandProduct(product,jobTypeFor(product),forceRefresh,start,end);
+                historyPreparation.prepareMarketProduct(product,jobTypeFor(product),forceRefresh,start,end,scoped,
+                        ()->assertWriteLease(jobId,token,product.getId(),value(job,"job_type")));
         boolean completed = !end.isBefore(target);
         LocalDate checked = result.checkedThrough();
         if (checked == null || checked.isBefore(end))
@@ -717,9 +730,32 @@ public class MarketDataSyncService {
     private int finish(long jobId, String token, String status, LocalDate checkpoint, String note) {
         LocalDateTime now = LocalDateTime.now(CN_ZONE);
         return db.update("UPDATE market_data_job SET status=?,checkpoint_date=?,lease_until=NULL,lease_token=NULL,"
-                        + "next_retry_at=NULL,attempt_count=0,last_error=?,updated_at=? "
-                        + "WHERE id=? AND status='RUNNING' AND lease_token=? AND lease_until>?",
-                status, checkpoint, note, now, jobId, token, now);
+                        + "next_retry_at=NULL,attempt_count=0,last_error=?,error_code=NULL,updated_at=? "
+                        + "WHERE id=? AND status='RUNNING' AND lease_token=? AND lease_until>? "
+                        + "AND data_contract_version=?",
+                status, checkpoint, note, now, jobId, token, now,contractForJob(jobId));
+    }
+
+    private String contractForJob(long jobId) {
+        var job=db.queryForMap("SELECT product_id,job_type FROM market_data_job WHERE id=?",jobId);
+        return contractVersion(((Number)job.get("product_id")).longValue(),value(job,"job_type"));
+    }
+    private static String failureCode(RuntimeException failure) {
+        if(failure instanceof org.springframework.web.client.RestClientResponseException response)
+            return response.getStatusCode().value()==429?"RATE_LIMITED":"SOURCE_HTTP_ERROR";
+        if(failure instanceof org.springframework.web.client.RestClientException)return "REQUEST_FAILED";
+        if(failure instanceof org.springframework.dao.DataAccessException)return "STORAGE_ERROR";
+        if(failure instanceof IllegalArgumentException)return "INVALID_RESPONSE";
+        return "COLLECTION_FAILED";
+    }
+    private String contractVersion(long product,String type) {
+        String productType=db.queryForObject("SELECT product_type FROM investment_product WHERE id=?",String.class,product);
+        return com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct(dataset(type),productType).version();
+    }
+    private void assertWriteLease(long jobId,String token,long product,String type) {
+        if(db.update("UPDATE market_data_job SET lease_until=lease_until WHERE id=? AND status='RUNNING' AND lease_token=? AND lease_until>? AND data_contract_version=?",
+                jobId,token,LocalDateTime.now(CN_ZONE),contractVersion(product,type))!=1)
+            throw new IllegalStateException("采集任务执行权或数据规则已失效，拒绝写入");
     }
 
     private void setCatalogState(String market, String status, int count, String error) {

@@ -350,8 +350,11 @@ def index_quotes(request: IndexQuotesRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _empty_quote_result(message: str):
-    return {"result": "EMPTY", "records": [], "message": message, "warnings": []}
+def _empty_quote_result(message: str, request):
+    from .data_contracts import contract_version
+    return {"result": "EMPTY", "records": [], "message": message, "warnings": [],
+            "dataContractVersion": contract_version("PRICE", request.product_type),
+            "fetchedAt": datetime.now(timezone.utc).isoformat()}
 
 
 @app.post("/internal/v1/market-data/quotes/daily", dependencies=[Depends(internal_auth)])
@@ -370,19 +373,26 @@ def daily_quotes(request: QuoteRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderEmpty as exc:
-        return _empty_quote_result(str(exc))
+        return _empty_quote_result(str(exc), request)
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
     if not records:
-        return _empty_quote_result("Requested window is empty")
+        return _empty_quote_result("Requested window is empty", request)
     latest = max((item.data_date for item in records), default=None)
+    from .data_contracts import validate_quotes
+    serialized = [item.json_dict() for item in records]
+    try:
+        contract_version = validate_quotes(serialized, request.product_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail={"code": "SOURCE_SCHEMA_ERROR", "message": str(exc)}) from exc
     return {
         "result": "DATA",
+        "dataContractVersion": contract_version,
         "provider": records[0].provider if records else "AKSHARE",
         "dataDate": latest.isoformat() if latest else None,
         "fetchedAt": records[0].fetched_at.isoformat() if records else None,
         "adapterVersion": records[0].adapter_version if records else "1",
-        "records": [item.json_dict() for item in records],
+        "records": serialized,
         "warnings": warnings,
     }
 
@@ -427,7 +437,7 @@ def validate_data_quality(request: DataQualityValidateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProviderEmpty as exc:
-        return _empty_quote_result(str(exc))
+        return _empty_quote_result(str(exc), request)
     except ProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "SOURCE_ERROR", "message": str(exc)}) from exc
     except SnapshotIntegrityError as exc:

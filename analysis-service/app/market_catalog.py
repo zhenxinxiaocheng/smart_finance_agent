@@ -416,6 +416,8 @@ def daily_history(code: str, market: str, product_type: str,
                        fetched_at=fetched_at, source_function=source["function"], adjust_type=adjust_type)
                        if start_date <= record.data_date <= end_date]
             if records:
+                from .data_contracts import validate_quotes
+                validate_quotes([row.json_dict() for row in records], product_type)
                 return records
             empty_response = True
         except Exception as exc:

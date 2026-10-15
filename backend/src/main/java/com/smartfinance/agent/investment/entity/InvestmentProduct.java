@@ -34,7 +34,6 @@ public class InvestmentProduct {
     private LocalDate inceptionDate;
     private LocalDate historyStartDate;
     private LocalDate historyEndDate;
-    private Boolean historyCoverageComplete;
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
     @TableField(fill = FieldFill.INSERT_UPDATE)

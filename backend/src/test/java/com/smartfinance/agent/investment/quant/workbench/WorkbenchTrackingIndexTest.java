@@ -1,4 +1,5 @@
 package com.smartfinance.agent.investment.quant.workbench;
+import com.smartfinance.agent.investment.quant.workbench.market.WorkbenchTrackingIndex;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.investment.quant.*;

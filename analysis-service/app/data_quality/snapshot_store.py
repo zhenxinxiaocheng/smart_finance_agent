@@ -236,6 +236,8 @@ class SnapshotStore:
         }
         if context.source_units:
             payload["sourceUnits"] = [list(unit) for unit in context.source_units]
+        if context.data_contract_version is not None:
+            payload["dataContractVersion"] = context.data_contract_version
         dataset_version = _sha256_json(payload)
         storage_uri = f"snapshots/{dataset_version[:2]}/{dataset_version}.parquet"
         return DataQualityManifest.model_validate(payload | {"datasetVersion": dataset_version, "storageUri": storage_uri})
@@ -440,6 +442,7 @@ def _context_from_manifest(manifest: DataQualityManifest) -> DataSnapshotContext
         adjust_type=manifest.adjust_type, provider=manifest.provider, adapter_version=manifest.adapter_version,
         requested_start_date=manifest.requested_start_date, requested_end_date=manifest.requested_end_date,
         fetched_at=manifest.fetched_at, source_units=manifest.source_units,
+        data_contract_version=manifest.data_contract_version,
     )
 
 

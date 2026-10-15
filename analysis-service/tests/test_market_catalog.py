@@ -166,7 +166,7 @@ def test_a_share_sina_fallback_preserves_requested_adjustment():
         raise TimeoutError("Tencent unavailable")
     def sina(**kwargs):
         captured.update(kwargs)
-        return pd.DataFrame({"date": ["2024-01-02"], "close": [10]})
+        return pd.DataFrame({"date": ["2024-01-02"], "open": [10], "high": [11], "low": [9], "close": [10], "volume": [100]})
     records = daily_history("600000", "SSE", "STOCK", date(2024,1,2), date(2024,1,2), "QFQ",
         SimpleNamespace(stock_zh_a_hist_tx=unavailable, stock_zh_a_daily=sina))
     assert captured["symbol"] == "sh600000" and captured["adjust"] == "qfq"
@@ -336,7 +336,7 @@ def test_etf_raw_history_falls_back_to_sina_without_adjustment():
         raise ConnectionError("EM disconnected")
     def sina(**kwargs):
         captured.update(kwargs)
-        return pd.DataFrame({"date": ["2024-01-01", "2024-01-02"], "close": [99, 100]})
+        return pd.DataFrame({"date": ["2024-01-01", "2024-01-02"], "open": [99,100], "high": [100,101], "low": [98,99], "close": [99,100], "volume": [100,100]})
     rows = daily_history("159919", "SZSE", "ETF", date(2024, 1, 2), date(2024, 1, 2),
                          "NONE", SimpleNamespace(fund_etf_hist_em=failed, fund_etf_hist_sina=sina))
     assert captured == {"symbol": "sz159919"}
@@ -361,7 +361,7 @@ def test_us_raw_history_uses_sina_fallback_with_exact_window():
         raise ConnectionError("EM disconnected")
     def sina(**kwargs):
         captured.update(kwargs)
-        return pd.DataFrame({"date": ["2024-01-02", "2024-01-03"], "close": [100, 101]})
+        return pd.DataFrame({"date": ["2024-01-02", "2024-01-03"], "open": [100,101], "high": [101,102], "low": [99,100], "close": [100,101], "volume": [100,100]})
     rows = daily_history("AAPL", "NASDAQ", "STOCK", date(2024, 1, 2), date(2024, 1, 2),
                          "NONE", SimpleNamespace(stock_us_hist=failed, stock_us_daily=sina))
     assert captured == {"symbol": "AAPL", "adjust": ""}
@@ -446,7 +446,7 @@ def test_etf_tencent_keeps_adjusted_basis_without_eastmoney_dependency():
     calls = []
     def source(**kwargs):
         calls.append(kwargs)
-        return pd.DataFrame({"date": ["2024-01-02"], "close": [3.5]})
+        return pd.DataFrame({"date": ["2024-01-02"], "open": [3.5], "high": [3.6], "low": [3.4], "close": [3.5], "volume": [100]})
     records = daily_history("510300", "SSE", "ETF", date(2024, 1, 2), date(2024, 1, 2),
                             "QFQ", SimpleNamespace(stock_zh_a_hist_tx=source))
     assert calls == [{"symbol": "sh510300", "start_date": "2024-01-02", "end_date": "2024-01-02", "adjust": "qfq"}]

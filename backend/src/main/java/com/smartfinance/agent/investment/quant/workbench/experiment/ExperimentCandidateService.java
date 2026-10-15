@@ -1,6 +1,6 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
-import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import java.math.BigDecimal;

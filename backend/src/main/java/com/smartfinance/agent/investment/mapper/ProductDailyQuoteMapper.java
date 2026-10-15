@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Delete;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -18,7 +19,7 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
             <script>
             SELECT id,product_id,trade_date,open_price,high_price,low_price,close_price,total_return_index,
                    previous_close,change_amount,change_percent,volume,amount,turnover_rate,volume_ratio,
-                   amplitude,adjust_type,source,adapter_version,synced_at
+                   amplitude,adjust_type,source,adapter_version,data_contract_version,synced_at
             FROM product_daily_quote
             WHERE product_id IN
               <foreach collection="productIds" item="id" open="(" close=")" separator=",">#{id}</foreach>
@@ -38,12 +39,12 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
             <script>
             INSERT INTO product_daily_quote
               (product_id,trade_date,open_price,high_price,low_price,close_price,total_return_index,
-                previous_close,change_amount,change_percent,volume,amount,turnover_rate,adjust_type,source,adapter_version,synced_at)
+                previous_close,change_amount,change_percent,volume,amount,turnover_rate,adjust_type,source,adapter_version,data_contract_version,synced_at)
             VALUES
             <foreach collection="quotes" item="q" separator=",">
               (#{q.productId},#{q.tradeDate},#{q.openPrice},#{q.highPrice},#{q.lowPrice},#{q.closePrice},
                #{q.totalReturnIndex},#{q.previousClose},#{q.changeAmount},#{q.changePercent},#{q.volume},
-                #{q.amount},#{q.turnoverRate},#{q.adjustType},#{q.source},#{q.adapterVersion},#{q.syncedAt})
+                #{q.amount},#{q.turnoverRate},#{q.adjustType},#{q.source},#{q.adapterVersion},#{q.dataContractVersion},#{q.syncedAt})
             </foreach>
             <choose>
               <when test="_databaseId == 'sqlite'">
@@ -61,7 +62,7 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
                   volume=COALESCE(excluded.volume,product_daily_quote.volume),
                   amount=COALESCE(excluded.amount,product_daily_quote.amount),
                   turnover_rate=COALESCE(excluded.turnover_rate,product_daily_quote.turnover_rate),
-                  source=excluded.source,adapter_version=excluded.adapter_version,synced_at=excluded.synced_at
+                  source=excluded.source,adapter_version=excluded.adapter_version,data_contract_version=excluded.data_contract_version,synced_at=excluded.synced_at
               </when>
               <otherwise>
                 ON DUPLICATE KEY UPDATE
@@ -78,12 +79,20 @@ public interface ProductDailyQuoteMapper extends BaseMapper<ProductDailyQuote> {
                   volume=COALESCE(VALUES(volume),volume),
                   amount=COALESCE(VALUES(amount),amount),
                   turnover_rate=COALESCE(VALUES(turnover_rate),turnover_rate),
-                  source=VALUES(source),adapter_version=VALUES(adapter_version),synced_at=VALUES(synced_at)
+                  source=VALUES(source),adapter_version=VALUES(adapter_version),data_contract_version=VALUES(data_contract_version),synced_at=VALUES(synced_at)
               </otherwise>
             </choose>
             </script>
             """)
     int upsertHistory(@Param("quotes") List<ProductDailyQuote> quotes);
+
+    @Delete("DELETE FROM product_daily_quote WHERE product_id=#{productId} AND adjust_type=#{adjustment} "
+            + "AND trade_date BETWEEN #{start} AND #{end} AND COALESCE(data_contract_version,'')!=#{contract}")
+    int deleteIncompatible(@Param("productId") long productId,@Param("adjustment") String adjustment,
+                           @Param("start") LocalDate start,@Param("end") LocalDate end,@Param("contract") String contract);
+
+    @Select("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=#{productId} AND adjust_type=#{adjustment} AND COALESCE(data_contract_version,'')!=#{contract}")
+    int countIncompatible(@Param("productId") long productId,@Param("adjustment") String adjustment,@Param("contract") String contract);
 
     default LocalDate latestTradeDate(Long productId) {
         ProductDailyQuote latest = selectOne(new LambdaQueryWrapper<ProductDailyQuote>()

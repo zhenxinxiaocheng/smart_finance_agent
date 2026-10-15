@@ -54,6 +54,7 @@ import static org.mockito.Mockito.when;
         com.smartfinance.agent.investment.service.InvestmentDataJobService.class,
         com.smartfinance.agent.investment.service.FundClassificationService.class,
         com.smartfinance.agent.investment.service.ProductDailyQuoteService.class,
+        com.smartfinance.agent.investment.marketdata.collection.MarketDataCollectionRepository.class,
         com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService.class,
         com.smartfinance.agent.investment.service.InvestmentHorizonServiceImpl.class,
         com.smartfinance.agent.investment.config.InvestmentHorizonProperties.class})
@@ -212,8 +213,9 @@ class InvestmentAssetServiceIntegrationTest {
         reset(analysisServiceClient);
         LocalDate recent = LocalDate.now().minusDays(2);
         java.util.Map<String,Object> response = java.util.Map.of("provider", "AKSHARE_US_SINA", "adapterVersion", "1",
+                "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version(),
                 "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", List.of(
-                java.util.Map.of("data_date", recent.toString(), "close", "180", "volume", "1000")));
+                java.util.Map.of("data_date", recent.toString(), "open", "180", "high", "181", "low", "179", "close", "180", "volume", "1000")));
         when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(response);
         when(dataQualityService.adjustType(any())).thenReturn("NONE");
         var receipt = new com.smartfinance.agent.investment.entity.InvestmentDataQualitySnapshot();
@@ -232,8 +234,9 @@ class InvestmentAssetServiceIntegrationTest {
         verify(analysisServiceClient, org.mockito.Mockito.never()).marketDailyQuotes(any(), any(), any(), anyString());
         verify(analysisServiceClient, org.mockito.Mockito.never()).realtimeQuote(anyString(), anyString());
         var correctedRows = List.of(java.util.Map.<String,Object>of(
-                "data_date", recent.toString(), "close", "181", "volume", "1000"));
+                "data_date", recent.toString(), "open", "180", "high", "181", "low", "179", "close", "181", "volume", "1000"));
         var correctedResponse = java.util.Map.<String,Object>of("provider", "AKSHARE_US_SINA", "adapterVersion", "1",
+                "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version(),
                 "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", correctedRows);
         var correctedReceipt = new com.smartfinance.agent.investment.entity.InvestmentDataQualitySnapshot();
         correctedReceipt.setDatasetVersion("us-corrected");
@@ -268,7 +271,8 @@ class InvestmentAssetServiceIntegrationTest {
         assertThat(failedSync.getDataDate()).isEqualTo(recent);
 
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
-                .thenThrow(new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录"));
+                .thenThrow(new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录",null,java.util.Map.of("result","EMPTY","records",List.of(),
+                        "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version())));
         var empty = assetService.sync(7L, asset.getId());
         assertThat(empty.getSyncStatus()).isEqualTo("SUCCESS");
         assertThat(empty.getLatestPrice()).isEqualByComparingTo("181");

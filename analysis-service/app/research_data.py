@@ -19,6 +19,7 @@ import requests
 
 from .provider_calls import call_akshare
 from .providers import ProviderUnavailable
+from .data_contracts import contract_version
 
 
 @lru_cache(maxsize=1)
@@ -49,7 +50,7 @@ def family(market, product_type):
 
 
 def capabilities():
-    return [{"dataset": name, "families": list(value["families"]),
+    return [{"dataset": name, "dataContractVersion": contract_version(name, "STOCK"), "families": list(value["families"]),
              "refreshDays": value["refreshDays"], "yearly": bool(value.get("yearly"))}
             for name, value in config()["datasets"].items()]
 
@@ -134,7 +135,7 @@ def _record(dataset, section, source, row, observed, *, identity=None,
                                   "REPORTED_INTERVAL" if source == "SEC" and raw.get("start") else
                                   "INSTANT" if source == "SEC" else "YEAR_TO_DATE")
     return {"recordKey": _hash({"section": section, "date": as_of, "identity": identities}),
-            "contentHash": _hash(payload), "provider": source, "asOfDate": as_of,
+            "contentHash": _hash(payload), "sourceContentHash": _hash({"section": section, "raw": raw}), "provider": source, "asOfDate": as_of,
             "publishedDate": published, "observedAt": observed.isoformat(),
             "availabilityBasis": "FILED_DATE" if versioned and published else "FIRST_OBSERVED",
             "publicationTimezone": "America/New_York" if versioned and source == "SEC" else None,
@@ -396,6 +397,6 @@ def collect(code, market, product_type, dataset, start_date, end_date, *, ak_mod
         if key in unique and unique[key]["contentHash"] != row["contentHash"]:
             raise ProviderUnavailable("conflicting research rows with the same business identity")
         unique[key] = row
-    return {"dataset": dataset, "adapterVersion": config()["version"], "records": list(unique.values()),
+    return {"dataset": dataset, "dataContractVersion": contract_version(dataset, product_type), "adapterVersion": config()["version"], "records": list(unique.values()),
             "complete": not failed, "checkedThrough": end_date.isoformat(),
             "successfulSections": successful, "failedSections": failed, "warnings": warnings}

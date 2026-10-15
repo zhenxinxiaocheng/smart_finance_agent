@@ -46,6 +46,39 @@ class InvestmentResearchDataServiceTest {
         assertThat(items("2026-10-04T12:00:00Z").get(0)).containsEntry("content_hash", "a".repeat(64));
     }
 
+    @Test void identicalSourceFactsAreRestoredUnderTheNewContractWithoutChangingAvailability() {
+        var original=row("a","2026-10-01T00:00:00Z");
+        original.put("sourceContentHash","c".repeat(64));
+        transaction.executeWithoutResult(status->service.persist(1,"FINANCIALS",
+                Map.of("dataset","FINANCIALS","adapterVersion","old","records",List.of(original))));
+        var upgraded=row("a","2026-10-14T00:00:00Z");
+        upgraded.put("sourceContentHash","c".repeat(64));
+        transaction.executeWithoutResult(status->service.persist(1,"FINANCIALS",
+                Map.of("dataset","FINANCIALS","adapterVersion","new","dataContractVersion",currentContract(),"records",List.of(upgraded))));
+        assertThat(count()).isEqualTo(2);
+        var current=db.queryForMap("SELECT data_contract_version,available_at,observed_at,first_observed_at FROM investment_research_record ORDER BY id DESC LIMIT 1");
+        assertThat(current).containsEntry("data_contract_version",currentContract());
+        assertThat(current.get("available_at").toString()).startsWith("2026-10-01");
+        assertThat(current.get("first_observed_at").toString()).startsWith("2026-10-01");
+        assertThat(current.get("observed_at").toString()).startsWith("2026-10-14");
+    }
+
+    @Test void legacyNumericSourceFactsKeepTheirOriginalAvailabilityWhenReacquired() throws Exception {
+        var original=row("a","2026-10-01T00:00:00Z");
+        original.put("payload",Map.of("section","income","raw",Map.of("revenue",10000000.0)));
+        save(original);
+        db.update("UPDATE investment_research_record SET data_contract_version=NULL,source_content_hash=NULL,first_observed_at=NULL");
+        var upgraded=row("b","2026-10-14T00:00:00Z");
+        upgraded.put("payload",original.get("payload"));
+        String pythonJson="{\"raw\":{\"revenue\":10000000.0},\"section\":\"income\"}";
+        upgraded.put("sourceContentHash",java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(pythonJson.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        save(upgraded);
+        var latest=db.queryForMap("SELECT available_at,first_observed_at FROM investment_research_record ORDER BY id DESC LIMIT 1");
+        assertThat(latest.get("available_at").toString()).startsWith("2026-10-01");
+        assertThat(latest.get("first_observed_at").toString()).startsWith("2026-10-01");
+    }
+
     @Test void dateOnlyFilingsUseNextDayInPublicationTimezone() {
         Map<String,Object> record = row("a", "2026-10-04T15:00:00Z");
         record.put("publishedDate", "2026-10-04");
@@ -77,8 +110,9 @@ class InvestmentResearchDataServiceTest {
         return (List<Map<String,Object>>) service.read(1,"FINANCIALS",OffsetDateTime.parse(cutoff),1,100).get("items");
     }
     private static Map<String,Object> response(List<Map<String,Object>> rows) {
-        return Map.of("dataset","FINANCIALS","adapterVersion","test-v1","records",rows);
+        return Map.of("dataset","FINANCIALS","adapterVersion","test-v1","dataContractVersion",currentContract(),"records",rows);
     }
+    private static String currentContract() { return com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("FINANCIALS","STOCK").version(); }
     private static Map<String,Object> row(String version, String observed) {
         Map<String,Object> row = new HashMap<>();
         row.put("recordKey","c".repeat(64)); row.put("contentHash",version.repeat(64));

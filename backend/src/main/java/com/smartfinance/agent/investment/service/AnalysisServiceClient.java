@@ -23,8 +23,11 @@ import java.util.Map;
 public class AnalysisServiceClient {
 
     public static final class SourceEmptyException extends IllegalStateException {
-        public SourceEmptyException(String message) { super(message); }
-        public SourceEmptyException(String message, Throwable cause) { super(message, cause); }
+        private final Map<String,Object> response;
+        public SourceEmptyException(String message) { this(message,null,Map.of()); }
+        public SourceEmptyException(String message, Throwable cause) { this(message,cause,Map.of()); }
+        public SourceEmptyException(String message,Throwable cause,Map<String,Object> response) { super(message,cause);this.response=java.util.Collections.unmodifiableMap(new LinkedHashMap<>(response)); }
+        public Map<String,Object> response() { return response; }
     }
 
     public record ResolvedProduct(String productType, String code, String name, String market,
@@ -672,7 +675,7 @@ public class AnalysisServiceClient {
         if ("EMPTY".equals(response.get("result"))) {
             if (!(response.get("records") instanceof List<?> records) || !records.isEmpty())
                 throw new IllegalStateException("空查询结果格式无效");
-            throw new SourceEmptyException(String.valueOf(response.get("message")));
+            throw new SourceEmptyException(String.valueOf(response.get("message")),null,response);
         }
         return response;
     }

@@ -558,9 +558,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         if (resolved.inceptionDate() != null) {
             product.setInceptionDate(resolved.inceptionDate());
         }
-        if (product.getHistoryCoverageComplete() == null) {
-            product.setHistoryCoverageComplete(false);
-        }
         classificationService.applyResolved(product, resolved);
         if (product.getId() == null) productMapper.insert(product); else productMapper.updateById(product);
         benchmarkProfileService.configureImportedFundBenchmark(product, resolved);

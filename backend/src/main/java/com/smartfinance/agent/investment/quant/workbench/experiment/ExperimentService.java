@@ -1,6 +1,6 @@
 package com.smartfinance.agent.investment.quant.workbench.experiment;
 
-import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;

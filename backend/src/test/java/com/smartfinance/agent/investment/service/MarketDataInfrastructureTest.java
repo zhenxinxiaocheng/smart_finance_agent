@@ -57,20 +57,15 @@ class MarketDataInfrastructureTest {
             InvestmentProduct product = call.getArgument(0);
             return product.getHistoryEndDate() == null ? null : product.getHistoryEndDate().plusDays(1);
         });
-        when(historyPreparation.prepareProduct(any(), anyString(), anyBoolean(), any(), any()))
+        when(historyPreparation.prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), anyBoolean(), any()))
                 .thenAnswer(call -> {
                     InvestmentProduct product = call.getArgument(0);
-                    LocalDate start = call.getArgument(3);
-                    LocalDate end = call.getArgument(4);
+                    LocalDate start = call.getArgument(3), end = call.getArgument(4);
+                    ((Runnable) call.getArgument(6)).run();
+                    MarketDataTestSupport.collected(db, product.getId(), start, end, true);
                     product.setHistoryEndDate(end);
                     return new InvestmentHistoryPreparationService.PreparationResult(
                             10, start, start, end, true, "dataset-v1", false, end);
-                });
-        when(historyPreparation.prepareDemandProduct(any(),anyString(),anyBoolean(),any(),any()))
-                .thenAnswer(call->{
-                    InvestmentProduct product=call.getArgument(0);LocalDate start=call.getArgument(3),end=call.getArgument(4);
-                    product.setHistoryEndDate(end);
-                    return new InvestmentHistoryPreparationService.PreparationResult(10,start,start,end,false,"dataset-v1",false,end);
                 });
         sync = new MarketDataSyncService(db, products, analysis, historyPreparation, true, 10,
                 365, 600, 6, tasks, new DataSourceTransactionManager(source));
@@ -80,6 +75,29 @@ class MarketDataInfrastructureTest {
     @AfterEach
     void cleanup() throws Exception {
         Files.deleteIfExists(file);
+    }
+
+    private void useCurrentContractForFixtureJobs() {
+        for(var job:db.queryForList("SELECT j.id,j.job_type,p.product_type FROM market_data_job j JOIN investment_product p ON p.id=j.product_id")) {
+            String type=job.get("job_type").toString();String dataset=List.of("BACKFILL","DAILY_UPDATE").contains(type)?"PRICE":type;
+            db.update("UPDATE market_data_job SET data_contract_version=? WHERE id=?",
+                    com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct(dataset,job.get("product_type").toString()).version(),job.get("id"));
+        }
+    }
+
+    @Test void anOldWorkerCannotWriteOrChangeTheStateOfANewerContractGeneration() {
+        workerProduct(1001L,"STOCK","SSE");
+        sync.queueBackfill(1001L);
+        doAnswer(call->{
+            db.update("UPDATE market_data_job SET data_contract_version='new-generation' WHERE product_id=1001");
+            ((Runnable) call.getArgument(6)).run();
+            return new InvestmentHistoryPreparationService.PreparationResult(10,call.getArgument(3),call.getArgument(3),call.getArgument(4),false,null,false,call.getArgument(4));
+        }).when(historyPreparation).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
+        sync.processNext();
+        assertThat(db.queryForMap("SELECT status,data_contract_version FROM market_data_job WHERE product_id=1001"))
+                .containsEntry("status","RUNNING").containsEntry("data_contract_version","new-generation");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_collection_batch",Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM product_daily_quote",Integer.class)).isZero();
     }
 
     @Test
@@ -173,23 +191,6 @@ class MarketDataInfrastructureTest {
         assertThat(reader.coverage(198L,"NONE")).containsEntry("coverageStatus","CALENDAR_UNAVAILABLE").containsEntry("coverageRatio",null);
         when(analysis.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of("calendarKnown",true,"expectedThroughDate","2026-07-20","expectedDates",List.of("2026-07-20"),"targetDate","2026-07-20","ruleProfile","CN_NAV","ruleVersion","quote-availability-v1"));
         assertThat(reader.coverage(198L,"NONE")).containsEntry("coverageStatus","CALENDAR_UNAVAILABLE").containsEntry("coverageRatio",null);
-    }
-
-    @Test
-    void singleObservedQuoteDoesNotClaimFullHistoryCoverage() {
-        db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
-                + "VALUES(99,'STOCK','SSE','600000','测试','CNY','ACTIVE')");
-        db.update("INSERT INTO product_daily_quote(product_id,trade_date,adjust_type,close_price,source) "
-                + "VALUES(99,'2026-07-17','NONE',10,'TEST')");
-        when(analysis.quoteAvailability(any(),any(),any(),any())).thenReturn(Map.of("calendarKnown",true,
-                "expectedThroughDate","2026-07-17","targetDate","2026-07-17","expectedDates",List.of("2026-07-17"),
-                "ruleProfile","CN_CLOSE","ruleVersion","quote-availability-v1"));
-
-        Map<String, Object> coverage = new MarketDataService(db, analysis, mock(com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper.class)).coverage(99L, "NONE");
-
-        assertThat(coverage).containsEntry("coverageScope", "OBSERVED_RANGE")
-                .containsEntry("coverageStatus", "SAMPLE_COMPLETE")
-                .containsEntry("historyCoverageComplete", false);
     }
 
     @Test
@@ -317,36 +318,6 @@ class MarketDataInfrastructureTest {
         assertThat(db.queryForObject("SELECT COUNT(*) FROM market_data_job",Integer.class)).isZero();
     }
 
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.CsvSource({"STOCK,NASDAQ,false", "STOCK,SSE,false", "MUTUAL_FUND,FUND_CN,false", "STOCK,NASDAQ,true"})
-    void alreadyCollectedDemandIsRefreshedThroughTheExistingWorkerWhenCollectionVersionsConflict(
-            String type, String market, boolean fullLibrary) {
-        sync.setFullLibraryEnabled(fullLibrary);
-        var requirements = new MarketDataRequirementService(db); sync.setRequirements(requirements);
-        workerProduct(990L, type, market); var product = products.selectById(990L);
-        var end = requirements.now().toLocalDate().minusDays(2); var start = end.minusDays(400);
-        product.setHistoryEndDate(end); product.setHistoryCoverageComplete(true);
-        requirements.save(1, "DETAIL", "990", 990, "PRICE", "REQUIRED", start, end, false,
-                requirements.now().plusHours(1));
-        requirements.recordPrepared(990, "PRICE", start, end);
-        assertThat(requirements.missingWindows(990, "PRICE", end)).isEmpty();
-        var incompatible = new java.util.concurrent.atomic.AtomicBoolean(true);
-        when(historyPreparation.requiresPreparation(any(), eq(start), eq(end))).thenAnswer(call -> incompatible.get());
-        doAnswer(call -> {
-            incompatible.set(false);
-            return new InvestmentHistoryPreparationService.PreparationResult(400, start, start, end, true, "adapter-2", false, end);
-        }).when(historyPreparation).prepareDemandProduct(eq(product), anyString(), anyBoolean(), eq(start), eq(end));
-
-        assertThat(sync.reconcileDemand()).isEqualTo(1);
-        sync.processNext();
-
-        verify(historyPreparation).prepareDemandProduct(eq(product), anyString(), eq(false), eq(start), eq(end));
-        verify(tasks).queueAnalysisForProduct(990L);
-        assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=990", String.class)).isEqualTo("SUCCEEDED");
-        assertThat(sync.reconcileDemand()).isZero();
-        assertThat(product.getHistoryCoverageComplete()).isTrue();
-    }
-
     @Test
     void legacyFullMarketQueueIsNotConsumedWithoutActiveDemand() {
         sync.setFullLibraryEnabled(false);
@@ -354,7 +325,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status,catalog_market) VALUES(901,'STOCK','SSE','600901','test','CNY','ACTIVE','CN_A')");
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,updated_at) VALUES(901,'BACKFILL','QUEUED','1976-01-01','2026-09-30','2026-01-01')");
         sync.processNext();
-        verify(historyPreparation,never()).prepareProduct(any(),anyString(),anyBoolean(),any(),any());
+        verify(historyPreparation,never()).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=901",String.class)).isEqualTo("QUEUED");
     }
 
@@ -369,7 +340,7 @@ class MarketDataInfrastructureTest {
         var product=new InvestmentProduct();product.setId(902L);product.setProductType("STOCK");product.setMarket("SSE");product.setCode("600902");
         when(products.selectById(902L)).thenReturn(product);
         sync.processNext();
-        verify(historyPreparation).prepareDemandProduct(eq(product),anyString(),anyBoolean(),eq(LocalDate.of(2026,9,1)),eq(LocalDate.of(2026,9,3)));
+        verify(historyPreparation).prepareMarketProduct(eq(product), anyString(), anyBoolean(), eq(LocalDate.of(2026,9,1)), eq(LocalDate.of(2026,9,3)), eq(true), any());
     }
 
     @Test
@@ -411,11 +382,13 @@ class MarketDataInfrastructureTest {
         LocalDate end=LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,last_error,updated_at) "
                 +"VALUES(998,'BACKFILL','SUCCEEDED',?,?,?,'NO_NEW_DATA',?)",end.minusYears(50),end,end,java.time.LocalDateTime.now().minusHours(7));
+        useCurrentContractForFixtureJobs();
         assertThat(sync.queueDaily(java.util.Set.of("NASDAQ"),end)).isEqualTo(1);
         assertThat(db.queryForMap("SELECT start_date,target_date FROM market_data_job WHERE product_id=998"))
                 .containsEntry("start_date",end.minusDays(10).toString()).containsEntry("target_date",end.toString());
+        useCurrentContractForFixtureJobs();
         sync.processNext();
-        verify(historyPreparation).prepareProduct(any(),anyString(),eq(false),eq(end.minusDays(10)),eq(end));
+        verify(historyPreparation).prepareMarketProduct(any(), anyString(), eq(false), eq(end.minusDays(10)), eq(end), eq(false), any());
     }
 
     @Test
@@ -424,14 +397,18 @@ class MarketDataInfrastructureTest {
         workerProduct(999L,"STOCK","NASDAQ");LocalDate end=requirements.now().toLocalDate(),start=end.minusYears(2);
         db.update("UPDATE investment_product SET history_end_date=? WHERE id=999",end);
         requirements.save(1,"DETAIL","999",999,"PRICE","REQUIRED",start,end,true,requirements.now().plusHours(1));
+        MarketDataTestSupport.collected(db,999,start,end,false);
         requirements.recordPrepared(999,"PRICE",start,end);
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,last_error,updated_at) "
                 +"VALUES(999,'BACKFILL','SUCCEEDED',?,?,?,NULL,?)",start,end,end,requirements.now().minusHours(7));
+        useCurrentContractForFixtureJobs();
         assertThat(sync.reconcileDemand()).isEqualTo(1);
         assertThat(db.queryForMap("SELECT start_date,target_date FROM market_data_job WHERE product_id=999"))
                 .containsEntry("start_date",end.minusDays(10).toString()).containsEntry("target_date",end.toString());
+        useCurrentContractForFixtureJobs();
         sync.processNext();
-        verify(historyPreparation).prepareDemandProduct(any(),anyString(),eq(false),eq(end.minusDays(10)),eq(end));
+        verify(historyPreparation).prepareMarketProduct(any(), anyString(), eq(false), eq(end.minusDays(10)), eq(end), eq(true), any());
+        useCurrentContractForFixtureJobs();
         assertThat(sync.reconcileDemand()).isZero();
     }
 
@@ -444,18 +421,22 @@ class MarketDataInfrastructureTest {
             workerProduct(id, "STOCK", "NASDAQ");
             db.update("UPDATE investment_product SET code=? WHERE id=?", "TEST"+id,id);
             requirements.save(1,"DETAIL",String.valueOf(id),id,"PRICE","REQUIRED",start,end,true,requirements.now().plusHours(1));
+            MarketDataTestSupport.collected(db,id,start,end,false);
             requirements.recordPrepared(id,"PRICE",start,end);
             db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,last_error,updated_at) "
                     + "VALUES(?,'BACKFILL','SUCCEEDED',?,?,?,'NO_NEW_DATA',?)",id,start,end,end,requirements.now());
         }
+        useCurrentContractForFixtureJobs();
         assertThat(sync.reconcileDemand()).isZero();
         db.update("UPDATE market_data_job SET updated_at=? WHERE product_id=996",requirements.now().minusHours(7));
+        useCurrentContractForFixtureJobs();
         assertThat(sync.reconcileDemand()).isEqualTo(1);
         var row=db.queryForMap("SELECT status,start_date,target_date FROM market_data_job WHERE product_id=996");
         assertThat(row).containsEntry("status","QUEUED").containsEntry("start_date",end.minusDays(10).toString()).containsEntry("target_date",end.toString());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=997",String.class)).isEqualTo("SUCCEEDED");
+        useCurrentContractForFixtureJobs();
         sync.processNext();
-        verify(historyPreparation).prepareDemandProduct(any(),anyString(),eq(false),eq(end.minusDays(10)),eq(end));
+        verify(historyPreparation).prepareMarketProduct(any(), anyString(), eq(false), eq(end.minusDays(10)), eq(end), eq(true), any());
     }
 
     @Test
@@ -474,10 +455,12 @@ class MarketDataInfrastructureTest {
                     + "VALUES(?,'BACKFILL','SUCCEEDED',?,?,?,?)", id, start, end, errors.get(id), requirements.now());
         }
 
+        useCurrentContractForFixtureJobs();
         assertThat(sync.reconcileDemand()).isZero();
         for (long id : List.of(994L, 995L)) {
             assertThat(db.queryForMap("SELECT status,last_error FROM market_data_job WHERE product_id=?", id))
                     .containsEntry("status", "SUCCEEDED").containsEntry("last_error", errors.get(id));
+            useCurrentContractForFixtureJobs();
             sync.queueBackfill(id);
             assertThat(db.queryForMap("SELECT status,last_error FROM market_data_job WHERE product_id=?", id))
                     .containsEntry("status", "QUEUED").containsEntry("last_error", null);
@@ -492,9 +475,9 @@ class MarketDataInfrastructureTest {
         var product=new InvestmentProduct();product.setId(903L);product.setProductType("STOCK");product.setMarket("SSE");product.setCode("600903");
         when(products.selectById(903L)).thenReturn(product);
         doAnswer(call->{product.setHistoryEndDate(call.getArgument(4));return new InvestmentHistoryPreparationService.PreparationResult(1,call.getArgument(3),call.getArgument(4),call.getArgument(4),false,null,false,null);})
-                .when(historyPreparation).prepareDemandProduct(any(),anyString(),anyBoolean(),any(),any());
+                .when(historyPreparation).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(true), any());
         sync.reconcileDemand();sync.processNext();sync.reconcileDemand();sync.processNext();
-        verify(historyPreparation,times(1)).prepareDemandProduct(any(),anyString(),anyBoolean(),any(),any());
+        verify(historyPreparation,times(1)).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(true), any());
         assertThat(requirements.active().get(0).get("prepared_end_date")).isNull();
         assertThat(db.queryForObject("SELECT last_error FROM market_data_job WHERE product_id=903",String.class)).isEqualTo("采集请求窗口未完成，保留检查点等待重试");
     }
@@ -532,8 +515,9 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,updated_at) VALUES(908,'BACKFILL','QUEUED','1976-01-01',?,'2020-01-01','2020-01-01')",end);
         requirements.save(1,"DETAIL","908",908,"PRICE","REQUIRED",start,end,false,requirements.now().plusHours(1));
         var product=new InvestmentProduct();product.setId(908L);product.setProductType("STOCK");product.setMarket("SSE");product.setCode("600908");when(products.selectById(908L)).thenReturn(product);
+        useCurrentContractForFixtureJobs();
         sync.processNext();
-        verify(historyPreparation).prepareDemandProduct(eq(product),anyString(),anyBoolean(),eq(start),eq(end));
+        verify(historyPreparation).prepareMarketProduct(eq(product), anyString(), anyBoolean(), eq(start), eq(end), eq(true), any());
         var queued=db.queryForMap("SELECT * FROM market_data_job WHERE product_id=908");
         assertThat(queued).containsEntry("status","QUEUED").containsEntry("start_date","1976-01-01").containsEntry("checkpoint_date","2020-01-01");
         assertThat(requirements.active().get(0).get("prepared_end_date")).isEqualTo(end.toString());
@@ -609,8 +593,7 @@ class MarketDataInfrastructureTest {
         sync.processNext();
 
         // 走的是 product-level 的历史行情能力，不再有第二套摄取/校验/落库。
-        verify(historyPreparation).prepareProduct(eq(product), eq("STOCK_HISTORY"), eq(true),
-                eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2016, 12, 30)));
+        verify(historyPreparation).prepareMarketProduct(eq(product), eq("STOCK_HISTORY"), eq(true), eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2016, 12, 30)), eq(false), any());
         assertThat(db.queryForObject(
                 "SELECT status FROM market_data_job WHERE product_id=10", String.class)).isEqualTo("QUEUED");
         assertThat(db.queryForObject(
@@ -693,9 +676,9 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,"
                 + "attempt_count,updated_at) VALUES(21,'BACKFILL','QUEUED','2025-01-01','2026-02-01',"
                 + "'2025-12-31',0,CURRENT_TIMESTAMP)");
+        useCurrentContractForFixtureJobs();
         sync.processNext();
-        verify(historyPreparation).prepareProduct(any(), eq("STOCK_HISTORY"), eq(false),
-                eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 2, 1)));
+        verify(historyPreparation).prepareMarketProduct(any(), eq("STOCK_HISTORY"), eq(false), eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 2, 1)), eq(false), any());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=21", String.class))
                 .isEqualTo("SUCCEEDED");
     }
@@ -707,7 +690,8 @@ class MarketDataInfrastructureTest {
                 + "attempt_count,updated_at) VALUES(22,'BACKFILL','QUEUED','2025-01-01','2026-02-01',"
                 + "'2025-12-31',0,CURRENT_TIMESTAMP)");
         doThrow(new IllegalStateException("provider unavailable")).when(historyPreparation)
-                .prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                .prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
+        useCurrentContractForFixtureJobs();
         sync.processNext();
         assertThat(db.queryForMap("SELECT status,checkpoint_date,attempt_count FROM market_data_job WHERE product_id=22"))
                 .containsEntry("status", "RETRY_WAIT").containsEntry("checkpoint_date", "2025-12-31")
@@ -729,7 +713,7 @@ class MarketDataInfrastructureTest {
                     product.setHistoryEndDate(end);
                     return new InvestmentHistoryPreparationService.PreparationResult(
                             2400, start, start, end, true, "dataset-v1", false, end);
-                }).when(historyPreparation).prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                }).when(historyPreparation).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
                 + "attempt_count,updated_at) VALUES(81,'BACKFILL','QUEUED','2016-01-01','2026-10-01',0,CURRENT_TIMESTAMP)");
 
@@ -743,10 +727,8 @@ class MarketDataInfrastructureTest {
         defaults.processNext();
         assertThat(db.queryForMap("SELECT status,checkpoint_date FROM market_data_job WHERE product_id=81"))
                 .containsEntry("status", "SUCCEEDED").containsEntry("checkpoint_date", "2026-10-01");
-        verify(historyPreparation, times(2)).prepareProduct(any(), eq("STOCK_HISTORY"), eq(true),
-                eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2025, 12, 28)));
-        verify(historyPreparation).prepareProduct(any(), eq("STOCK_HISTORY"), eq(false),
-                eq(LocalDate.of(2025, 12, 29)), eq(LocalDate.of(2026, 10, 1)));
+        verify(historyPreparation, times(2)).prepareMarketProduct(any(), eq("STOCK_HISTORY"), eq(true), eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2025, 12, 28)), eq(false), any());
+        verify(historyPreparation).prepareMarketProduct(any(), eq("STOCK_HISTORY"), eq(false), eq(LocalDate.of(2025, 12, 29)), eq(LocalDate.of(2026, 10, 1)), eq(false), any());
     }
 
     @Test
@@ -755,8 +737,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
                 + "attempt_count,updated_at) VALUES(23,'BACKFILL','QUEUED','2016-01-01','2026-01-01',0,CURRENT_TIMESTAMP)");
         sync.processNext();
-        verify(historyPreparation).prepareProduct(any(), eq("FUND_NAV_HISTORY"), eq(true),
-                eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2026, 1, 1)));
+        verify(historyPreparation).prepareMarketProduct(any(), eq("FUND_NAV_HISTORY"), eq(true), eq(LocalDate.of(2016, 1, 1)), eq(LocalDate.of(2026, 1, 1)), eq(false), any());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=23", String.class))
                 .isEqualTo("SUCCEEDED");
     }
@@ -769,8 +750,7 @@ class MarketDataInfrastructureTest {
 
         sync.processNext();
 
-        verify(historyPreparation).prepareProduct(any(), eq("STOCK_HISTORY"), eq(true),
-                eq(LocalDate.of(1976, 1, 1)), eq(LocalDate.of(2026, 1, 1)));
+        verify(historyPreparation).prepareMarketProduct(any(), eq("STOCK_HISTORY"), eq(true), eq(LocalDate.of(1976, 1, 1)), eq(LocalDate.of(2026, 1, 1)), eq(false), any());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=34", String.class))
                 .isEqualTo("SUCCEEDED");
     }
@@ -784,7 +764,7 @@ class MarketDataInfrastructureTest {
                     db.update("UPDATE market_data_job SET lease_token='replacement-owner' WHERE product_id=24");
                     return new InvestmentHistoryPreparationService.PreparationResult(1, LocalDate.of(2026, 1, 1),
                             LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 1), false, "v1", false, LocalDate.of(2026, 1, 1));
-                }).when(historyPreparation).prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                }).when(historyPreparation).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         sync.processNext();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=24", String.class))
                 .isEqualTo("RUNNING");
@@ -803,7 +783,7 @@ class MarketDataInfrastructureTest {
         assertThat(db.queryForMap("SELECT status,attempt_count,last_error FROM market_data_job WHERE product_id=33"))
                 .containsEntry("status", "FAILED").containsEntry("attempt_count", 6)
                 .containsEntry("last_error", "LEASE_EXPIRED");
-        verify(historyPreparation, never()).prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+        verify(historyPreparation, never()).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
     }
 
     @Test
@@ -815,7 +795,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
                 + "attempt_count,updated_at) VALUES(25,'DAILY_UPDATE','QUEUED','2026-01-01','2026-01-01',0,CURRENT_TIMESTAMP)");
         sync.processNext();
-        verify(historyPreparation, never()).prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+        verify(historyPreparation, never()).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE job_type='DAILY_UPDATE'", String.class))
                 .isEqualTo("QUEUED");
     }
@@ -836,6 +816,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,"
                 + "attempt_count,last_error,updated_at) VALUES(27,'BACKFILL','FAILED','2025-01-01','2026-02-01',"
                 + "'2025-12-31',6,'provider unavailable',CURRENT_TIMESTAMP)");
+        useCurrentContractForFixtureJobs();
         sync.queueBackfill(27L);
         assertThat(db.queryForMap("SELECT status,start_date,checkpoint_date,attempt_count FROM market_data_job WHERE product_id=27"))
                 .containsEntry("status", "QUEUED").containsEntry("start_date", "2025-01-01")
@@ -848,6 +829,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,"
                 + "attempt_count,updated_at) VALUES(28,'BACKFILL','FAILED','2025-01-01','2026-01-01',6,?)",
                 java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai")));
+        useCurrentContractForFixtureJobs();
         assertThat(sync.queueDaily(java.util.Set.of("SSE"), LocalDate.of(2026, 3, 10))).isZero();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=28", String.class))
                 .isEqualTo("FAILED");
@@ -860,7 +842,7 @@ class MarketDataInfrastructureTest {
                 + "attempt_count,updated_at) VALUES(29,'BACKFILL','QUEUED','2026-01-01','2026-01-01',0,CURRENT_TIMESTAMP)");
         doReturn(new InvestmentHistoryPreparationService.PreparationResult(0, LocalDate.of(2026, 1, 1),
                         null, null, false, null, true, LocalDate.of(2026, 1, 1))).when(historyPreparation)
-                .prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                .prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         sync.processNext();
         assertThat(db.queryForMap("SELECT status,last_error FROM market_data_job WHERE product_id=29"))
                 .containsEntry("status", "SUCCEEDED").containsEntry("last_error", "NO_NEW_DATA");
@@ -874,7 +856,7 @@ class MarketDataInfrastructureTest {
                 + "attempt_count,updated_at) VALUES(32,'BACKFILL','QUEUED','2026-01-01','2026-01-01',0,CURRENT_TIMESTAMP)");
         doReturn(new InvestmentHistoryPreparationService.PreparationResult(10, LocalDate.of(2026, 1, 1),
                         null, null, false, null, true, null)).when(historyPreparation)
-                .prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                .prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         sync.processNext();
         assertThat(db.queryForMap("SELECT status,last_error,checkpoint_date FROM market_data_job WHERE product_id=32"))
                 .containsEntry("status", "RETRY_WAIT").containsEntry("last_error", "采集请求窗口未完成，保留检查点等待重试")
@@ -897,7 +879,7 @@ class MarketDataInfrastructureTest {
         db.update("UPDATE market_data_job SET next_retry_at='2000-01-01 00:00:00' WHERE product_id=31");
         doReturn(new InvestmentHistoryPreparationService.PreparationResult(10, LocalDate.of(2026, 1, 1),
                         LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 1), false, null, true, LocalDate.of(2026, 1, 1)))
-                .when(historyPreparation).prepareProduct(any(), anyString(), anyBoolean(), any(), any());
+                .when(historyPreparation).prepareMarketProduct(any(), anyString(), anyBoolean(), any(), any(), eq(false), any());
         sync.processNext();
         assertThat(db.queryForObject("SELECT status FROM market_data_job WHERE product_id=31", String.class))
                 .isEqualTo("SUCCEEDED");
@@ -950,6 +932,7 @@ class MarketDataInfrastructureTest {
         db.update("INSERT INTO market_data_job(product_id,job_type,status,start_date,target_date,checkpoint_date,"
                 + "attempt_count,last_error,updated_at) VALUES(60,'BACKFILL','FAILED','2024-01-01','2026-01-01',"
                 + "'2024-12-31',6,'source unavailable','2000-01-01 00:00:00')");
+        useCurrentContractForFixtureJobs();
         sync.queueDaily(java.util.Set.of("SSE"), LocalDate.of(2026, 3, 10));
         assertThat(db.queryForMap("SELECT status,start_date,checkpoint_date,attempt_count FROM market_data_job WHERE product_id=60"))
                 .containsEntry("status", "QUEUED").containsEntry("start_date", "2024-01-01")

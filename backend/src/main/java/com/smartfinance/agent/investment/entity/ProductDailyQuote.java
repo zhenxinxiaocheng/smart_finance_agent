@@ -31,5 +31,7 @@ public class ProductDailyQuote {
     private String adjustType;
     private String source;
     private String adapterVersion;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String dataContractVersion;
     private LocalDateTime syncedAt;
 }

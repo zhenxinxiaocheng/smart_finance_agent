@@ -263,7 +263,9 @@ class ProviderBatch:
         return rows
 
     def snapshot_context(self, start_date: date, end_date: date) -> DataSnapshotContext:
+        from .data_contracts import contract_version
         return DataSnapshotContext(
+            data_contract_version=contract_version("PRICE", self.product_type.value),
             product_type=self.product_type,
             market=self.market,
             code=self.code,
@@ -1506,9 +1508,12 @@ class ProviderRegistry:
                 warnings.append(f"{provider.name}: invalid ProviderBatch")
                 continue
             mismatch = _batch_mismatch(value, product, normalized_code, normalized_market, adjustment)
-            required = ("open", "high", "low", "close", "volume") if product is ProductType.STOCK else ("close",)
-            if mismatch is None and any(getattr(row, field) is None for row in value.records for field in required):
-                mismatch = "required quote fields are missing"
+            if mismatch is None:
+                from .data_contracts import validate_quotes
+                try:
+                    validate_quotes([row.json_dict() for row in value.records], product.value)
+                except ValueError as exc:
+                    mismatch = str(exc)
             if mismatch is not None:
                 source_errors += 1
                 warnings.append(f"{provider.name}: {mismatch}")

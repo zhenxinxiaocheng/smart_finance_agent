@@ -6,6 +6,7 @@ import com.smartfinance.agent.investment.entity.InvestmentProduct;
 import com.smartfinance.agent.investment.entity.ProductDailyQuote;
 import com.smartfinance.agent.investment.mapper.InvestmentProductMapper;
 import com.smartfinance.agent.investment.mapper.ProductDailyQuoteMapper;
+import com.smartfinance.agent.investment.marketdata.contract.MarketDataContract;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,10 +28,10 @@ import java.util.Set;
  * <p>调用链保持与原始实现一致：
  * <pre>
  *   MarketCatalog / UserPosition
- *     → 本服务（区间决策 + 质量校验 + 落库 + 覆盖标记）
+ *     → 本服务（区间决策 + 质量校验 + 落库 + 采集事实）
  *       → InvestmentDataQualityService.resolve  （Provider + Normalize + Quality）
- *         → ProductDailyQuoteService.persistDailyQuotes （Persistence）
- *           → product_daily_quote
+ *         → ProductDailyQuoteService.persistBatch （Persistence）
+ *           → product_daily_quote + market_data_collection_batch
  * </pre>
  *
  * <p>正常运行为增量同步：只请求「本地最后有效日期 + 1」到当前可披露日期的区间。
@@ -57,7 +58,7 @@ public class InvestmentHistoryPreparationService {
             LocalDate requestedStartDate,
             LocalDate sampleStartDate,
             LocalDate sampleEndDate,
-            boolean coverageComplete,
+            boolean sourceWindowChecked,
             String datasetVersion,
             boolean skipped,
             LocalDate checkedThrough) {
@@ -170,6 +171,11 @@ public class InvestmentHistoryPreparationService {
         return prepareProduct(product,jobType,forceRefresh,start,target,true);
     }
 
+    public PreparationResult prepareMarketProduct(InvestmentProduct product,String jobType,boolean forceRefresh,
+                                                   LocalDate start,LocalDate target,boolean demandWindow,Runnable beforeWrite) {
+        return prepareProduct(product,jobType,forceRefresh,start,target,demandWindow,beforeWrite);
+    }
+
     public boolean requiresPreparation(InvestmentProduct product, LocalDate start, LocalDate end) {
         if (!supportsQuality(product)) return false;
         var inputs = quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
@@ -181,9 +187,14 @@ public class InvestmentHistoryPreparationService {
 
     private PreparationResult prepareProduct(InvestmentProduct incoming,String jobType,boolean forceRefresh,
                                              LocalDate start,LocalDate target,boolean demandWindow) {
+        return prepareProduct(incoming,jobType,forceRefresh,start,target,demandWindow,()->{});
+    }
+    private PreparationResult prepareProduct(InvestmentProduct incoming,String jobType,boolean forceRefresh,
+                                             LocalDate start,LocalDate target,boolean demandWindow,Runnable beforeWrite) {
         InvestmentProduct product = fund(incoming) && (start == null || demandWindow) ? classifyFund(incoming)
                 : start == null ? classificationService.enrichIfMissing(incoming) : incoming;
         String adjustType = dataQualityService.adjustType(product);
+        String dataContract = MarketDataContract.forProduct("PRICE",product.getProductType()).version();
         boolean strict = supportsQuality(product);
         boolean needsRaw = !"NONE".equals(adjustType);
         LocalDate nextDate = incrementalStart(product);
@@ -207,7 +218,7 @@ public class InvestmentHistoryPreparationService {
             requestedStart = earlier(requestedStart, localLastValid.plusDays(1));
         if (requestedStart.isAfter(requestedEnd))
             return skipped(product, adjustType, localLastValid, requestedStart);
-        if (!forceRefresh && confirmedClosedWindow(product, requestedStart, requestedEnd))
+        if (!forceRefresh && confirmedClosedWindow(product, requestedStart, requestedEnd,beforeWrite))
             return checkedEmpty(product, adjustType, localLastValid, requestedStart, requestedEnd);
         boolean useQuality = strict;
 
@@ -226,6 +237,7 @@ public class InvestmentHistoryPreparationService {
                 anchor=quoteMapper.selectOne(new LambdaQueryWrapper<ProductDailyQuote>()
                         .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType)
                         .orderByDesc(ProductDailyQuote::getTradeDate).last("LIMIT 1"));
+            if(anchor!=null&&!dataContract.equals(anchor.getDataContractVersion()))anchor=null;
             primary = fetch(product, anchor == null ? requestedStart : earlier(requestedStart,anchor.getTradeDate()),
                     anchor==null ? requestedEnd : later(requestedEnd,anchor.getTradeDate()), adjustType, useQuality);
             if (anchor != null) {
@@ -255,6 +267,7 @@ public class InvestmentHistoryPreparationService {
                     Set<LocalDate> refreshed=recordDates(primary.response(),primary.adjustType());
                     for(var existing:quoteMapper.selectList(new LambdaQueryWrapper<ProductDailyQuote>()
                             .eq(ProductDailyQuote::getProductId,product.getId()).eq(ProductDailyQuote::getAdjustType,adjustType))) {
+                        if(!dataContract.equals(existing.getDataContractVersion()))continue;
                         if(!refreshed.contains(existing.getTradeDate()))
                             throw new IllegalStateException("复权基准重建未覆盖已有日期，保留原行情等待补齐");
                         if (fund(product) && existing.getTotalReturnIndex()!=null && existing.getTotalReturnIndex().signum()>0) {
@@ -267,18 +280,17 @@ public class InvestmentHistoryPreparationService {
             }
         } catch (RuntimeException exception) {
             primary = null;
-            if (isSourceEmpty(exception) && !rebuilding)
+            if (exception instanceof AnalysisServiceClient.SourceEmptyException empty && !rebuilding) {
+                LocalDate emptyStart=requestedStart,emptyEnd=requestedEnd;
+                write(writeTransaction,()->{beforeWrite.run();quoteService.recordEmpty(product,adjustType,emptyStart,emptyEnd,empty.response());});
                 log.debug("研究价格查询正常返回空记录 {} 至 {}", requestedStart, requestedEnd);
-            else failure = isSourceEmpty(exception)
+            } else failure = isSourceEmpty(exception)
                     ? new IllegalStateException("价格基准重建未返回记录，保留原行情等待重试", exception) : exception;
         }
-        boolean coverageComplete = fullBackfill
-                ? initialCoverageComplete(product, requestedStart, requestedEnd, availableEnd)
-                : Boolean.TRUE.equals(product.getHistoryCoverageComplete());
         if (primary != null) {
             try {
                 if (primary.evaluation() != null && primary.evaluation().blocked()) throw new QualityBlockedException();
-                persistSeries(product, primary, coverageComplete, true);
+                persistSeries(product, primary, true,beforeWrite);
             } catch (RuntimeException exception) {
                 failure = exception;
             }
@@ -287,8 +299,10 @@ public class InvestmentHistoryPreparationService {
             try {
                 PreparedSeries raw = fetch(product, requestedStart, requestedEnd, "NONE", useQuality);
                 if (raw.evaluation() != null && raw.evaluation().blocked()) throw new QualityBlockedException();
-                persistSeries(product, raw, coverageComplete, false);
+                persistSeries(product, raw, false,beforeWrite);
             } catch (AnalysisServiceClient.SourceEmptyException empty) {
+                LocalDate emptyStart=requestedStart,emptyEnd=requestedEnd;
+                write(writeTransaction,()->{beforeWrite.run();quoteService.recordEmpty(product,"NONE",emptyStart,emptyEnd,empty.response());});
                 log.debug("原始价格查询正常返回空记录 {} 至 {}", requestedStart, requestedEnd);
             } catch (RuntimeException exception) {
                 if (failure == null) failure = exception;
@@ -303,22 +317,22 @@ public class InvestmentHistoryPreparationService {
                 requestedStart,
                 primary.start(),
                 primary.end(),
-                coverageComplete,
+                true,
                 primary.evaluation() == null ? null : primary.evaluation().datasetVersion(),
                 false,
                 requestedEnd);
     }
 
     /** Another series failing must not discard valid observations already fetched and stored. */
-    private void persistSeries(InvestmentProduct product, PreparedSeries item, boolean complete, boolean primary) {
+    private void persistSeries(InvestmentProduct product, PreparedSeries item, boolean primary,Runnable beforeWrite) {
         if (item.evaluation() != null) dataQualityService.claim(item.evaluation());
         write(writeTransaction, () -> {
-            quoteService.persistDailyQuotes(product, item.response(), item.adjustType());
+            beforeWrite.run();
+            quoteService.persistBatch(product, item.response(), item.adjustType(),item.requestedStart(),item.requestedEnd());
             if (item.evaluation() != null) dataQualityService.persistPrepared(item.evaluation());
             if (primary) {
                 product.setHistoryStartDate(earlier(product.getHistoryStartDate(), item.start()));
                 product.setHistoryEndDate(later(product.getHistoryEndDate(), item.end()));
-                product.setHistoryCoverageComplete(complete);
                 productMapper.updateById(product);
             }
         });
@@ -327,6 +341,9 @@ public class InvestmentHistoryPreparationService {
     /** null means one of the required price series still needs its initial history. */
     public LocalDate incrementalStart(InvestmentProduct product) {
         String adjustment = dataQualityService.adjustType(product);
+        String contract=com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE",product.getProductType()).version();
+        if(quoteMapper.countIncompatible(product.getId(),adjustment,contract)>0
+                ||!"NONE".equals(adjustment)&&quoteMapper.countIncompatible(product.getId(),"NONE",contract)>0)return null;
         LocalDate latest = quoteMapper.latestTradeDate(product.getId(), adjustment);
         if (!"NONE".equals(adjustment)) {
             LocalDate raw = quoteMapper.latestTradeDate(product.getId(), "NONE");
@@ -339,7 +356,7 @@ public class InvestmentHistoryPreparationService {
 
     private record PreparedSeries(String adjustType, Map<String, Object> response,
                                   InvestmentDataQualityService.Evaluation evaluation,
-                                  LocalDate start, LocalDate end) { }
+                                  LocalDate start, LocalDate end,LocalDate requestedStart,LocalDate requestedEnd) { }
 
     private static BigDecimal valueOn(Map<String, Object> response, LocalDate day, String field) {
         for (Object value : (List<?>) response.get("records")) {
@@ -376,14 +393,14 @@ public class InvestmentHistoryPreparationService {
         Map<String, Object> response = evaluation == null
                 ? analysisClient.marketDailyQuotes(product, start, end, adjustType) : evaluation.response();
         Set<LocalDate> dates = recordDates(response,adjustType);
-        if (dates.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录");
+        if (dates.isEmpty()) throw new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录",null,response);
         if (dates.stream().anyMatch(day -> day.isBefore(start) || day.isAfter(end))) {
             // A stale/out-of-window response must never overwrite local data.
             throw new IllegalStateException("数据源返回请求区间之外的记录");
         }
         return new PreparedSeries(adjustType, response, evaluation,
                 dates.stream().min(LocalDate::compareTo).orElseThrow(),
-                dates.stream().max(LocalDate::compareTo).orElseThrow());
+                dates.stream().max(LocalDate::compareTo).orElseThrow(),start,end);
     }
 
     @SuppressWarnings("unchecked")
@@ -420,11 +437,20 @@ public class InvestmentHistoryPreparationService {
                 && Set.of("SSE", "SZSE", "BSE", "SH", "SZ", "BJ", "CN").contains(product.getMarket());
     }
 
-    private boolean confirmedClosedWindow(InvestmentProduct product,LocalDate start, LocalDate end) {
+    private boolean confirmedClosedWindow(InvestmentProduct product,LocalDate start, LocalDate end,Runnable beforeWrite) {
         try {
-            List<LocalDate> dates=AnalysisServiceClient.expectedQuoteDates(
-                    analysisClient.quoteAvailability(product,start,end,clock.instant()),start,end);
-            return dates!=null&&dates.isEmpty();
+            var response=analysisClient.quoteAvailability(product,start,end,clock.instant());
+            List<LocalDate> dates=AnalysisServiceClient.expectedQuoteDates(response,start,end);
+            if(dates==null||!dates.isEmpty())return false;
+            String adjustment=dataQualityService.adjustType(product);
+            var closed=Map.<String,Object>of("result","CLOSED","records",List.of(),"calendarVerified",true,
+                    "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE",product.getProductType()).version());
+            write(writeTransaction,()->{
+                beforeWrite.run();
+                quoteService.recordEmpty(product,adjustment,start,end,closed);
+                if(!"NONE".equals(adjustment))quoteService.recordEmpty(product,"NONE",start,end,closed);
+            });
+            return true;
         } catch (RuntimeException unavailable) {
             log.debug("交易日历暂不可用，继续从价格源获取 {} 至 {}", start, end, unavailable);
             return false;
@@ -448,7 +474,7 @@ public class InvestmentHistoryPreparationService {
                                            LocalDate last, LocalDate start, LocalDate end) {
         var previous = skipped(product, adjustment, last, start);
         return new PreparationResult(previous.recordCount(), start, previous.sampleStartDate(),
-                previous.sampleEndDate(), previous.coverageComplete(), null, true, end);
+                previous.sampleEndDate(), true, null, true, end);
     }
 
     private PreparationResult skipped(InvestmentProduct product, String adjustType,
@@ -458,7 +484,7 @@ public class InvestmentHistoryPreparationService {
                 requestedStart,
                 localLastValid,
                 localLastValid,
-                Boolean.TRUE.equals(product.getHistoryCoverageComplete()),
+                false,
                 null,
                 true);
     }
@@ -508,12 +534,6 @@ public class InvestmentHistoryPreparationService {
     }
 
     /** Completion describes a successful origin-to-target query, not guessed daily observations. */
-    private boolean initialCoverageComplete(InvestmentProduct product, LocalDate start, LocalDate end,
-                                            LocalDate availableEnd) {
-        LocalDate origin = knownStartDate(product);
-        return origin != null && !start.isAfter(origin) && !end.isBefore(availableEnd);
-    }
-
     private static LocalDate earlier(LocalDate first, LocalDate second) {
         if (first == null) return second;
         if (second == null) return first;

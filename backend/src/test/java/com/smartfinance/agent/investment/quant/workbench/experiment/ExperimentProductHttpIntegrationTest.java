@@ -2,7 +2,7 @@ package com.smartfinance.agent.investment.quant.workbench.experiment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.common.GlobalExceptionHandler;
-import com.smartfinance.agent.investment.quant.workbench.WorkbenchAnalysisClient;
+import com.smartfinance.agent.investment.quant.workbench.client.WorkbenchAnalysisClient;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

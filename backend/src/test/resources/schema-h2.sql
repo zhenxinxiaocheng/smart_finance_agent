@@ -1,5 +1,7 @@
 -- Test-only snapshot of the current Flyway schema.
 
+DROP TABLE IF EXISTS `market_data_collection_batch`;
+
 DROP TABLE IF EXISTS `quant_universe_member`;
 
 DROP TABLE IF EXISTS `quant_universe_snapshot`;
@@ -581,7 +583,6 @@ CREATE TABLE `investment_product` (
     `inception_date` DATE NULL,
     `history_start_date` DATE NULL,
     `history_end_date` DATE NULL,
-    `history_coverage_complete` BOOLEAN NOT NULL DEFAULT FALSE,
     `fund_type_raw` VARCHAR(80) NULL,
     `fund_category` VARCHAR(40) NULL,
     `classification_source` VARCHAR(60) NULL,
@@ -1302,3 +1303,22 @@ CREATE UNIQUE INDEX uk_research_observation ON `investment_research_record`
     (product_id, dataset, provider, record_key, observed_at);
 CREATE INDEX idx_research_asof ON `investment_research_record` (product_id, dataset, available_at, id);
 CREATE INDEX idx_research_versions ON `investment_research_record` (product_id, dataset, provider, record_key, id);
+
+-- Current market storage contract (Flyway V11/V12 equivalent for H2 integration fixtures).
+ALTER TABLE product_daily_quote ADD COLUMN data_contract_version VARCHAR(64) NULL;
+ALTER TABLE investment_research_record ADD COLUMN data_contract_version VARCHAR(64) NULL;
+ALTER TABLE investment_research_record ADD COLUMN source_content_hash CHAR(64) NULL;
+ALTER TABLE investment_research_record ADD COLUMN first_observed_at TIMESTAMP NULL;
+ALTER TABLE market_data_requirement ADD COLUMN prepared_contract_version VARCHAR(64) NULL;
+ALTER TABLE market_data_job ADD COLUMN data_contract_version VARCHAR(64) NULL;
+ALTER TABLE market_data_job ADD COLUMN error_code VARCHAR(40) NULL;
+CREATE TABLE market_data_collection_batch (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY, product_id BIGINT NOT NULL, dataset VARCHAR(20) NOT NULL,
+    adjust_type VARCHAR(20) NOT NULL, frequency VARCHAR(16) NOT NULL DEFAULT 'DAILY',
+    requested_start_date DATE NOT NULL, requested_end_date DATE NOT NULL,
+    data_start_date DATE NULL, data_end_date DATE NULL, record_count INT NOT NULL,
+    source_result VARCHAR(16) NOT NULL, provider VARCHAR(64), adapter_version VARCHAR(64),
+    data_contract_version VARCHAR(64) NOT NULL, content_hash CHAR(64) NOT NULL, observed_dates_hash CHAR(64),
+    collected_at TIMESTAMP NOT NULL, valid_until TIMESTAMP,
+    UNIQUE(product_id,dataset,adjust_type,frequency,data_contract_version,requested_start_date,requested_end_date,content_hash)
+);

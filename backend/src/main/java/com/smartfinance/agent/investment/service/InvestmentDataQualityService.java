@@ -166,6 +166,8 @@ public class InvestmentDataQualityService {
     public boolean requiresPreparation(InvestmentProduct product, LocalDate startDate, LocalDate endDate,
                                        List<ProductDailyQuote> inputs) {
         startDate = preparedStart(product, startDate);
+        String currentContract=com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE",product.getProductType()).version();
+        if(inputs.stream().anyMatch(row->!currentContract.equals(row.getDataContractVersion())))return true;
         LocalDate target = availability == null ? endDate : availability.target(product, endDate, Instant.now());
         List<LocalDate> observedDates = inputs.stream().map(ProductDailyQuote::getTradeDate).distinct().sorted().toList();
         if (!observedDates.isEmpty()) {
@@ -174,6 +176,7 @@ public class InvestmentDataQualityService {
         }
         if (startDate.isAfter(target)) return false;
         var receipts = preparedReceipts(product, startDate, target, observedDates.isEmpty() ? null : observedDates);
+        if(receipts.stream().anyMatch(receipt->!hasCurrentDataContract(product,receipt)))return true;
         if (receipts.isEmpty()) return !observedDates.isEmpty();
         var first = receipts.get(0);
         // Dates alone cannot prove that old and new collection units may be spliced.
@@ -202,6 +205,7 @@ public class InvestmentDataQualityService {
         if (startDate.isAfter(target)) return null;
         var selected = preparedReceipts(product, startDate, target, observedDates);
         if (selected.isEmpty()) return null;
+        if(selected.stream().anyMatch(receipt->!hasCurrentDataContract(product,receipt)))return null;
         if (observedDates == null && selected.size() == 1 && config.equals(selected.get(0).getQualityConfigVersion()))
             return replay(product, selected.get(0), config);
         List<String> versions = new ArrayList<>(), secondaryVersions = new ArrayList<>();
@@ -233,6 +237,12 @@ public class InvestmentDataQualityService {
         for (String secondary : stringList(response.get("secondaryDatasetVersions")))
             analysisClient.claimDataQuality(secondary, config);
         return toEvaluation(persist(config, response), response);
+    }
+
+    private boolean hasCurrentDataContract(InvestmentProduct product,InvestmentDataQualitySnapshot receipt) {
+        Object manifest=readJson(receipt.getManifestJson());
+        return manifest instanceof Map<?,?> values && com.smartfinance.agent.investment.marketdata.contract.MarketDataContract
+                .forProduct("PRICE",product.getProductType()).version().equals(values.get("dataContractVersion"));
     }
 
     private LocalDate preparedStart(InvestmentProduct product, LocalDate start) {
@@ -496,14 +506,8 @@ public class InvestmentDataQualityService {
      * 基金、ETF、指数及境外股票采用原始价格；A 股研究价格按配置复权。
      */
     public String adjustType(String productType, String market) {
-        if (Set.of("MUTUAL_FUND", "FUND", "ETF", "INDEX").contains(productType)) {
-            return runtimeProperties.getDataQuality().getFundAdjustType();
-        }
-        if (("ETF".equals(productType) || "STOCK".equals(productType)) && market != null
-                && Set.of("NASDAQ", "NYSE", "AMEX").contains(market)) {
-            return runtimeProperties.getDataQuality().getFundAdjustType();
-        }
-        return runtimeProperties.getDataQuality().getStockAdjustType();
+        String selected=com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.researchAdjustment(productType,market);
+        return "QFQ".equals(selected)?runtimeProperties.getDataQuality().getStockAdjustType():runtimeProperties.getDataQuality().getFundAdjustType();
     }
 
     /** 该产品的数据序列类型：基金为净值，其余为价格。 */
