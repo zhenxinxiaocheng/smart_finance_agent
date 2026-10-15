@@ -4,10 +4,6 @@ export function listAgentSkillsAPI() {
   return request.get('/agent-skills')
 }
 
-export function getAgentSkillAPI(id) {
-  return request.get(`/agent-skills/${id}`)
-}
-
 export function setAgentSkillEnabledAPI(id, enabled) {
   return request.put(`/agent-skills/${id}/enabled`, { enabled })
 }

@@ -9,10 +9,6 @@ export function importBillAPI(file) {
   })
 }
 
-export function getBillAPI(id) {
-  return request.get(`/bills/${id}`)
-}
-
 export function confirmBillAPI(id, data) {
   return request.post(`/bills/${id}/confirm`, data)
 }

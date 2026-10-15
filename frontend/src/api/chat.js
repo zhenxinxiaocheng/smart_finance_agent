@@ -1,12 +1,6 @@
 import request from './request'
 import { handleSessionExpired, resetSessionExpiryHandling } from '../lib/sessionExpiry'
 
-export function sendChatAPI(data) {
-  return request.post('/chat', data, {
-    timeout: 120000
-  })
-}
-
 export async function streamReactChatAPI(data, handlers = {}, signal) {
   const token = localStorage.getItem('token')
   if (token) {
