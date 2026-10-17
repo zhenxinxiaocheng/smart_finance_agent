@@ -14,12 +14,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.function.BiPredicate;
 
 @Service
 public class InvestmentDataJobService {
@@ -159,9 +159,8 @@ public class InvestmentDataJobService {
     }
 
     /** 启动只恢复持仓需求和缺失任务；已有任务由 Worker 续跑，真实输入变化才重排终态分析。 */
-    @EventListener(ApplicationReadyEvent.class)
     @Transactional
-    public void resumeHeldData() {
+    public void resumeHeldData(BiPredicate<Long, Long> needsRecovery) {
         if (assetMapper == null) return;
         for (InvestmentAsset asset : assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
                 .select(InvestmentAsset::getId, InvestmentAsset::getUserId, InvestmentAsset::getProductId)
@@ -169,7 +168,13 @@ public class InvestmentDataJobService {
             if (asset.getId() == null || asset.getUserId() == null || asset.getProductId() == null) continue;
             InvestmentProduct product = productMapper.selectById(asset.getProductId());
             if (product != null && isAssetHistoryProduct(product)) {
-                ensureRecoveryQueued(asset.getUserId(), asset.getId(), product.getId(), product.getProductType());
+                InvestmentDataJob job = ensureRecoveryQueued(asset.getUserId(), asset.getId(), product.getId(), product.getProductType());
+                if (job != null && List.of("SUCCEEDED", "PARTIAL", "FAILED").contains(job.getStatus())
+                        && needsRecovery.test(asset.getUserId(), asset.getId())) {
+                    InvestmentDataJob recovered = requeue(job, false);
+                    if (recovered != null && "QUEUED".equals(recovered.getStatus()) && detailCache != null)
+                        detailCache.evict(asset.getUserId(), asset.getId());
+                }
             }
         }
     }
@@ -290,6 +295,13 @@ public class InvestmentDataJobService {
         return mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
                 .eq(InvestmentDataJob::getAssetId, assetId)
                 .eq(InvestmentDataJob::getJobType, jobType));
+    }
+
+    public InvestmentDataJob analysisJob(Long userId, Long assetId, String productType) {
+        return mapper.selectOne(new LambdaQueryWrapper<InvestmentDataJob>()
+                .eq(InvestmentDataJob::getUserId, userId)
+                .eq(InvestmentDataJob::getAssetId, assetId)
+                .eq(InvestmentDataJob::getJobType, jobTypeFor(productType)));
     }
 
     /** 本地真实行情决定是否首次回补，不依赖覆盖标记或上一次任务状态。 */

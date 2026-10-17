@@ -98,7 +98,7 @@ import InvestmentWatchlistDialog from '@/components/investment/InvestmentWatchli
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import { feedback } from '@/lib/feedback'
 import { readInvestmentIndexCache, writeInvestmentIndexCache } from '@/lib/investmentIndexCache'
-import { createPrioritizedRefreshRunner, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
+import { createPrioritizedRefreshRunner, isInvestmentQuoteSessionActive, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
 import { useAuthStore } from '@/stores/auth'
 import {
   deleteInvestmentAssetAPI,
@@ -130,6 +130,9 @@ const watchlistDialogOpen = ref(false)
 const watchlistInitialType = ref('STOCK')
 let stopRealtimePolling = null
 let disposed = false
+let indexRequest = null
+let indexRevision = 0
+let indexMutations = 0
 const router = useRouter()
 
 const filteredAssets = computed(() => {
@@ -155,7 +158,10 @@ onMounted(() => {
   loadAssets().catch(() => {})
   loadIndexes().catch(() => {})
   loadHorizonProfile()
-  stopRealtimePolling = startInvestmentRealtimePolling(force => refreshAssets(force, true))
+  stopRealtimePolling = startInvestmentRealtimePolling(force => {
+    if (isInvestmentQuoteSessionActive(indexes.value)) loadIndexes(true).catch(() => {})
+    if (isInvestmentQuoteSessionActive(assets.value)) return refreshAssets(force, true)
+  })
   window.addEventListener('focus', refreshOnFocus)
 })
 
@@ -177,13 +183,21 @@ async function loadAssets(silent = false) {
   }
 }
 
-async function loadIndexes() {
-  if (disposed) return
-  const response = await listInvestmentIndexesAPI()
-  if (!disposed) applyIndexes(response.data)
+function loadIndexes(silent = false, force = false) {
+  if (disposed || indexMutations) return Promise.resolve()
+  if (indexRequest && !force) return indexRequest
+  const revision = indexRevision
+  const request = listInvestmentIndexesAPI({ silentFeedback: silent })
+    .then(response => {
+      if (!disposed && !indexMutations && revision === indexRevision) applyIndexes(response.data)
+    })
+    .finally(() => { if (indexRequest === request) indexRequest = null })
+  indexRequest = request
+  return request
 }
 
 function applyIndexes(items) {
+  indexRevision++
   indexes.value = items || []
   writeInvestmentIndexCache(indexCacheStorage, indexCacheAccount.value, indexes.value)
 }
@@ -212,13 +226,16 @@ async function saveHorizonProfile(payload) {
 }
 
 function refreshOnFocus() {
-  refreshAssets(true, true).catch(() => loadAssets().catch(() => {}))
-  loadIndexes().catch(() => {})
+  loadAssets(true).catch(() => {})
+  loadIndexes(true).catch(() => {})
 }
 
 function refreshAfterAssetChange() { refreshAssets(true, true, true).catch(() => {}) }
 
-function refreshAfterIndexChange() { loadIndexes().catch(() => {}) }
+function refreshAfterIndexChange() {
+  indexRevision++
+  loadIndexes(false, true).catch(() => {})
+}
 
 function openAssetWatchlist() {
   watchlistInitialType.value = 'STOCK'
@@ -235,20 +252,30 @@ async function reorderIndexes(indexCodes) {
   const indexesByCode = new Map(previousIndexes.map(item => [item.indexCode, item]))
   const reordered = indexCodes.map(code => indexesByCode.get(code)).filter(Boolean)
   if (reordered.length !== previousIndexes.length) return
+  indexMutations++
   applyIndexes(reordered)
+  const revision = indexRevision
   try {
     await reorderInvestmentIndexesAPI(indexCodes)
   } catch (error) {
-    applyIndexes(previousIndexes)
+    if (revision === indexRevision) applyIndexes(previousIndexes)
     feedback.error(error.response?.data?.message || '指数排序保存失败')
+  } finally {
+    indexMutations--
   }
 }
 
 async function removeIndex(item) {
   if (!item?.id) return
-  await deleteInvestmentIndexAPI(item.id)
-  applyIndexes(indexes.value.filter(index => index.id !== item.id))
-  feedback.success(`已移除 ${item.name}`)
+  indexMutations++
+  indexRevision++
+  try {
+    await deleteInvestmentIndexAPI(item.id)
+    applyIndexes(indexes.value.filter(index => index.id !== item.id))
+    feedback.success(`已移除 ${item.name}`)
+  } finally {
+    indexMutations--
+  }
 }
 
 function openAsset(asset) { router.push(`/stocks/${asset.id}`) }

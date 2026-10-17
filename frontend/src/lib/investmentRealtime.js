@@ -1,6 +1,26 @@
+// This only gates UI polling by local exchange hours; backend calendars remain authoritative.
+export function isInvestmentQuoteSessionActive(items, at = new Date()) {
+  return items.some(item => {
+    if (item.quoteFrequency === 'DAILY') return false
+    const china = ['CN', 'CN_INDEX', 'SSE', 'SZSE', 'BSE'].includes(item.market)
+    const us = ['US', 'US_INDEX', 'NASDAQ', 'NYSE', 'AMEX'].includes(item.market)
+    // GLOBAL and other markets do not yet carry an exchange timezone. Keep the
+    // cached polling path rather than guess a session and silently stop updates.
+    if (!china && !us) return Boolean(item.market)
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone: china ? 'Asia/Shanghai' : 'America/New_York',
+      weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(at).map(part => [part.type, part.value]))
+    if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false
+    const minutes = Number(parts.hour) * 60 + Number(parts.minute)
+    return china ? (minutes >= 570 && minutes < 690) || (minutes >= 780 && minutes < 900)
+      : minutes >= 570 && minutes < 960
+  })
+}
+
 export function startInvestmentRealtimePolling(
   callback,
-  intervalMs = 3000,
+  intervalMs = 30000,
   scheduler = globalThis,
   visibilitySource = globalThis.document
 ) {
@@ -23,7 +43,7 @@ export function startInvestmentRealtimePolling(
       stopTimer()
       return
     }
-    invoke(true)
+    invoke(false)
     startTimer()
   }
 

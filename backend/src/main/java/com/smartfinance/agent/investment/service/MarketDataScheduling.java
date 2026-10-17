@@ -9,6 +9,18 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 /** 市场调度独立于个人资产；执行池限流且不在内存堆积任务。 */
 @Configuration
 public class MarketDataScheduling {
+    /** Slow index providers must not consume the history workers or block HTTP callers on saturation. */
+    @Bean(name = "indexQuoteRefreshExecutor")
+    public ThreadPoolTaskExecutor indexQuoteRefreshExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(0);
+        executor.setThreadNamePrefix("index-quote-refresh-");
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        return executor;
+    }
+
     @Bean(name = "marketDataExecutor")
     public ThreadPoolTaskExecutor marketExecutor(@Value("${market-data.worker.concurrency:2}") int concurrency) {
         if (concurrency < 1 || concurrency > 8) throw new IllegalArgumentException("市场任务并发配置无效");

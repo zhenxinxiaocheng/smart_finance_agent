@@ -12,14 +12,18 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "investment.cache.quote")
 public class InvestmentQuoteCacheProperties {
     private boolean enabled = true;
-    private Duration ttl = Duration.ofSeconds(3);
+    private Duration ttl = Duration.ofSeconds(30);
+    private Duration indexFreshTtl = Duration.ofSeconds(30);
+    private Duration indexStaleTtl = Duration.ofMinutes(10);
     private Duration failureBackoff = Duration.ofSeconds(30);
 
     @PostConstruct
     public void validate() {
         if (ttl == null || ttl.toMillis() <= 0
+                || indexFreshTtl == null || indexFreshTtl.toMillis() <= 0
+                || indexStaleTtl == null || indexStaleTtl.compareTo(indexFreshTtl) < 0
                 || failureBackoff == null || failureBackoff.toMillis() <= 0) {
-            throw new IllegalArgumentException("Quote cache TTL and failure-backoff must be positive milliseconds");
+            throw new IllegalArgumentException("Quote cache durations must be positive and index fresh TTL <= stale TTL");
         }
     }
 }

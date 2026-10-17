@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   confidenceLabel,
   directionLabel,
+  directionMeta,
   invalidationText,
 } from './technicalOutlook.js'
 
@@ -12,6 +13,15 @@ test('把模型内部方向转换为普通用户可读的走势', () => {
   assert.equal(directionLabel('LEAN_BEARISH'), '偏弱')
   assert.equal(directionLabel('SIDEWAYS'), '横盘观察')
   assert.equal(confidenceLabel('HIGH'), '高置信度')
+})
+
+test('分析未就绪时按真实状态提示，不误报历史不足或沿用旧方向', () => {
+  assert.equal(directionLabel(undefined, 'PREPARING'), '分析待更新')
+  assert.equal(directionLabel('BULLISH', 'BLOCKED'), '数据校验未通过')
+  assert.equal(directionLabel(undefined, 'INSUFFICIENT'), '历史样本不足')
+  assert.equal(directionLabel(undefined, 'UNAVAILABLE'), '分析暂不可用')
+  assert.equal(directionLabel('BULLISH', 'READY'), '看涨')
+  assert.equal(directionMeta(undefined, 'PREPARING').tone, 'text-muted-foreground')
 })
 
 test('失效条件根据返回类型和价格动态展示', () => {

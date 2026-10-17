@@ -172,7 +172,9 @@ investment:
   cache:
     quote:
       enabled: ${INVESTMENT_QUOTE_CACHE_ENABLED:true}
-      ttl: ${INVESTMENT_QUOTE_CACHE_TTL:3s}
+      ttl: ${INVESTMENT_QUOTE_CACHE_TTL:30s}
+      index-fresh-ttl: ${INVESTMENT_INDEX_CACHE_FRESH_TTL:30s}
+      index-stale-ttl: ${INVESTMENT_INDEX_CACHE_STALE_TTL:10m}
       failure-backoff: ${INVESTMENT_QUOTE_CACHE_FAILURE_BACKOFF:30s}
     detail:
       enabled: ${INVESTMENT_DETAIL_CACHE_ENABLED:true}

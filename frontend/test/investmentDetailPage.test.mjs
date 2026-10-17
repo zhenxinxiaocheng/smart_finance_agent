@@ -73,6 +73,7 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', { 
         : { channel: 'chrome' }),
     })
     const page = await browser.newPage({ reducedMotion: 'reduce' })
+    await page.clock.install({ time: new Date('2026-10-17T02:00:00Z') })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.addInitScript(() => {
@@ -92,9 +93,14 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', { 
       sourceStatus: { dataState: 'READY' },
     }
     // Match the API prefix only; /src/api/*.js must remain real application modules.
-    await page.route(url => url.pathname.startsWith('/api/'), route => route.fulfill({
-      json: { code: 200, data: new URL(route.request().url()).pathname === '/api/investment/assets/1/detail' ? detail : [] },
-    }))
+    let detailRequests = 0
+    let quoteSyncRequests = 0
+    await page.route(url => url.pathname.startsWith('/api/'), route => {
+      const isDetail = new URL(route.request().url()).pathname === '/api/investment/assets/1/detail'
+      if (isDetail) detailRequests++
+      if (route.request().method() === 'POST' && new URL(route.request().url()).pathname.endsWith('/sync')) quoteSyncRequests++
+      return route.fulfill({ json: { code: 200, data: isDetail ? detail : [] } })
+    })
     const url = `http://127.0.0.1:${server.httpServer.address().port}/stocks/1`
     // External fonts must not make a local layout regression depend on the network.
     await page.route(remote => remote.origin !== new URL(url).origin, route => route.abort())
@@ -119,6 +125,13 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', { 
       })
     }
     const desktop = await measure(1440)
+    const header = page.locator('.app-page header')
+    for (const name of ['数据管理', '同步最新行情', '全量修复历史数据']) {
+      assert.equal(await page.getByRole('button', { name, exact: true }).count(), 0, `详情页不再提供${name}操作`)
+    }
+    for (const name of ['分析周期', '编辑持仓', '策略工作台']) {
+      assert.equal(await header.getByRole('button', { name, exact: true }).isVisible(), true, `${name}入口应保留`)
+    }
     assert.ok(desktop.card.x >= 0 && desktop.panel.right <= 1441, '桌面图表和侧栏应位于视口内')
     assert.ok(Math.abs(desktop.card.y - desktop.panel.y) < 1, '桌面图表与研判面板应并排对齐')
     assert.ok(desktop.panel.x >= desktop.card.right && desktop.card.width > desktop.panel.width * 2, '桌面应保留主图与侧栏的宽度层级')
@@ -134,6 +147,59 @@ test('平板改为上下布局且手机端压缩关键指标和图表高度', { 
     await page.evaluate(() => localStorage.setItem('sfa-density', 'compact'))
     const compact = await measure(1440)
     assert.ok(compact.padding > 0 && compact.padding < desktop.padding, '刷新后卡片内边距应遵循紧凑密度，不能被固定 py 类覆盖')
+
+    detail.asset.market = 'NASDAQ'
+    detail.asset.quoteFrequency = 'DAILY'
+    detail.technicalAnalysis = { status: 'PREPARING' }
+    detail.sourceStatus = { dataState: 'PREPARING', analysisJobStatus: 'RUNNING' }
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.getByText('分析待更新', { exact: true }).first().waitFor()
+    assert.doesNotMatch(await page.locator('.app-page').innerText(), /等待足够历史数据/)
+    const initialRequests = detailRequests
+    await page.clock.runFor(5000)
+    assert.equal(detailRequests, initialRequests, '分析结果不应以报价频率或旧的三秒间隔重复请求')
+    const updated = page.waitForResponse(response => response.url().endsWith('/assets/1/detail'))
+    await page.clock.runFor(5000)
+    await updated
+    assert.equal(detailRequests, initialRequests + 1)
+    detail.technicalAnalysis = { status: 'UNAVAILABLE' }
+    detail.sourceStatus = { dataState: 'UNAVAILABLE', analysisJobStatus: 'FAILED' }
+    const failed = page.waitForResponse(response => response.url().endsWith('/assets/1/detail'))
+    await page.clock.runFor(10000)
+    await failed
+    await page.getByText('分析暂不可用', { exact: true }).first().waitFor()
+    const stoppedRequests = detailRequests
+    const nextRead = page.waitForResponse(response => response.url().endsWith('/assets/1/detail'))
+    await page.clock.runFor(10000)
+    await nextRead
+    assert.equal(detailRequests, stoppedRequests + 1, '失败后停止十秒加速检查，三十秒仍读取已有结果')
+    await page.clock.runFor(9000)
+    assert.equal(detailRequests, stoppedRequests + 1, '终止任务不能继续使用十秒频率')
+    detail.technicalAnalysis = { status: 'READY', horizons: { SHORT: {
+      status: 'READY', outlook: { direction: 'BULLISH', confidence: 'MEDIUM' },
+    } } }
+    detail.sourceStatus = { dataState: 'READY', analysisJobStatus: 'SUCCEEDED' }
+    const recovered = page.waitForResponse(response => response.url().endsWith('/assets/1/detail'))
+    await page.clock.runFor(21000)
+    await recovered
+    await page.getByText('分析暂不可用', { exact: true }).first().waitFor({ state: 'hidden' })
+    assert.equal(detailRequests, stoppedRequests + 2, '无需重新打开页面即可看到后台完成的结果')
+    assert.equal(quoteSyncRequests, 0, '日频资产和休市读取不能触发采集')
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    const hiddenRequests = detailRequests
+    await page.clock.runFor(60000)
+    assert.equal(detailRequests, hiddenRequests, '页面隐藏时暂停读取')
+    const visibleRead = page.waitForResponse(response => response.url().endsWith('/assets/1/detail'))
+    await page.evaluate(() => {
+      delete document.hidden
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await visibleRead
+    assert.equal(detailRequests, hiddenRequests + 1, '返回可见页面后立即读取已有结果')
+    assert.equal(await page.locator('.investment-chart canvas').count() > 0, true, '更新失败保留已加载图表')
     assert.deepEqual(errors, [], '布局与图表渲染不应出现运行时错误')
   } finally {
     await browser?.close()
@@ -213,23 +279,18 @@ test('详情页只读：不轮询历史任务，也不渲染任务状态文案',
   assert.doesNotMatch(pageSource, /数据暂不可用/)
 })
 
-test('全量修复必须由用户显式触发，默认同步走增量接口', () => {
-  assert.match(pageSource, /syncInvestmentAssetAPI/)
-  assert.match(pageSource, /fullRepair/)
-  assert.match(pageSource, /全量修复历史数据/)
-  assert.match(pageSource, /同步最新行情/)
-})
-
 test('页面优先展示当前分析数据截至日期', () => {
   assert.match(pageSource, /当前分析数据截至/)
   assert.match(pageSource, /analysisAsOfText/)
 })
 
-test('内部数据质量问题统一消息提醒且详情接口抑制原始错误弹窗', () => {
+test('分析更新只显示页内提示且详情接口抑制原始错误弹窗', () => {
   assert.doesNotMatch(pageSource, /数据完整性校验未通过|数据校验暂不可用|数据已阻断|等待重新校验/)
-  assert.match(pageSource, /feedback.info\('分析正在后台更新，完成后会自动显示。'\)/)
+  assert.match(pageSource, /v-if="analysisUpdateNotice" role="status"/)
+  assert.match(pageSource, /analysisJobStatus/)
+  assert.match(pageSource, /detailRefreshRunner\(false, true\), 10000/)
+  assert.doesNotMatch(pageSource, /feedback.info\('分析正在后台更新/)
   assert.match(investmentApiSource, /getInvestmentAssetDetailAPI[^\n]*silentFeedback: true/)
   assert.match(investmentApiSource, /syncInvestmentAssetAPI[^\n]*silentFeedback: true/)
-  assert.match(investmentApiSource, /refreshInvestmentAssetDataQualityAPI[^\n]*silentFeedback: true/)
   assert.match(pageSource, /analysisAsOf = computed\(\(\) => sourceStatus\.value\.quoteDate/)
 })

@@ -9,11 +9,14 @@ import com.smartfinance.agent.investment.service.AnalysisServiceClient;
 import com.smartfinance.agent.investment.service.InvestmentAnalysisService;
 import com.smartfinance.agent.investment.service.InvestmentAssetService;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class InvestmentAssetControllerTest {
 
@@ -59,6 +62,16 @@ class InvestmentAssetControllerTest {
     }
 
     @Test
+    void singleAssetRefreshPreservesCachedAndForcedModes() {
+        InvestmentAssetService service = mock(InvestmentAssetService.class);
+        InvestmentAssetController controller = new InvestmentAssetController(service);
+        controller.sync(7L, 11L, false);
+        controller.sync(7L, 11L, true);
+        verify(service).refresh(7L, 11L, false);
+        verify(service).refresh(7L, 11L, true);
+    }
+
+    @Test
     void detailAnalysisAndPreference_shouldDelegateWithAuthenticatedUser() {
         InvestmentAssetService assetService = mock(InvestmentAssetService.class);
         InvestmentAnalysisService analysisService = mock(InvestmentAnalysisService.class);
@@ -80,26 +93,16 @@ class InvestmentAssetControllerTest {
     }
 
     @Test
-    void dataQualityRefresh_shouldOnlyForceQueueAndReturnReadOnlyDetail() {
+    void removedManualEndpointsCannotQueueOrRunAnalysis() throws Exception {
         InvestmentAssetService assetService = mock(InvestmentAssetService.class);
         InvestmentAnalysisService analysisService = mock(InvestmentAnalysisService.class);
-        InvestmentAssetView asset = asset(11L, 21L, "MUTUAL_FUND");
-        InvestmentAssetDetailResponse detail = new InvestmentAssetDetailResponse();
-        when(assetService.get(7L, 11L)).thenReturn(asset);
-        when(analysisService.queueDataRefresh(7L, 11L)).thenReturn(detail);
         InvestmentAssetController controller = new InvestmentAssetController(assetService, analysisService);
+        var mvc = MockMvcBuilders.standaloneSetup(controller).build();
 
-        assertThat(controller.refreshDataQuality(7L, 11L).getData()).isSameAs(detail);
-        verify(analysisService).queueDataRefresh(7L, 11L);
-        verify(analysisService, never()).retryData(any(), any());
-        verify(analysisService, never()).refresh(any(), any());
-    }
-
-    private static InvestmentAssetView asset(Long id, Long productId, String productType) {
-        InvestmentAssetView asset = new InvestmentAssetView();
-        asset.setId(id);
-        asset.setProductId(productId);
-        asset.setProductType(productType);
-        return asset;
+        for (String path : List.of("data-quality/refresh", "analysis/refresh")) {
+            mvc.perform(post("/api/investment/assets/11/" + path).requestAttr("userId", 7L))
+                    .andExpect(status().isNotFound());
+        }
+        verifyNoInteractions(assetService, analysisService);
     }
 }

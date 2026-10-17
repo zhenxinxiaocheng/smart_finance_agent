@@ -328,8 +328,8 @@ class InvestmentDataJobServiceTest {
         startup.configureDemand(demand);
         startup.configureDetailCache(cache);
 
-        startup.resumeHeldData();
-        startup.resumeHeldData();
+        startup.resumeHeldData((user, id) -> false);
+        startup.resumeHeldData((user, id) -> false);
 
         assertThat(existing.getStatus()).isEqualTo(status);
         assertThat(existing.getRecordCount()).isEqualTo(526);
@@ -363,7 +363,7 @@ class InvestmentDataJobServiceTest {
         InvestmentDetailCacheService cache = mock(InvestmentDetailCacheService.class);
         startup.configureDetailCache(cache);
 
-        startup.resumeHeldData();
+        startup.resumeHeldData((user, id) -> false);
 
         ArgumentCaptor<InvestmentDataJob> created = ArgumentCaptor.forClass(InvestmentDataJob.class);
         verify(mapper, times(2)).insert(created.capture());
@@ -376,6 +376,40 @@ class InvestmentDataJobServiceTest {
             assertThat(queued.getForceRefresh()).isFalse();
         });
         verifyNoInteractions(cache);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PREPARING", "READY", "WAITING", "BLOCKED"})
+    void startupRecoversOnlyMissingOrIncompatibleAnalysis(String state) {
+        InvestmentAssetMapper assets = mock(InvestmentAssetMapper.class);
+        InvestmentAsset asset = new InvestmentAsset();
+        asset.setId(11L); asset.setUserId(7L); asset.setProductId(21L);
+        when(assets.selectList(any())).thenReturn(List.of(asset));
+        InvestmentDataJob existing = job("SUCCEEDED", "STOCK_HISTORY");
+        existing.setId(91L);
+        when(mapper.selectOne(any())).thenReturn(existing);
+        var cache = mock(InvestmentDetailCacheService.class);
+        var startup = new InvestmentDataJobService(mapper, productMapper, quoteMapper, assets);
+        startup.configureDemand(mock(MarketDataDemandService.class));
+        startup.configureDetailCache(cache);
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.BiPredicate<Long, Long> needsRecovery = (user, id) -> {
+            assertThat(user).isEqualTo(7L); assertThat(id).isEqualTo(11L);
+            checks.incrementAndGet();
+            return "PREPARING".equals(state);
+        };
+        startup.resumeHeldData(needsRecovery);
+        startup.resumeHeldData(needsRecovery);
+        if ("PREPARING".equals(state)) {
+            verify(mapper).requeueTerminalIncremental(91L);
+            verify(cache).evict(7L, 11L);
+            assertThat(existing.getForceRefresh()).isFalse();
+            assertThat(checks.get()).isEqualTo(1);
+        } else {
+            verify(mapper, never()).requeueTerminalIncremental(any());
+            verifyNoInteractions(cache);
+        }
+        verify(mapper, never()).requeueForRefresh(any());
     }
 
     @Test

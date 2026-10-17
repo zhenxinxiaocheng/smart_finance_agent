@@ -26,20 +26,7 @@
       @focusout="resumeAfterFocus"
       @scroll.passive="wrapScroll"
     >
-      <template v-if="!displayedIndexes.length">
-        <article
-          v-for="position in 2"
-          :key="position"
-          aria-hidden="true"
-          class="min-h-32 w-[280px] shrink-0 rounded-xl border bg-card p-4 shadow-sm"
-        >
-          <div class="h-4 w-24 rounded bg-muted/70"></div>
-          <div class="mt-2 h-3 w-16 rounded bg-muted/50"></div>
-          <div class="mt-6 h-7 w-32 rounded bg-muted/60"></div>
-          <div class="mt-3 h-4 w-24 rounded bg-muted/50"></div>
-        </article>
-      </template>
-      <TransitionGroup v-else name="index-order">
+      <TransitionGroup name="index-order">
         <div
           v-for="entry in loopedIndexes"
           :key="entry.key"

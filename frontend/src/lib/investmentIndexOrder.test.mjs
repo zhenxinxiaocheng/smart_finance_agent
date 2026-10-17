@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { moveInvestmentIndex, moveInvestmentIndexToPosition } from './investmentIndexOrder.js'
+import { moveInvestmentIndexToPosition } from './investmentIndexOrder.js'
 
-test('拖动指数会把卡片插入目标卡片的位置', () => {
+test('拖动指数到目标槽位时不修改输入列表', () => {
   const indexes = [
     { indexCode: 'CN_INDEX:000300' },
     { indexCode: 'GLOBAL_INDEX:NDX' },
     { indexCode: 'GLOBAL_INDEX:SPX' }
   ]
 
-  const result = moveInvestmentIndex(indexes, 'CN_INDEX:000300', 'GLOBAL_INDEX:SPX')
+  const result = moveInvestmentIndexToPosition(indexes, 'CN_INDEX:000300', 2)
 
   assert.deepEqual(result.map(item => item.indexCode), [
     'GLOBAL_INDEX:NDX',
@@ -24,10 +24,11 @@ test('拖动指数会把卡片插入目标卡片的位置', () => {
   ])
 })
 
-test('无效拖动保持原顺序', () => {
+test('无效拖动或非有限槽位保持原顺序', () => {
   const indexes = [{ indexCode: 'CN_INDEX:000300' }]
 
-  assert.deepEqual(moveInvestmentIndex(indexes, 'missing', 'CN_INDEX:000300'), indexes)
+  assert.deepEqual(moveInvestmentIndexToPosition(indexes, 'missing', 0), indexes)
+  assert.deepEqual(moveInvestmentIndexToPosition(indexes, 'CN_INDEX:000300', Number.NaN), indexes)
 })
 
 test('按固定槽位移动指数，不依赖鼠标下方的 DOM 元素', () => {

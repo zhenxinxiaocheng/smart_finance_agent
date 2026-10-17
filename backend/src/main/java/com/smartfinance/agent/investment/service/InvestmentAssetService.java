@@ -15,7 +15,6 @@ public interface InvestmentAssetService {
     InvestmentAssetView get(Long userId, Long assetId);
     InvestmentAssetView update(Long userId, Long assetId, InvestmentAssetUpdateRequest request);
     void delete(Long userId, Long assetId);
-    InvestmentAssetView sync(Long userId, Long assetId);
     InvestmentAssetView refresh(Long userId, Long assetId, boolean force);
     List<InvestmentAssetView> refreshAll(Long userId, boolean force);
     InvestmentAssetView applyRecurringInvestment(Long userId, Long accountId, Long productId,

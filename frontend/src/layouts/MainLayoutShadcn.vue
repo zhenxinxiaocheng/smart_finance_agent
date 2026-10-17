@@ -10,7 +10,7 @@
         </div>
         <Transition name="fade">
           <div v-if="!isCollapse" class="hidden min-w-0 md:block">
-            <p class="truncate text-sm font-semibold text-white">智财 Agent</p>
+            <p class="truncate text-sm font-semibold text-sidebar-foreground">智财 Agent</p>
             <p class="truncate text-[11px] font-medium tracking-wide text-sidebar-foreground/55">DASHBOARD</p>
           </div>
         </Transition>
@@ -59,7 +59,7 @@
           </Avatar>
           <Transition name="fade">
             <div v-if="!isCollapse" class="hidden min-w-0 flex-1 md:block">
-              <p class="truncate text-sm font-semibold text-white">{{ authStore.username }}</p>
+              <p class="truncate text-sm font-semibold text-sidebar-foreground">{{ authStore.username }}</p>
               <p class="truncate text-xs text-sidebar-foreground/55">Finance Admin</p>
             </div>
           </Transition>

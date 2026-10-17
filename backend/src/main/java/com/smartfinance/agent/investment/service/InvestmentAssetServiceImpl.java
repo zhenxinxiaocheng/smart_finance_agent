@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -30,6 +31,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
+@Slf4j
 public class InvestmentAssetServiceImpl implements InvestmentAssetService {
 
     private static final String DEFAULT_ACCOUNT_NAME = "默认投资账户";
@@ -52,11 +54,7 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     private final InvestmentDetailCacheService detailCache;
     private final InvestmentQuoteCacheService quoteCache;
     private final ProductDailyQuoteService quoteService;
-    private final InvestmentHistoryPreparationService historyPreparation;
     private final TransactionTemplate quoteTransaction;
-    private InvestmentQuoteAvailabilityService availability;
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setAvailability(InvestmentQuoteAvailabilityService availability) { this.availability = availability; }
     private final ConcurrentHashMap<ProductKey, CompletableFuture<RefreshOutcome>> productRefreshes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ProductKey, CachedRefreshOutcome> refreshOutcomes = new ConcurrentHashMap<>();
     private final ExecutorService refreshExecutor;
@@ -77,7 +75,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                       InvestmentDetailCacheService detailCache,
                                       InvestmentQuoteCacheService quoteCache,
                                       ProductDailyQuoteService quoteService,
-                                      InvestmentHistoryPreparationService historyPreparation,
                                       PlatformTransactionManager transactionManager) {
         this.assetMapper = assetMapper;
         this.productMapper = productMapper;
@@ -95,7 +92,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
         this.detailCache = detailCache;
         this.quoteCache = quoteCache;
         this.quoteService = quoteService;
-        this.historyPreparation = historyPreparation;
         this.quoteTransaction = new TransactionTemplate(transactionManager);
         this.refreshExecutor = createRefreshExecutor(runtimeProperties.getMarket().getActiveRefreshConcurrency());
     }
@@ -182,11 +178,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     @Override
-    public InvestmentAssetView sync(Long userId, Long assetId) {
-        return refresh(userId, assetId, true);
-    }
-
-    @Override
     public InvestmentAssetView refresh(Long userId, Long assetId, boolean force) {
         InvestmentAsset asset = requireAsset(userId, assetId);
         refreshAsset(asset, force);
@@ -248,6 +239,9 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             applyOutcome(asset, new RefreshOutcome("FAILED", "投资产品不存在"));
             return;
         }
+        // Daily quotes are collected by the owned background demand, which also queues analysis.
+        // A page refresh only returns the stored view, including any completed background updates.
+        if ("STOCK".equals(currentProduct.getProductType()) && !usesRealtimeQuote(currentProduct)) return;
         ProductKey productKey = ProductKey.from(currentProduct);
         LocalDateTime now = LocalDateTime.now(runtimeProperties.getMarket().getZone());
         CachedRefreshOutcome cached = refreshOutcomes.get(productKey);
@@ -285,17 +279,6 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
                                        AnalysisServiceClient.ResolvedProduct alreadyResolved,
                                        boolean force) {
         try {
-            if ("STOCK".equals(product.getProductType()) && !usesRealtimeQuote(product)) {
-                LocalDate today = LocalDate.now(runtimeProperties.getMarket().getZone());
-                LocalDate end = availability == null ? today.minusDays(1)
-                        : availability.target(product, today, Instant.now());
-                LocalDate start = end.minusDays(runtimeProperties.getMarket().getDailyQuoteLookbackDays());
-                var prepared = historyPreparation.prepareDemandProduct(product, "STOCK_HISTORY", false, start, end);
-                if (prepared.skipped()) {
-                    return new RefreshOutcome("SUCCESS", "本次查询暂无新行情，保留已有数据");
-                }
-                return new RefreshOutcome("SUCCESS", null);
-            }
             if (usesRealtimeQuote(product)) {
                 InvestmentQuoteCacheService.Entry cached = force ? null
                         : quoteCache.get(product.getMarket(), product.getCode());
@@ -322,17 +305,19 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
             return new RefreshOutcome(resolved.latestPrice() == null ? "PARTIAL" : "SUCCESS",
                     joinWarnings(resolved.warnings()));
         } catch (RuntimeException exception) {
+            log.warn("Quote refresh failed for product {}", product.getId(), exception);
             return new RefreshOutcome("FAILED", exception.getMessage());
         }
     }
 
     private void applyOutcome(InvestmentAsset asset, RefreshOutcome outcome) {
+        String error = boundedSyncError(outcome.error());
         asset.setSyncStatus(outcome.status());
-        asset.setSyncError(outcome.error());
+        asset.setSyncError(error);
         assetMapper.update(null, new LambdaUpdateWrapper<InvestmentAsset>()
                 .eq(InvestmentAsset::getId, asset.getId())
                 .set(InvestmentAsset::getSyncStatus, outcome.status())
-                .set(InvestmentAsset::getSyncError, outcome.error()));
+                .set(InvestmentAsset::getSyncError, error));
     }
 
     private void queueBenchmarkHistory(InvestmentAsset asset) {
@@ -413,7 +398,12 @@ public class InvestmentAssetServiceImpl implements InvestmentAssetService {
     }
 
     private static String joinWarnings(List<String> warnings) {
-        return warnings == null || warnings.isEmpty() ? null : String.join("；", warnings);
+        return warnings == null || warnings.isEmpty() ? null : boundedSyncError(String.join("；", warnings));
+    }
+
+    private static String boundedSyncError(String error) {
+        // Matches investment_asset.sync_error; the complete exception remains in the log.
+        return error == null ? null : error.substring(0, Math.min(500, error.length()));
     }
 
     @PreDestroy

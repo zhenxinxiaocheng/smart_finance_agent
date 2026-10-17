@@ -35,7 +35,7 @@ class InvestmentFundQuoteWorkerTest {
 
         verify(assetService, never()).refresh(2L, 11L, false);
         verify(assetService).refresh(2L, 12L, false);
-        verify(assetService, never()).sync(anyLong(), anyLong());
+        verify(assetService, never()).refresh(anyLong(), anyLong(), eq(true));
     }
 
     @Test
