@@ -43,17 +43,10 @@
           <Button variant="outline" @click="preferenceOpen = true"><SlidersHorizontal />分析周期</Button>
           <Button variant="outline" @click="editOpen = true"><Pencil />编辑持仓</Button>
           <Button variant="outline" @click="openQuantLab"><FlaskConical />策略工作台</Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button variant="outline"><RefreshCw />数据管理</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem :disabled="syncingLatest" @click="syncLatest"><RefreshCw />同步最新行情</DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" :disabled="refreshingData" @click="fullRepair"><RotateCcw />全量修复历史数据</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
       </header>
+
+      <p v-if="analysisUpdateNotice" role="status" class="text-xs text-muted-foreground">{{ analysisUpdateNotice }}</p>
 
       <section class="detail-fade-in detail-delay-1 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Card v-for="metric in topMetrics" :key="metric.label" class="gap-2 shadow-sm">
@@ -95,7 +88,7 @@
                 <span class="text-sm font-semibold">专业走势研判</span>
                 <Badge :variant="activeDirection.variant">{{ confidenceLabel(activeOutlook.confidence) }}</Badge>
               </div>
-              <p class="mt-3 text-2xl font-semibold" :class="activeDirection.tone">{{ outlookDirectionLabel(activeOutlook.direction) }}</p>
+              <p class="mt-3 text-2xl font-semibold" :class="activeDirection.tone">{{ activeDirection.label }}</p>
               <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ activeDirection.action }} · {{ activePeriodText }}</p>
               <p v-if="activeAnalysis.status === 'INSUFFICIENT'" class="mt-3 text-sm leading-6 text-muted-foreground">{{ activeAnalysis.reason || '历史数据不足，暂时无法判断走势。' }}</p>
               <ul v-else class="mt-4 space-y-2 text-sm leading-6">
@@ -256,7 +249,7 @@
         <div class="grid gap-3 md:grid-cols-3">
           <Card v-for="item in horizonCards" :key="item.key" class="gap-3 py-4 shadow-sm">
             <CardHeader class="px-4">
-              <div class="flex items-center justify-between gap-2"><CardTitle class="text-base">{{ item.label }}</CardTitle><Badge :variant="directionMeta(item.data.outlook?.direction).variant">{{ outlookDirectionLabel(item.data.outlook?.direction) }}</Badge></div>
+              <div class="flex items-center justify-between gap-2"><CardTitle class="text-base">{{ item.label }}</CardTitle><Badge :variant="directionMeta(item.data.outlook?.direction, item.data.status).variant">{{ outlookDirectionLabel(item.data.outlook?.direction, item.data.status) }}</Badge></div>
               <CardDescription>{{ horizonRange(item.data) }}</CardDescription>
             </CardHeader>
             <CardContent class="px-4">
@@ -339,27 +332,24 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { returnToSource } from './quant-workbench/navigation'
 import {
-  ArrowLeft, CalendarCheck, ChevronDown, Info, Pencil, RefreshCw, RotateCcw, ShieldAlert,
+  ArrowLeft, CalendarCheck, ChevronDown, Info, Pencil, ShieldAlert,
   FlaskConical, SlidersHorizontal, TriangleAlert
 } from '@lucide/vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { InfoTooltip } from '@/components/ui/tooltip'
 import InvestmentAssetDrawer from '@/components/investment/InvestmentAssetDrawer.vue'
 import HorizonProfileDialog from '@/components/investment/HorizonProfileDialog.vue'
 import InvestmentKlineChart from '@/components/investment/InvestmentKlineChart.vue'
 import { investmentHelpText as helpText } from '@/lib/investmentHelpText'
-import { createPrioritizedRefreshRunner, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
+import { createPrioritizedRefreshRunner, isInvestmentQuoteSessionActive, startInvestmentRealtimePolling } from '@/lib/investmentRealtime'
 import { clearInvestmentDetailPath } from '@/lib/investmentNavigation'
 import {
   confidenceLabel,
@@ -372,15 +362,12 @@ import {
   clearInvestmentAssetHorizonOverrideAPI,
   getInvestmentAssetDetailAPI,
   syncInvestmentAssetAPI,
-  refreshInvestmentAssetDataQualityAPI,
   updateInvestmentAssetHorizonOverrideAPI,
 } from '@/api/investment'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(true)
-const refreshingData = ref(false)
-const syncingLatest = ref(false)
 const savingPreference = ref(false)
 const error = ref('')
 const detail = ref(null)
@@ -396,7 +383,14 @@ const sourceStatus = computed(() => detail.value?.sourceStatus || {})
 const financialWarnings = computed(() => (detail.value?.financialWarnings || [])
   .filter(warning => warning.code !== 'DATA_INCOMPLETE'))
 const pendingAnalysis = computed(() => Boolean(detail.value?.asset)
-  && ['PREPARING', 'WAITING', 'BLOCKED', 'STABLE_CACHE'].includes(sourceStatus.value.dataState))
+  && ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(sourceStatus.value.analysisJobStatus))
+const analysisUpdateNotice = computed(() => {
+  if (sourceStatus.value.analysisJobStatus === 'RETRY_WAIT') return '分析暂未完成，稍后自动重试。'
+  if (pendingAnalysis.value) return '分析更新中，当前内容已保留。'
+  if (sourceStatus.value.dataState !== 'READY' && ['FAILED', 'PARTIAL'].includes(sourceStatus.value.analysisJobStatus))
+    return '分析更新未完成，已保留可用内容，可稍后重试。'
+  return ''
+})
 const activeFundPeriod = computed(() => isFund.value ? activeAnalysis.value : null)
 const hasFundBenchmarkMetrics = computed(() => [
   'benchmarkReturn',
@@ -454,7 +448,7 @@ const fundAdviceMessage = computed(() => ({
 }[activeAnalysis.value.reasonCode] || '该基金分类的专属策略尚未通过验证，当前只展示历史统计，不提供操作建议。'))
 const activeAnalysis = computed(() => technical.value.horizons?.[activeHorizon.value] || technical.value)
 const activeOutlook = computed(() => activeAnalysis.value.outlook || technical.value.outlook || {})
-const activeDirection = computed(() => directionMeta(activeOutlook.value.direction))
+const activeDirection = computed(() => directionMeta(activeOutlook.value.direction, activeAnalysis.value.status))
 const activeLevels = computed(() => activeAnalysis.value.levels || technical.value.levels || {})
 const priceZones = computed(() => isFund.value
   ? technical.value.actionZones || {}
@@ -473,9 +467,18 @@ const activeHeadline = computed(() => activeAnalysis.value.status === 'PREPARING
     : activeAnalysis.value.status === 'UNAVAILABLE'
       ? '分析暂不可用'
   : isFund.value ? fundActionLabel(activeAnalysis.value?.action) : verdictLabel(activeVerdict.value))
-const activePeriodText = computed(() => horizonRange(activeAnalysis.value))
+const activePeriodText = computed(() => {
+  return horizonRange({ ...configuredHorizon(activeHorizon.value), ...activeAnalysis.value })
+})
 const cycleDifference = computed(() => new Set(Object.values(technical.value.horizons || {}).map(item => item.outlook?.direction).filter(Boolean)).size > 1)
-const horizonCards = computed(() => horizonOptions.value.map(item => ({ key: item.value, label: item.label, data: technical.value.horizons?.[item.value] || {} })))
+const horizonCards = computed(() => horizonOptions.value.map(item => ({ key: item.value, label: item.label,
+  data: { ...configuredHorizon(item.value), status: technical.value.status, ...technical.value.horizons?.[item.value] },
+})))
+
+function configuredHorizon(code) {
+  const setting = horizonProfile.value.settings?.find(item => item.code === code)
+  return { minimumDays: setting?.minHoldingDays, maximumDays: setting?.maxHoldingDays, targetDays: setting?.targetHoldingDays }
+}
 const fundamentalDimensions = computed(() => {
   const labels = { growth: '成长', profitability: '盈利', cashQuality: '现金质量', resilience: '财务韧性', valuation: '估值' }
   return Object.entries(fundamental.value.dimensions || {}).map(([key, data]) => ({ key, label: labels[key] || key, data }))
@@ -497,7 +500,7 @@ const topMetrics = computed(() => [
   { label: '持仓盈亏', value: signedMoney(asset.value.unrealizedPnlCny), hint: `${signedPercent(asset.value.holdingReturnPercent)} 持仓收益`, tone: tone(asset.value.unrealizedPnlCny) },
   isFund.value
     ? { label: '基金研判', value: activeHeadline.value, hint: activePeriodText.value, tone: verdictTone(activeVerdict.value) }
-    : { label: '走势研判', value: outlookDirectionLabel(activeOutlook.value.direction), hint: `${confidenceLabel(activeOutlook.value.confidence)} · ${activePeriodText.value}`, tone: activeDirection.value.tone, help: helpText.technicalOutlook },
+    : { label: '走势研判', value: activeDirection.value.label, hint: `${confidenceLabel(activeOutlook.value.confidence)} · ${activePeriodText.value}`, tone: activeDirection.value.tone, help: helpText.technicalOutlook },
 ])
 
 const ActionPriceRow = defineComponent({ props: { label: String, value: String, tone: String, help: String }, setup: props => () => h('div', { class: 'flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-sm last:border-0 last:pb-0' }, [h('span', { class: 'flex min-w-0 items-center gap-1 text-muted-foreground' }, [h('span', props.label), props.help ? h(InfoTooltip, { content: props.help, label: `了解${props.label}` }) : null]), h('strong', { class: ['tabular-nums text-right', props.tone] }, props.value || '-')]) })
@@ -506,28 +509,27 @@ const MetricMini = defineComponent({ props: { label: String, value: String, tone
 let componentDisposed = false
 let detailRequestToken = 0
 const isCurrentAsset = assetId => !componentDisposed && String(route.params.assetId) === String(assetId)
-const detailRefreshRunner = createPrioritizedRefreshRunner(async () => {
-  if (componentDisposed || !pendingAnalysis.value || loading.value
-    || syncingLatest.value || refreshingData.value || savingPreference.value) return
-  await loadAll(route.params.assetId, true)
+const detailRefreshRunner = createPrioritizedRefreshRunner(async (refreshQuotes = false) => {
+  if (componentDisposed || loading.value || savingPreference.value) return
+  const assetId = route.params.assetId
+  if (refreshQuotes && isInvestmentQuoteSessionActive([asset.value])) {
+    await syncInvestmentAssetAPI(assetId, false).catch(() => {})
+  } else if (!refreshQuotes && !pendingAnalysis.value) return
+  if (refreshQuotes && pendingAnalysis.value) return
+  if (isCurrentAsset(assetId)) await loadAll(assetId, true)
 })
 let stopDetailUpdates = null
-let analysisNoticeShown = false
-
+let stopQuoteUpdates = null
+onMounted(() => { stopQuoteUpdates = startInvestmentRealtimePolling(() => detailRefreshRunner(true, true)) })
 watch(pendingAnalysis, pending => {
-  if (pending && !analysisNoticeShown) {
-    analysisNoticeShown = true
-    feedback.info('分析正在后台更新，完成后会自动显示。')
-  }
   stopDetailUpdates?.()
   stopDetailUpdates = pending
-    ? startInvestmentRealtimePolling(() => detailRefreshRunner(false, true))
+    ? startInvestmentRealtimePolling(() => detailRefreshRunner(false, true), 10000)
     : null
 }, { immediate: true })
 
 watch(() => route.params.assetId, async () => {
   const assetId = route.params.assetId
-  analysisNoticeShown = false
   detail.value = null
   await loadAll(assetId)
 }, { immediate: true })
@@ -540,6 +542,7 @@ onBeforeUnmount(() => {
   componentDisposed = true
   detailRequestToken += 1
   stopDetailUpdates?.()
+  stopQuoteUpdates?.()
   detailRefreshRunner.dispose()
 })
 
@@ -557,41 +560,6 @@ async function loadAll(assetId = route.params.assetId, background = false) {
   } finally {
     if (!isCurrentAsset(assetId) || requestToken !== detailRequestToken) return
     loading.value = false
-  }
-}
-
-// 详情页默认增量同步最新行情；仅在本地已最新时不改动任何状态。
-async function syncLatest() {
-  if (syncingLatest.value || refreshingData.value) return
-  const assetId = route.params.assetId
-  syncingLatest.value = true
-  error.value = ''
-  try {
-    await syncInvestmentAssetAPI(assetId)
-    await loadAll(assetId)
-    if (isCurrentAsset(assetId)) feedback.success('已同步最新行情')
-  } catch {
-    if (isCurrentAsset(assetId)) error.value = '同步暂未完成，已保留当前内容。'
-  } finally {
-    if (!componentDisposed) syncingLatest.value = false
-  }
-}
-
-// 全量修复是唯一的重量级操作，必须由用户显式触发。
-async function fullRepair() {
-  if (refreshingData.value || syncingLatest.value) return
-  const assetId = route.params.assetId
-  refreshingData.value = true
-  error.value = ''
-  try {
-    const response = await refreshInvestmentAssetDataQualityAPI(assetId)
-    if (!isCurrentAsset(assetId)) return
-    detail.value = response.data
-    feedback.success('已开始全量修复历史数据')
-  } catch {
-    if (isCurrentAsset(assetId)) error.value = '全量修复暂未开始，已保留当前内容。'
-  } finally {
-    if (!componentDisposed) refreshingData.value = false
   }
 }
 
@@ -674,7 +642,7 @@ function horizonRange(value) {
   if (value?.targetDays != null) {
     return `最近 ${value.targetDays} 个交易日（设置范围 ${value.minimumDays}–${value.maximumDays}）`
   }
-  return value?.minimumDays != null ? `${value.minimumDays}–${value.maximumDays} 个交易日` : '等待足够历史数据'
+  return value?.minimumDays != null ? `${value.minimumDays}–${value.maximumDays} 个交易日` : '分析周期待准备'
 }
 function missingZoneReason() {
   if (asset.value.latestPrice == null) return '缺少最新价格'

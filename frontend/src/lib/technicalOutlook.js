@@ -12,17 +12,21 @@ const CONFIDENCE_LABELS = {
   LOW: '低置信度',
 }
 
-export function directionMeta(direction) {
-  return DIRECTION_META[direction] || {
-    label: '等待数据',
+export function directionMeta(direction, status) {
+  const unavailable = {
+    PREPARING: '分析待更新', INSUFFICIENT: '历史样本不足',
+    BLOCKED: '数据校验未通过', UNAVAILABLE: '分析暂不可用', FAILED: '分析暂不可用',
+  }[status]
+  return (!unavailable && DIRECTION_META[direction]) || {
+    label: unavailable || '分析暂不可用',
     action: '暂不判断',
     tone: 'text-muted-foreground',
     variant: 'outline',
   }
 }
 
-export function directionLabel(direction) {
-  return directionMeta(direction).label
+export function directionLabel(direction, status) {
+  return directionMeta(direction, status).label
 }
 
 export function confidenceLabel(confidence) {

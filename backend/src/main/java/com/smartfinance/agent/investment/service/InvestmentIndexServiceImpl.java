@@ -10,6 +10,7 @@ import com.smartfinance.agent.investment.entity.InvestmentIndexWatchlist;
 import com.smartfinance.agent.investment.mapper.InvestmentIndexDisplayOrderMapper;
 import com.smartfinance.agent.investment.mapper.InvestmentIndexWatchlistMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
@@ -28,6 +29,10 @@ public class InvestmentIndexServiceImpl implements InvestmentIndexService {
     private final InvestmentIndexDisplayOrderMapper orderMapper;
     private final AnalysisServiceClient analysisClient;
     private final InvestmentIndexProperties properties;
+    private InvestmentQuoteCacheService quoteCache;
+
+    @Autowired
+    void configureQuoteCache(InvestmentQuoteCacheService quoteCache) { this.quoteCache = quoteCache; }
 
     public InvestmentIndexServiceImpl(InvestmentIndexWatchlistMapper mapper,
                                       InvestmentIndexDisplayOrderMapper orderMapper,
@@ -56,8 +61,9 @@ public class InvestmentIndexServiceImpl implements InvestmentIndexService {
         Map<String, AnalysisServiceClient.IndexQuote> quotes = new LinkedHashMap<>();
         String syncError = null;
         try {
-            for (AnalysisServiceClient.IndexQuote quote : analysisClient.indexQuotes(
-                    definitions.stream().map(ItemDefinition::indexCode).toList())) {
+            List<String> codes = definitions.stream().map(ItemDefinition::indexCode).toList();
+            for (AnalysisServiceClient.IndexQuote quote : quoteCache == null
+                    ? analysisClient.indexQuotes(codes) : quoteCache.indexQuotes(codes, analysisClient::indexQuotes)) {
                 quotes.put(normalizeCode(quote.indexCode()), quote);
             }
         } catch (RuntimeException exception) {

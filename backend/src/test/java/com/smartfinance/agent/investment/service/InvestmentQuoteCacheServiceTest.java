@@ -47,11 +47,13 @@ class InvestmentQuoteCacheServiceTest {
         cache.put("SSE", "600000", quote("SSE", "600000"), start);
         var hit = cache.get("sse", "600000");
         assertThat(hit.quote().latestPrice()).isEqualByComparingTo("10");
-        assertThat(hit.expiresAt()).isEqualTo(start.plusSeconds(3));
+        assertThat(hit.expiresAt()).isEqualTo(start.plusSeconds(30));
         assertThat(cache.get("SZSE", "600000")).isNull();
         assertThat(cache.get("SSE", "600001")).isNull();
-        verify(values).set(eq("quote:v1:STOCK:SSE:600000"), anyString(), eq(Duration.ofSeconds(3)));
-        now.set(start.plusSeconds(3));
+        verify(values).set(eq("quote:v1:STOCK:SSE:600000"), anyString(), eq(Duration.ofSeconds(30)));
+        now.set(start.plusSeconds(29));
+        assertThat(cache.get("SSE", "600000")).isNotNull();
+        now.set(start.plusSeconds(30));
         assertThat(cache.get("SSE", "600000")).isNull();
     }
 
@@ -59,8 +61,8 @@ class InvestmentQuoteCacheServiceTest {
     void delayedPublishOnlyUsesRemainingLifetime() {
         now.set(start.plusSeconds(2));
         cache.put("SSE", "600000", quote("SSE", "600000"), start);
-        verify(values).set(anyString(), anyString(), eq(Duration.ofSeconds(1)));
-        now.set(start.plusSeconds(4));
+        verify(values).set(anyString(), anyString(), eq(Duration.ofSeconds(28)));
+        now.set(start.plusSeconds(31));
         cache.put("SSE", "600000", quote("SSE", "600000"), start);
         verify(values, times(1)).set(anyString(), anyString(), any(Duration.class));
     }

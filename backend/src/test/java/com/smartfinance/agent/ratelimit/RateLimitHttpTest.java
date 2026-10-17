@@ -94,7 +94,7 @@ class RateLimitHttpTest {
                 .andExpect(status().isTooManyRequests());
         verify(limiter, times(5)).acquire(RateLimitScope.QUOTE_REFRESH, "7");
         verify(assets).refreshAll(7L, false);
-        verify(assets, never()).sync(anyLong(), anyLong());
+        verify(assets, never()).refresh(anyLong(), anyLong(), anyBoolean());
     }
 
     @Test

@@ -80,8 +80,9 @@ public class InvestmentAssetController {
 
     @PostMapping("/{id}/sync")
     @com.smartfinance.agent.ratelimit.RateLimited(com.smartfinance.agent.ratelimit.RateLimitScope.QUOTE_REFRESH)
-    public Result<InvestmentAssetView> sync(@RequestAttribute Long userId, @PathVariable Long id) {
-        return Result.success(assetService.sync(userId, id));
+    public Result<InvestmentAssetView> sync(@RequestAttribute Long userId, @PathVariable Long id,
+            @RequestParam(defaultValue = "true") boolean force) {
+        return Result.success(assetService.refresh(userId, id, force));
     }
 
     @GetMapping("/{id}/detail")
@@ -100,18 +101,6 @@ public class InvestmentAssetController {
     public Result<InvestmentAssetDetailResponse> clearAnalysisPreference(
             @RequestAttribute Long userId, @PathVariable Long id) {
         return Result.success(analysisService.clearPreference(userId, id));
-    }
-
-    @PostMapping("/{id}/analysis/refresh")
-    public Result<InvestmentAssetDetailResponse> refreshAnalysis(@RequestAttribute Long userId,
-                                                                  @PathVariable Long id) {
-        return Result.success(analysisService.refresh(userId, id));
-    }
-
-    @PostMapping("/{id}/data-quality/refresh")
-    public Result<InvestmentAssetDetailResponse> refreshDataQuality(@RequestAttribute Long userId,
-                                                                     @PathVariable Long id) {
-        return Result.success(analysisService.queueDataRefresh(userId, id));
     }
 
     public record ResolveRequest(@NotBlank String productType, @NotBlank String code) {

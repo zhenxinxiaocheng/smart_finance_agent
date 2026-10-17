@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
+import { createPrioritizedRefreshRunner, isInvestmentQuoteSessionActive } from '../lib/investmentRealtime.js'
 
 const source = readFileSync(new URL('./InvestmentAssetDetail.vue', import.meta.url), 'utf8')
 const template = source.match(/<template>[\s\S]*<\/template>/)?.[0] || ''
@@ -14,7 +15,7 @@ function loader(existing, request) {
     isCurrentAsset: id => String(id) === '11', getInvestmentAssetDetailAPI: request
   })
   const start = source.indexOf('async function loadAll(')
-  const end = source.indexOf('\nasync function syncLatest(', start)
+  const end = source.indexOf('\nasync function reloadAfterHoldingSaved(', start)
   assert.ok(start >= 0 && end > start, '详情加载函数边界必须存在')
   vm.runInContext(source.slice(start, end), context)
   return context
@@ -76,17 +77,70 @@ test('历史准备自动更新详情，内部任务状态不直接呈现', () =>
   assert.doesNotMatch(template, /errorMessage/)
 })
 
-function analysisNotifications(t) {
+test('删除手动数据入口后，自动同步仍复用缓存且活动分析只读取详情', async () => {
+  const synced = []
+  const reads = []
+  const asset = ref({ market: 'SSE', quoteFrequency: 'REALTIME' })
+  const pendingAnalysis = ref(false)
+  let quoteError = false
+  const context = vm.createContext({
+    route: { params: { assetId: '11' } }, loading: ref(false), savingPreference: ref(false),
+    asset, pendingAnalysis, createPrioritizedRefreshRunner,
+    isInvestmentQuoteSessionActive: items => isInvestmentQuoteSessionActive(items, new Date('2026-10-19T02:00:00Z')),
+    syncInvestmentAssetAPI: async (...args) => {
+      synced.push(args)
+      if (quoteError) throw new Error('报价暂不可用')
+    },
+    loadAll: async (...args) => { reads.push(args) },
+  })
+  const start = source.indexOf('let componentDisposed = false')
+  const end = source.indexOf('let stopDetailUpdates = null', start)
+  assert.ok(start >= 0 && end > start)
+  vm.runInContext(source.slice(start, end) + '\nglobalThis.refreshDetail = detailRefreshRunner', context)
+
+  await context.refreshDetail(false, true)
+  assert.deepEqual(reads, [])
+  await context.refreshDetail(true, true)
+  assert.deepEqual(synced, [['11', false]], '自动行情同步不能变成强制采集')
+  assert.deepEqual(reads, [['11', true]])
+  pendingAnalysis.value = true
+  await context.refreshDetail(false, true)
+  assert.deepEqual(synced, [['11', false]], '分析状态更新不应额外采集行情')
+  assert.deepEqual(reads, [['11', true], ['11', true]])
+  await context.refreshDetail(true, true)
+  assert.equal(reads.length, 2, '活动任务由十秒检查读取，避免与三十秒读取重复')
+  pendingAnalysis.value = false
+  asset.value.quoteFrequency = 'DAILY'
+  await context.refreshDetail(true, true)
+  assert.equal(synced.length, 2, '日频行情继续遵守原有刷新规则')
+  assert.equal(reads.length, 3, '日频资产也必须读取后台更新的分析结果')
+  asset.value.quoteFrequency = 'REALTIME'
+  asset.value.market = 'NASDAQ'
+  await context.refreshDetail(true, true)
+  assert.equal(synced.length, 2, '美股休市时不能请求实时报价')
+  assert.equal(reads.length, 4, '休市不能阻止读取后台分析结果')
+  asset.value.market = 'SSE'
+  quoteError = true
+  await context.refreshDetail(true, true)
+  assert.equal(reads.length, 5, '报价请求失败不能阻止读取已保存的分析结果')
+})
+
+function analysisUpdates(t) {
   const messages = []
+  const timers = []
   const detail = ref(null)
   const route = reactive({ params: { assetId: '11' } })
   const scope = effectScope()
   t.after(() => scope.stop())
   const context = vm.createContext({
-    computed, watch, detail, route,
+    computed, watch, detail, route, onMounted: () => {},
     sourceStatus: computed(() => detail.value?.sourceStatus || {}),
     feedback: { info: message => messages.push(message) },
-    startInvestmentRealtimePolling: () => () => {},
+    startInvestmentRealtimePolling: (_callback, interval) => {
+      const timer = { interval, stopped: false }
+      timers.push(timer)
+      return () => { timer.stopped = true }
+    },
     detailRefreshRunner: () => {}, loadAll: async () => {}
   })
   const pendingStart = source.indexOf('const pendingAnalysis = computed(')
@@ -94,32 +148,41 @@ function analysisNotifications(t) {
   scope.run(() => vm.runInContext(
     source.slice(pendingStart, source.indexOf('const activeFundPeriod', pendingStart))
       + source.slice(watchersStart, source.indexOf('watch(horizonOptions', watchersStart)), context))
-  return { messages, route, async receive(state) {
-    detail.value = { asset: { id: route.params.assetId }, sourceStatus: { dataState: state } }
+  return { messages, timers, route, get notice() { return vm.runInContext('analysisUpdateNotice.value', context) },
+    async receive(dataState, analysisJobStatus) {
+    detail.value = { asset: { id: route.params.assetId }, sourceStatus: { dataState, analysisJobStatus } }
     await nextTick()
   } }
 }
 
-test('同一资产只提醒一次，轮询及准备状态变化不会重复弹出', async t => {
-  const state = analysisNotifications(t)
-  for (const status of ['PREPARING', 'PREPARING', 'WAITING', 'BLOCKED', 'STABLE_CACHE', 'READY', 'BLOCKED']) {
-    await state.receive(status)
+test('仅真实活动任务每十秒检查分析，状态变化不重复启动或弹窗', async t => {
+  const state = analysisUpdates(t)
+  for (const status of ['QUEUED', 'RUNNING', 'RETRY_WAIT', 'RUNNING']) {
+    await state.receive('STABLE_CACHE', status)
   }
-  assert.equal(state.messages.length, 1)
-  assert.match(state.messages[0], /分析.*后台.*自动显示/)
+  assert.equal(state.timers.length, 1)
+  assert.equal(state.timers[0].interval, 10000)
+  assert.equal(state.timers[0].stopped, false)
+  assert.match(state.notice, /当前内容已保留/)
+  await state.receive('STABLE_CACHE', 'FAILED')
+  assert.equal(state.timers[0].stopped, true)
+  assert.match(state.notice, /分析更新未完成/)
+  assert.deepEqual(state.messages, [])
 })
 
-test('已就绪资产不提醒，切换到另一资产后独立提醒一次', async t => {
-  const state = analysisNotifications(t)
-  await state.receive('READY')
-  assert.deepEqual(state.messages, [])
-  await state.receive('WAITING')
-  assert.equal(state.messages.length, 1)
+test('无活动任务不启动十秒检查，切换资产独立检查并在完成后停止', async t => {
+  const state = analysisUpdates(t)
+  for (const status of ['READY', 'PREPARING', 'WAITING', 'BLOCKED']) await state.receive(status)
+  assert.equal(state.timers.length, 0)
   state.route.params.assetId = '13'
   await nextTick()
-  await state.receive('PREPARING')
-  await state.receive('BLOCKED')
-  assert.equal(state.messages.length, 2)
+  await state.receive('PREPARING', 'QUEUED')
+  assert.equal(state.timers.length, 1)
+  await state.receive('READY', 'SUCCEEDED')
+  assert.equal(state.timers[0].stopped, true)
+  await state.receive('READY', 'SUCCEEDED')
+  assert.equal(state.timers.length, 1)
+  assert.deepEqual(state.messages, [])
 })
 
 test('已有行情等待分析时不误报数据不足', () => {

@@ -69,6 +69,8 @@ class InvestmentAssetServiceIntegrationTest {
     @Autowired
     private InvestmentService investmentService;
     @Autowired
+    private com.smartfinance.agent.investment.service.InvestmentHistoryPreparationService historyPreparation;
+    @Autowired
     private ProductDailyQuoteMapper quoteMapper;
     @Autowired
     private InvestmentProductMapper productMapper;
@@ -204,7 +206,34 @@ class InvestmentAssetServiceIntegrationTest {
     }
 
     @Test
-    void usStockRefreshUsesRawDailyHistoryAndPreservesOldDataIfResponseIsOutsideWindow() {
+    void ordinaryDailyRefreshOnlyReadsStoredQuotesAndDoesNotCollectOrQueueAnalysis() {
+        jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
+                + "VALUES(8001,'STOCK','NASDAQ','NVDA','NVIDIA','USD','ACTIVE')");
+        var request = createRequest("STOCK", "NVDA");
+        request.setProductId(8001L);
+        var asset = assetService.create(7L, request);
+        jdbc.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(8001,'2026-10-14',180,'NONE','TEST')");
+        org.mockito.Mockito.clearInvocations(analysisServiceClient, dataQualityService, dataJobService);
+
+        for (boolean force : List.of(false, true)) {
+            var refreshed = assetService.refresh(7L, asset.getId(), force);
+            assertThat(refreshed.getLatestPrice()).isEqualByComparingTo("180");
+            assertThat(refreshed.getDataDate()).isEqualTo(LocalDate.of(2026, 10, 14));
+        }
+        verifyNoInteractions(analysisServiceClient, dataQualityService);
+        verify(dataJobService, org.mockito.Mockito.never()).queueAnalysisForProduct(any());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM product_daily_quote WHERE product_id=8001", Integer.class))
+                .isEqualTo(1);
+        // Background completion becomes visible without another Provider request.
+        jdbc.update("INSERT INTO product_daily_quote(product_id,trade_date,close_price,adjust_type,source) "
+                + "VALUES(8001,'2026-10-15',181,'NONE','TEST')");
+        assertThat(assetService.refresh(7L, asset.getId(), false).getLatestPrice()).isEqualByComparingTo("181");
+        verifyNoInteractions(analysisServiceClient, dataQualityService);
+    }
+
+    @Test
+    void backgroundUsStockHistoryPreservesOldDataOnInvalidOrFailedCollection() {
         jdbc.update("INSERT INTO investment_product(id,product_type,market,code,name,currency,status) "
                 + "VALUES(8001,'STOCK','NASDAQ','NVDA','NVIDIA','USD','ACTIVE')");
         var request = createRequest("STOCK", "NVDA");
@@ -212,6 +241,9 @@ class InvestmentAssetServiceIntegrationTest {
         var asset = assetService.create(7L, request);
         reset(analysisServiceClient);
         LocalDate recent = LocalDate.now().minusDays(2);
+        var product = productMapper.selectById(8001L);
+        Runnable collect = () -> historyPreparation.prepareMarketProduct(product, "STOCK_HISTORY", false,
+                recent.minusDays(8), recent.plusDays(1), true, () -> {});
         java.util.Map<String,Object> response = java.util.Map.of("provider", "AKSHARE_US_SINA", "adapterVersion", "1",
                 "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version(),
                 "fetchedAt", java.time.OffsetDateTime.now().toString(), "records", List.of(
@@ -224,11 +256,11 @@ class InvestmentAssetServiceIntegrationTest {
                 receipt, response, (List<java.util.Map<String,Object>>) response.get("records"), List.of());
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true))).thenReturn(prepared);
 
-        var refreshed = assetService.refresh(7L, asset.getId(), true);
+        collect.run();
+        var refreshed = assetService.get(7L, asset.getId());
 
         assertThat(refreshed.getLatestPrice()).isEqualByComparingTo("180");
         assertThat(refreshed.getDataDate()).isEqualTo(recent);
-        assertThat(refreshed.getSyncStatus()).isEqualTo("SUCCESS");
         verify(dataQualityService).resolve(any(), any(), any(), eq("NONE"), eq(true));
         verify(dataQualityService).claim(prepared);
         verify(analysisServiceClient, org.mockito.Mockito.never()).marketDailyQuotes(any(), any(), any(), anyString());
@@ -244,7 +276,8 @@ class InvestmentAssetServiceIntegrationTest {
         var corrected = new com.smartfinance.agent.investment.service.InvestmentDataQualityService.Evaluation(
                 correctedReceipt, correctedResponse, correctedRows, List.of());
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true))).thenReturn(corrected);
-        assertThat(assetService.refresh(7L, asset.getId(), true).getLatestPrice()).isEqualByComparingTo("181");
+        collect.run();
+        assertThat(assetService.get(7L, asset.getId()).getLatestPrice()).isEqualByComparingTo("181");
         verify(dataQualityService).claim(corrected);
         when(analysisServiceClient.marketDailyQuotes(any(), any(), any(), eq("NONE"))).thenReturn(java.util.Map.of(
                 "records", List.of(java.util.Map.of("data_date", recent.minusYears(1).toString(), "close", "1"))));
@@ -253,8 +286,8 @@ class InvestmentAssetServiceIntegrationTest {
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
                 .thenReturn(new com.smartfinance.agent.investment.service.InvestmentDataQualityService.Evaluation(
                         receipt, outside, (List<java.util.Map<String,Object>>) outside.get("records"), List.of()));
-        var failed = assetService.refresh(7L, asset.getId(), true);
-        assertThat(failed.getSyncStatus()).isEqualTo("FAILED");
+        assertThatThrownBy(collect::run).isInstanceOf(IllegalStateException.class).hasMessageContaining("区间之外");
+        var failed = assetService.get(7L, asset.getId());
         assertThat(failed.getLatestPrice()).isEqualByComparingTo("181");
         assertThat(failed.getDataDate()).isEqualTo(recent);
 
@@ -264,17 +297,17 @@ class InvestmentAssetServiceIntegrationTest {
                     .isActualTransactionActive());
             throw new IllegalStateException("质量数据源暂不可用");
         });
-        var failedSync = assetService.sync(7L, asset.getId());
+        assertThatThrownBy(collect::run).isInstanceOf(IllegalStateException.class).hasMessageContaining("质量数据源暂不可用");
+        var failedSync = assetService.get(7L, asset.getId());
         assertThat(callWithinTransaction.get()).isFalse();
-        assertThat(failedSync.getSyncStatus()).isEqualTo("FAILED");
         assertThat(failedSync.getLatestPrice()).isEqualByComparingTo("181");
         assertThat(failedSync.getDataDate()).isEqualTo(recent);
 
         when(dataQualityService.resolve(any(), any(), any(), eq("NONE"), eq(true)))
                 .thenThrow(new AnalysisServiceClient.SourceEmptyException("请求区间未返回记录",null,java.util.Map.of("result","EMPTY","records",List.of(),
                         "dataContractVersion",com.smartfinance.agent.investment.marketdata.contract.MarketDataContract.forProduct("PRICE","STOCK").version())));
-        var empty = assetService.sync(7L, asset.getId());
-        assertThat(empty.getSyncStatus()).isEqualTo("SUCCESS");
+        collect.run();
+        var empty = assetService.get(7L, asset.getId());
         assertThat(empty.getLatestPrice()).isEqualByComparingTo("181");
         assertThat(empty.getDataDate()).isEqualTo(recent);
     }
@@ -418,6 +451,22 @@ class InvestmentAssetServiceIntegrationTest {
 
         verify(quoteCache, times(2)).get("SSE", "600519");
         verify(analysisServiceClient).realtimeQuote("600519", "SSE");
+    }
+
+    @Test
+    void longProviderFailurePersistsFailedStatusWithoutLosingTheLastQuote() {
+        var created = assetService.create(7L, createRequest("STOCK", "600519"));
+        reset(analysisServiceClient, quoteCache);
+        when(analysisServiceClient.realtimeQuote("600519", "SSE"))
+                .thenThrow(new IllegalStateException("provider unavailable: " + "错误详情".repeat(300)));
+
+        var refreshed = assetService.refreshAll(7L, true).get(0);
+
+        assertThat(refreshed.getSyncStatus()).isEqualTo("FAILED");
+        assertThat(refreshed.getSyncError()).startsWith("provider unavailable:").hasSizeLessThanOrEqualTo(500);
+        assertThat(refreshed.getLatestPrice()).isEqualByComparingTo(created.getLatestPrice());
+        assertThat(jdbc.queryForObject("SELECT sync_status FROM investment_asset WHERE id=?", String.class, created.getId()))
+                .isEqualTo("FAILED");
     }
 
     @Test
@@ -589,7 +638,7 @@ class InvestmentAssetServiceIntegrationTest {
     void sync_shouldRefreshTheSelectedAssetImmediately() {
         var asset = assetService.create(7L, createRequest("STOCK", "600519"));
 
-        var synced = assetService.sync(7L, asset.getId());
+        var synced = assetService.refresh(7L, asset.getId(), true);
 
         assertThat(synced.getSyncStatus()).isEqualTo("SUCCESS");
         assertThat(synced.getLatestPrice()).isEqualByComparingTo("1198.72");

@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -18,7 +20,7 @@ import java.util.UUID;
 /**
  * 个人持仓历史任务执行器。
  *
- * <p>只消费已入队的任务，自身不创建任务；启动时不扫描、不回补。
+ * <p>执行既有任务，并在启动时通过同一分析有效性判断恢复失效结果。
  */
 @Component
 @Slf4j
@@ -75,6 +77,17 @@ public class InvestmentDataJobWorker {
         for (InvestmentDataJob job : jobService.pendingJobs(BATCH_LIMIT)) {
             run(job);
         }
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void resumeHeldData() {
+        jobService.resumeHeldData((userId, assetId) -> {
+            try { return analysisService.needsRecovery(userId, assetId); }
+            catch (RuntimeException failure) {
+                log.warn("Cannot check analysis recovery for asset {}", assetId, failure);
+                return false;
+            }
+        });
     }
 
     private void run(InvestmentDataJob job) {

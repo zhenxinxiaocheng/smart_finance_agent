@@ -20,7 +20,7 @@
             <TableHead>持仓成本价</TableHead>
             <TableHead>市值</TableHead>
             <TableHead>盈亏</TableHead>
-            <TableHead>数据状态</TableHead>
+            <TableHead>行情状态</TableHead>
             <TableHead class="w-24 text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
@@ -79,7 +79,7 @@ defineProps({ assets: { type: Array, default: () => [] }, loading: Boolean })
 defineEmits(['select', 'edit', 'remove', 'add'])
 
 function typeLabel(value) { return value === 'MUTUAL_FUND' ? '基金' : '股票' }
-function statusLabel(value) { return ({ SUCCESS: '数据正常', PARTIAL: '部分数据', PENDING: '等待刷新', RUNNING: '刷新中', FAILED: '数据延迟', NOT_SYNCED: '未同步' }[value] || '未同步') }
+function statusLabel(value) { return ({ SUCCESS: '行情已同步', PARTIAL: '部分行情', PENDING: '等待刷新', RUNNING: '刷新中', FAILED: '行情更新失败', NOT_SYNCED: '未同步' }[value] || '未同步') }
 function statusVariant(value) { return value === 'FAILED' ? 'destructive' : value === 'SUCCESS' ? 'secondary' : 'outline' }
 function decimal(value) { return value == null ? '未填写' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 }).format(Number(value)) }
 function money(value) { return value == null ? '-' : new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 }).format(Number(value)) }

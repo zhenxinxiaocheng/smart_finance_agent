@@ -3,10 +3,27 @@ import assert from 'node:assert/strict'
 import {
   createPrioritizedRefreshRunner,
   formatQuoteTime,
+  isInvestmentQuoteSessionActive,
   startInvestmentRealtimePolling
 } from './investmentRealtime.js'
 
-test('uses a 3000ms polling interval and returns cleanup', () => {
+test('quote polling follows exchange hours, US daylight saving, and daily-only products', () => {
+  const cn = [{ market: 'SSE', quoteFrequency: 'REALTIME' }]
+  assert.equal(isInvestmentQuoteSessionActive(cn, new Date('2026-10-15T02:00:00Z')), true)
+  assert.equal(isInvestmentQuoteSessionActive(cn, new Date('2026-10-15T04:00:00Z')), false)
+  assert.equal(isInvestmentQuoteSessionActive(cn, new Date('2026-10-17T02:00:00Z')), false)
+  const us = [{ market: 'US' }]
+  assert.equal(isInvestmentQuoteSessionActive(us, new Date('2026-07-15T14:00:00Z')), true)
+  assert.equal(isInvestmentQuoteSessionActive(us, new Date('2026-01-15T14:00:00Z')), false)
+  assert.equal(isInvestmentQuoteSessionActive([{ market: 'NASDAQ', quoteFrequency: 'DAILY' }], new Date('2026-07-15T14:00:00Z')), false)
+})
+
+test('markets without an exchange timezone keep refreshing instead of freezing their last quote', () => {
+  assert.equal(isInvestmentQuoteSessionActive([{ market: 'GLOBAL' }], new Date('2026-10-15T14:00:00Z')), true)
+  assert.equal(isInvestmentQuoteSessionActive([{ market: 'GLOBAL', quoteFrequency: 'DAILY' }]), false)
+})
+
+test('defaults to a 30 second quote interval and returns cleanup', () => {
   const scheduler = {
     interval: null,
     cleared: false,
@@ -15,16 +32,16 @@ test('uses a 3000ms polling interval and returns cleanup', () => {
   }
   const calls = []
 
-  const stop = startInvestmentRealtimePolling(force => calls.push(force), 3000, scheduler)
+  const stop = startInvestmentRealtimePolling(force => calls.push(force), undefined, scheduler)
 
-  assert.equal(scheduler.interval, 3000)
+  assert.equal(scheduler.interval, 30000)
   scheduler.callback()
   assert.deepEqual(calls, [false])
   stop()
   assert.equal(scheduler.cleared, true)
 })
 
-test('pauses while hidden and immediately forces a refresh when visible again', () => {
+test('pauses while hidden and respects the cache when visible again', () => {
   const timers = []
   const scheduler = {
     cleared: [],
@@ -59,10 +76,10 @@ test('pauses while hidden and immediately forces a refresh when visible again', 
 
   visibility.hidden = false
   visibility.listener()
-  assert.deepEqual(calls, [true])
+  assert.deepEqual(calls, [false])
   assert.equal(timers.length, 2)
   timers[1].callback()
-  assert.deepEqual(calls, [true, false])
+  assert.deepEqual(calls, [false, false])
 
   stop()
   assert.deepEqual(scheduler.cleared, [1, 2])
