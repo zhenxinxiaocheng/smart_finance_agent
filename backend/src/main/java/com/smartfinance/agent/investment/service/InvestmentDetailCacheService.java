@@ -63,14 +63,18 @@ public class InvestmentDetailCacheService {
         }
     }
 
-    public void put(Long userId, Long assetId, String contextKey, InvestmentAssetDetailResponse data) {
+    public void put(Long userId, Long assetId, String contextKey, InvestmentAssetDetailResponse data,
+                    Instant checkedAt) {
         if (!available()) return;
         try {
             Instant now = clock.instant();
-            String json = mapper.writeValueAsString(new Entry(userId, assetId, now,
-                    now.plus(properties.getFreshTtl()), contextKey, data));
+            Instant validatedAt = checkedAt.isAfter(now) ? now : checkedAt;
+            Instant freshUntil = validatedAt.plus(properties.getFreshTtl());
+            if (!now.isBefore(freshUntil)) return;
+            String json = mapper.writeValueAsString(new Entry(userId, assetId, validatedAt,
+                    freshUntil, contextKey, data));
             afterCommit(() -> {
-                if (!available()) return;
+                if (!available() || !clock.instant().isBefore(freshUntil)) return;
                 try {
                     redis.opsForValue().set(key(userId, assetId), json, properties.getStaleTtl());
                 } catch (Exception exception) { failed(exception); }
@@ -106,7 +110,7 @@ public class InvestmentDetailCacheService {
     }
 
     private static String key(Long userId, Long assetId) {
-        return "investment:detail:v2:" + userId + ":" + assetId;
+        return "investment:detail:v3:" + userId + ":" + assetId;
     }
 
     private static void afterCommit(Runnable action) {

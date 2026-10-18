@@ -52,11 +52,11 @@ class InvestmentDetailCacheServiceTest {
 
     @Test
     void freshStaleExpiredAndUserIsolationUseJsonAndPhysicalStaleTtl() {
-        cache.put(7L, 11L, "context", detail());
+        cache.put(7L, 11L, "context", detail(), time.get());
         var fresh = cache.get(7L, 11L);
         assertThat(fresh.fresh(now)).isTrue();
         assertThat(fresh.data().getAsset().getId()).isEqualTo(11L);
-        verify(values).set(eq("investment:detail:v2:7:11"), anyString(), eq(Duration.ofMinutes(10)));
+        verify(values).set(eq("investment:detail:v3:7:11"), anyString(), eq(Duration.ofMinutes(10)));
         assertThat(cache.get(8L, 11L)).isNull();
         time.set(now.plusSeconds(30));
         assertThat(cache.get(7L, 11L).fresh(time.get())).isFalse();
@@ -69,7 +69,7 @@ class InvestmentDetailCacheServiceTest {
         when(values.get(anyString())).thenThrow(new RedisConnectionFailureException("offline"));
         assertThat(cache.get(7L, 11L)).isNull();
         assertThat(cache.get(7L, 11L)).isNull();
-        cache.put(7L, 11L, "context", detail());
+        cache.put(7L, 11L, "context", detail(), time.get());
         verify(values, times(1)).get(anyString());
         verify(values, never()).set(anyString(), anyString(), any(Duration.class));
         time.set(now.plusSeconds(31));
@@ -79,11 +79,11 @@ class InvestmentDetailCacheServiceTest {
 
     @Test
     void corruptJsonAndMismatchedOwnerAreMisses() {
-        entries.put("investment:detail:v2:7:11", "broken json");
+        entries.put("investment:detail:v3:7:11", "broken json");
         assertThat(cache.get(7L, 11L)).isNull();
         time.set(now.plusSeconds(31));
-        cache.put(8L, 11L, "context", detail());
-        entries.put("investment:detail:v2:7:11", entries.get("investment:detail:v2:8:11"));
+        cache.put(8L, 11L, "context", detail(), time.get());
+        entries.put("investment:detail:v3:7:11", entries.get("investment:detail:v3:8:11"));
         assertThat(cache.get(7L, 11L)).isNull();
     }
 
@@ -91,7 +91,7 @@ class InvestmentDetailCacheServiceTest {
     void disabledCacheDoesNotContactRedis() {
         properties.setEnabled(false);
         cache.get(7L, 11L);
-        cache.put(7L, 11L, "context", detail());
+        cache.put(7L, 11L, "context", detail(), time.get());
         cache.evict(7L, 11L);
         verifyNoInteractions(redis);
     }
@@ -101,12 +101,12 @@ class InvestmentDetailCacheServiceTest {
         TransactionSynchronizationManager.initSynchronization();
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
-            cache.put(7L, 11L, "context", detail());
+            cache.put(7L, 11L, "context", detail(), time.get());
             cache.evict(7L, 11L);
             verifyNoInteractions(redis);
             TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
             assertThat(entries).isEmpty();
-            verify(redis).delete("investment:detail:v2:7:11");
+            verify(redis).delete("investment:detail:v3:7:11");
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);
@@ -115,12 +115,38 @@ class InvestmentDetailCacheServiceTest {
 
     @Test
     void failedEvictionDoesNotResurrectOldDataAfterReconnect() {
-        cache.put(7L, 11L, "context", detail());
+        cache.put(7L, 11L, "context", detail(), time.get());
         time.set(now.plusSeconds(1));
         when(redis.delete(anyString())).thenThrow(new RedisConnectionFailureException("offline"));
         cache.evict(7L, 11L);
         time.set(now.plusSeconds(32));
         assertThat(cache.get(7L, 11L)).isNull();
+    }
+
+    @Test
+    void slowDetailReconstructionDoesNotExtendTheValidationWindow() {
+        time.set(now.plusSeconds(25));
+        cache.put(7L, 11L, "context", detail(), now);
+
+        assertThat(cache.get(7L, 11L).freshUntil()).isEqualTo(now.plusSeconds(30));
+        time.set(now.plusSeconds(30));
+        assertThat(cache.get(7L, 11L).fresh(time.get())).isFalse();
+    }
+
+    @Test
+    void expiredValidationIsNotCachedAfterADelayedCommit() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            cache.put(7L, 11L, "context", detail(), now);
+            time.set(now.plusSeconds(30));
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+            assertThat(entries).isEmpty();
+            verify(values, never()).set(anyString(), anyString(), any(Duration.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
     }
 
     @Test

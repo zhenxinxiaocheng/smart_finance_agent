@@ -95,39 +95,38 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
     @Override
     public InvestmentAssetDetailResponse detail(Long userId, Long assetId) {
-        // Authorize against MySQL even on a cache hit (including deleted assets).
+        // Always authorize and check live preferences, quality and snapshot metadata.
         DetailContext context = detailContext(userId, assetId);
         InvestmentDetailCacheService.Entry cached = detailCache.get(userId, assetId);
-        // Redis 只用于加速：命中即直接返回最后有效分析，过期也照常返回。
-        // 缓存 MISS 时从 MySQL 的分析快照重建，绝不触发历史重拉或全量回补。
-        if (cached != null && Objects.equals(cached.contextKey(), context.key())) {
-            boolean fresh = cached.fresh(Instant.now());
-            log.debug("Investment detail cache {}", fresh ? "HIT" : "STALE");
-            return detailStatus(cached.data(), fresh ? "FRESH" : "STALE", context.job());
+        // Reuse history validation only within the fresh TTL; reads never extend that window.
+        if (cached != null && cached.fresh(Instant.now())
+                && Objects.equals(cached.contextKey(), context.key())) {
+            log.debug("Investment detail cache HIT");
+            return detailStatus(cached.data(), "FRESH", context.job());
         }
         log.debug("Investment detail cache MISS");
         InvestmentAssetDetailResponse response = readOnlyDetail(userId, assetId, context);
-        detailCache.put(userId, assetId, context.key(), response);
+        detailCache.put(userId, assetId, context.key(), response, context.checkedAt());
         return detailStatus(response, "MISS", context.job());
     }
 
     @Override
     public boolean needsRecovery(Long userId, Long assetId) {
         DetailContext context = detailContext(userId, assetId);
-        AnalysisEligibility eligibility = analysisEligibility(context.product(), context.history(),
+        AnalysisHistory history = detailHistory(context, loadQuotes(context.product()));
+        AnalysisEligibility eligibility = analysisEligibility(context.product(), history,
                 findSnapshot(userId, assetId), context.horizon(), context.quality(), null);
-        return context.history().records().size() >= horizonProperties.getMinimumHistoryTradingDays()
+        return history.records().size() >= horizonProperties.getMinimumHistoryTradingDays()
                 && !eligibility.blocked() && !eligibility.reusableSnapshot();
     }
 
     private record DetailContext(InvestmentAssetView asset, InvestmentProduct product,
                                  ResolvedHorizonProfile horizon, Map<String, Object> quality,
-                                 List<ProductDailyQuote> quotes, AnalysisHistory history,
                                  InvestmentAnalysisSnapshot snapshot, InvestmentDataJob job,
-                                 String holdingsRevision, String key) {}
+                                 String holdingsRevision, String key, Instant checkedAt) {}
 
     private String holdingsRevision(Long userId) {
-        // A cheap, user-scoped DB revision also rejects fills racing with another asset's eviction.
+        // Also reject fills racing with another asset's eviction, including legacy holdings.
         return hash(writeJson(assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
                 .select(InvestmentAsset::getId, InvestmentAsset::getQuantity,
                         InvestmentAsset::getAverageCost, InvestmentAsset::getUpdatedAt)
@@ -135,6 +134,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     private DetailContext detailContext(Long userId, Long assetId) {
+        Instant checkedAt = Instant.now();
         InvestmentAssetView asset = assetService.get(userId, assetId);
         InvestmentProduct product = productMapper.selectById(asset.getProductId());
         if (product == null) throw new IllegalArgumentException("投资产品不存在");
@@ -142,18 +142,20 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId, true);
         Map<String, Object> quality = dataQualityService.analysisStatus(product,
                 snapshot == null ? null : snapshot.getDatasetVersion());
-        List<ProductDailyQuote> quotes = loadQuotes(product);
-        AnalysisHistory history = analysisHistory(product, quotes, interactiveHistoryDays(horizon, horizonProperties), quality);
         String holdingsRevision = holdingsRevision(userId);
         // Includes holdings, global/asset preferences and the latest persisted quality gate.
         // A failed Redis eviction must not expose a previous owner's data or a blocked conclusion.
         String key = hash(writeFingerprintJson(Arrays.asList(asset, horizonConfigMaterial(horizon), quality, holdingsRevision,
                 runtimeProperties.getAnalysis().getStrategyVersion(), horizonProperties.getAnalysisRuleVersion(),
-                quoteHistoryMaterial(quotes), history.internalGap(), benchmarkCacheMaterial(product, history.records()),
                 snapshot == null ? null : Arrays.asList(snapshot.getAnalysisCacheKey(), snapshot.getAnalyzedAt(),
                         snapshot.getAnalysisStatus(), snapshot.getUpdatedAt()))));
-        return new DetailContext(asset, product, horizon, quality, quotes, history, snapshot,
-                dataJobService.analysisJob(userId, assetId, product.getProductType()), holdingsRevision, key);
+        return new DetailContext(asset, product, horizon, quality, snapshot,
+                dataJobService.analysisJob(userId, assetId, product.getProductType()), holdingsRevision, key, checkedAt);
+    }
+
+    private AnalysisHistory detailHistory(DetailContext context, List<ProductDailyQuote> quotes) {
+        return analysisHistory(context.product(), quotes,
+                interactiveHistoryDays(context.horizon(), horizonProperties), context.quality());
     }
 
     private InvestmentAssetDetailResponse detailStatus(
@@ -217,7 +219,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         DetailContext current = detailContext(userId, assetId);
         detailCache.evict(userId, assetId);
         Map<String, Object> provenance = asMap(response.getTechnicalAnalysis().get("provenance"));
-        AnalysisEligibility currentEligibility = analysisEligibility(current.product(), current.history(),
+        AnalysisEligibility currentEligibility = analysisEligibility(current.product(),
+                detailHistory(current, loadQuotes(current.product())),
                 findSnapshot(userId, assetId), current.horizon(), current.quality(), null);
         if ((current.snapshot() == null || currentEligibility.compatibleInputs()) && !currentEligibility.blocked()
                 && Objects.equals(holdingsBefore, current.holdingsRevision())
@@ -227,7 +230,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
                         current.snapshot() == null ? null : current.snapshot().getAnalyzedAt())
                 && Objects.equals(response.getAsset(), current.asset())
                 && Objects.equals(response.getAnalysisPreference(), horizonService.describe(current.horizon()))) {
-            detailCache.put(userId, assetId, current.key(), response);
+            detailCache.put(userId, assetId, current.key(), response, current.checkedAt());
         }
         return response;
     }
@@ -352,8 +355,8 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentAssetView asset = context.asset();
         InvestmentProduct product = context.product();
         ResolvedHorizonProfile horizonProfile = context.horizon();
-        List<ProductDailyQuote> quotes = context.quotes();
-        AnalysisHistory history = context.history();
+        List<ProductDailyQuote> quotes = loadQuotes(product);
+        AnalysisHistory history = detailHistory(context, quotes);
         List<ProductDailyQuote> analysisQuotes = history.records();
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
         Map<String, Object> quality = context.quality();

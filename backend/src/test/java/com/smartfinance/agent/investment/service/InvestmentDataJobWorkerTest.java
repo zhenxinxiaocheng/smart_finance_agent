@@ -1048,7 +1048,7 @@ class InvestmentDataJobWorkerTest {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
         clearInvocations(fixture.jobService(), fixture.analysisClient());
@@ -1059,15 +1059,34 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void freshRedisCacheCannotHideAnInternalFundReturnGap() {
+    void freshCacheHitDoesNotReloadQuoteHistory() {
+        ReadOnlyFixture fixture = readOnlyFixture(2500);
+        var response = fixture.service().refresh(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
+        clearInvocations(fixture.quoteMapper(), fixture.assetMapper(), fixture.analysisClient());
+
+        var cached = fixture.service().detail(7L, 11L);
+
+        assertThat(cached.getSourceStatus()).containsEntry("cacheStatus", "FRESH");
+        assertThat(cached.getQuoteSeries()).hasSize(2500);
+        verify(fixture.quoteMapper(), never()).selectList(any());
+        verify(fixture.detailCache(), times(1)).put(eq(7L), eq(11L), anyString(), any(), any(Instant.class));
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
+    void expiredRedisCacheCannotHideAnInternalFundReturnGap() {
         ReadOnlyFixture fixture = readOnlyFixture(30, "MUTUAL_FUND");
         when(fixture.analysisClient().fundAnalysis(any(), anyString(), any(), anyString(), any()))
                 .thenReturn(Map.of("status", "READY", "strategyVersion", "technical-strategy-v4", "score", 70));
         var response = fixture.service().refresh(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
-                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
+                7L, 11L, Instant.now().minusSeconds(30), Instant.now().minusMillis(1), key.getValue(), response));
         List<ProductDailyQuote> history = new java.util.ArrayList<>(fixture.quoteMapper().selectList(null));
         ProductDailyQuote gap = new ProductDailyQuote();
         gap.setTradeDate(LocalDate.of(2026, 7, 1));
@@ -1090,15 +1109,21 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void sameDayContentCorrectionInvalidatesEvenFreshRedisCache() {
+    void sameDayContentCorrectionIsRevalidatedAfterTheFreshWindow() {
         ReadOnlyFixture fixture = readOnlyFixture(30);
         var response = fixture.service().refresh(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
         fixture.quoteMapper().selectList(null).get(0).setClosePrice(java.math.BigDecimal.valueOf(11));
         clearInvocations(fixture.analysisClient(), fixture.jobService());
+
+        var fresh = fixture.service().detail(7L, 11L);
+        assertThat(fresh.getSourceStatus()).containsEntry("cacheStatus", "FRESH");
+        assertThat(fresh.getTechnicalAnalysis()).containsEntry("score", 60);
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now().minusSeconds(30), Instant.now().minusMillis(1), key.getValue(), response));
 
         var result = fixture.service().detail(7L, 11L);
 
@@ -1109,20 +1134,22 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void staleCacheReturnsStoredDetailWithoutQueuingHistoryReload() {
+    void staleCacheRevalidatesDatabaseDetailWithoutQueuingHistoryReload() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         var readyStatus = new LinkedHashMap<>(response.getSourceStatus());
         readyStatus.put("dataState", "READY");
         response.setSourceStatus(readyStatus);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now().minusSeconds(60), Instant.now().minusSeconds(30), key.getValue(), response));
-        clearInvocations(fixture.jobService(), fixture.analysisClient());
+        clearInvocations(fixture.jobService(), fixture.analysisClient(), fixture.quoteMapper());
 
         var result = fixture.service().detail(7L, 11L);
-        assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "STALE");
+        assertThat(result.getSourceStatus()).containsEntry("cacheStatus", "MISS");
+        assertThat(result).isNotSameAs(response);
+        verify(fixture.quoteMapper()).selectList(any());
         verify(fixture.jobService(), never()).ensureRecoveryQueued(any(), any(), any(), anyString());
         verifyNoInteractions(fixture.analysisClient());
     }
@@ -1132,7 +1159,7 @@ class InvestmentDataJobWorkerTest {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var refreshed = fixture.service().refresh(7L, 11L);
         verify(fixture.detailCache()).evict(7L, 11L);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), anyString(), same(refreshed));
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), anyString(), same(refreshed), any(Instant.class));
         ArgumentCaptor<InvestmentAnalysisSnapshot> saved = ArgumentCaptor.forClass(InvestmentAnalysisSnapshot.class);
         verify(fixture.snapshotMapper()).insert(saved.capture());
         assertThat(saved.getValue().getAnalyzedAt().getNano()).isZero();
@@ -1264,7 +1291,7 @@ class InvestmentDataJobWorkerTest {
         fixture.service().detail(7L, 11L);
 
         var keys = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache(), times(2)).put(eq(7L), eq(11L), keys.capture(), any());
+        verify(fixture.detailCache(), times(2)).put(eq(7L), eq(11L), keys.capture(), any(), any(Instant.class));
         assertThat(keys.getAllValues().get(0)).isEqualTo(keys.getAllValues().get(1));
     }
 
@@ -1398,7 +1425,7 @@ class InvestmentDataJobWorkerTest {
         var fixture = readOnlyFixture(30);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
         InvestmentDataJob failed = new InvestmentDataJob(); failed.setStatus("FAILED");
@@ -1461,7 +1488,7 @@ class InvestmentDataJobWorkerTest {
 
         fixture.service().refresh(7L, 11L);
 
-        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any());
+        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any(), any(Instant.class));
         assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("dataState", "PREPARING");
     }
 
@@ -1771,7 +1798,7 @@ class InvestmentDataJobWorkerTest {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
         when(fixture.dataQualityService().analysisStatus(any(), any())).thenReturn(Map.of("decision", "BLOCK", "datasetVersion", "blocked"));
@@ -1787,7 +1814,7 @@ class InvestmentDataJobWorkerTest {
                 "datasetVersion", "blocked-dataset", "decision", "BLOCK", "status", "BLOCKED"));
         var response = fixture.service().refresh(7L, 11L);
         assertThat(response.getSourceStatus()).containsEntry("dataState", "BLOCKED");
-        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any());
+        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any(), any(Instant.class));
         assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("dataState", "BLOCKED");
     }
 
@@ -1799,7 +1826,7 @@ class InvestmentDataJobWorkerTest {
         otherAsset.setQuantity(java.math.BigDecimal.TEN);
         when(fixture.assetMapper().selectList(any())).thenReturn(List.of(), List.of(otherAsset));
         fixture.service().refresh(7L, 11L);
-        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any());
+        verify(fixture.detailCache(), never()).put(any(), any(), anyString(), any(), any(Instant.class));
     }
 
     @Test
@@ -1807,7 +1834,7 @@ class InvestmentDataJobWorkerTest {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any());
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
         var otherAsset = new com.smartfinance.agent.investment.entity.InvestmentAsset();
