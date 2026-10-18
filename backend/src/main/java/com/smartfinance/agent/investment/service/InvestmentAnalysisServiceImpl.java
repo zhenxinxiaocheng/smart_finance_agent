@@ -95,9 +95,13 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
     @Override
     public InvestmentAssetDetailResponse detail(Long userId, Long assetId) {
-        // Always authorize and check live preferences, quality and snapshot metadata.
+        return detail(userId, assetId, true);
+    }
+
+    private InvestmentAssetDetailResponse detail(Long userId, Long assetId, boolean useCache) {
+        // Always authorize and check live quality and snapshot metadata.
         DetailContext context = detailContext(userId, assetId);
-        InvestmentDetailCacheService.Entry cached = detailCache.get(userId, assetId);
+        InvestmentDetailCacheService.Entry cached = useCache ? detailCache.get(userId, assetId) : null;
         // Reuse history validation only within the fresh TTL; reads never extend that window.
         if (cached != null && cached.fresh(Instant.now())
                 && Objects.equals(cached.contextKey(), context.key())) {
@@ -113,20 +117,20 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     @Override
     public boolean needsRecovery(Long userId, Long assetId) {
         DetailContext context = detailContext(userId, assetId);
-        AnalysisHistory history = detailHistory(context, loadQuotes(context.product()));
+        ResolvedHorizonProfile horizon = horizonService.resolve(userId, assetId);
+        AnalysisHistory history = detailHistory(context, loadQuotes(context.product()), horizon);
         AnalysisEligibility eligibility = analysisEligibility(context.product(), history,
-                findSnapshot(userId, assetId), context.horizon(), context.quality(), null);
+                findSnapshot(userId, assetId), horizon, context.quality(), null);
         return history.records().size() >= horizonProperties.getMinimumHistoryTradingDays()
                 && !eligibility.blocked() && !eligibility.reusableSnapshot();
     }
 
-    private record DetailContext(InvestmentAssetView asset, InvestmentProduct product,
-                                 ResolvedHorizonProfile horizon, Map<String, Object> quality,
+    private record DetailContext(InvestmentProduct product, Map<String, Object> quality,
                                  InvestmentAnalysisSnapshot snapshot, InvestmentDataJob job,
-                                 String holdingsRevision, String key, Instant checkedAt) {}
+                                 String key, Instant checkedAt) {}
 
     private String holdingsRevision(Long userId) {
-        // Also reject fills racing with another asset's eviction, including legacy holdings.
+        // Check portfolio consistency around background assembly, off the cache-hit path.
         return hash(writeJson(assetMapper.selectList(new LambdaQueryWrapper<InvestmentAsset>()
                 .select(InvestmentAsset::getId, InvestmentAsset::getQuantity,
                         InvestmentAsset::getAverageCost, InvestmentAsset::getUpdatedAt)
@@ -135,27 +139,33 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
 
     private DetailContext detailContext(Long userId, Long assetId) {
         Instant checkedAt = Instant.now();
-        InvestmentAssetView asset = assetService.get(userId, assetId);
+        InvestmentAsset asset = assetMapper.selectById(assetId);
+        if (asset == null || Integer.valueOf(1).equals(asset.getDeleted())
+                || !Objects.equals(asset.getUserId(), userId)) {
+            throw new IllegalArgumentException("资产不存在");
+        }
         InvestmentProduct product = productMapper.selectById(asset.getProductId());
         if (product == null) throw new IllegalArgumentException("投资产品不存在");
-        ResolvedHorizonProfile horizon = horizonService.resolve(userId, assetId);
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId, true);
         Map<String, Object> quality = dataQualityService.analysisStatus(product,
                 snapshot == null ? null : snapshot.getDatasetVersion());
-        String holdingsRevision = holdingsRevision(userId);
-        // Includes holdings, global/asset preferences and the latest persisted quality gate.
-        // A failed Redis eviction must not expose a previous owner's data or a blocked conclusion.
-        String key = hash(writeFingerprintJson(Arrays.asList(asset, horizonConfigMaterial(horizon), quality, holdingsRevision,
+        // Holdings/preferences invalidate details on commit; the fresh TTL bounds missed notifications.
+        String key = hash(writeFingerprintJson(Arrays.asList(asset, quality,
+                Arrays.asList(product.getProductType(), product.getCode(), product.getMarket(), product.getName(),
+                        product.getCurrency(), product.getFundCategory(), product.getClassificationSource(),
+                        product.getClassificationVersion()),
+                Arrays.asList(horizonProperties.getTemplateVersion(), horizonProperties.getDefaults()),
                 runtimeProperties.getAnalysis().getStrategyVersion(), horizonProperties.getAnalysisRuleVersion(),
                 snapshot == null ? null : Arrays.asList(snapshot.getAnalysisCacheKey(), snapshot.getAnalyzedAt(),
                         snapshot.getAnalysisStatus(), snapshot.getUpdatedAt()))));
-        return new DetailContext(asset, product, horizon, quality, snapshot,
-                dataJobService.analysisJob(userId, assetId, product.getProductType()), holdingsRevision, key, checkedAt);
+        return new DetailContext(product, quality, snapshot,
+                dataJobService.analysisJob(userId, assetId, product.getProductType()), key, checkedAt);
     }
 
-    private AnalysisHistory detailHistory(DetailContext context, List<ProductDailyQuote> quotes) {
+    private AnalysisHistory detailHistory(DetailContext context, List<ProductDailyQuote> quotes,
+                                         ResolvedHorizonProfile horizon) {
         return analysisHistory(context.product(), quotes,
-                interactiveHistoryDays(context.horizon(), horizonProperties), context.quality());
+                interactiveHistoryDays(horizon, horizonProperties), context.quality());
     }
 
     private InvestmentAssetDetailResponse detailStatus(
@@ -187,7 +197,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         horizonService.saveAssetOverride(userId, assetId, request);
         dataJobService.ensureRecoveryQueued(userId, assetId, asset.getProductId(), asset.getProductType(), true);
         detailCache.evict(userId, assetId);
-        return detail(userId, assetId);
+        return detail(userId, assetId, false);
     }
 
     @Override
@@ -197,7 +207,7 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         horizonService.clearAssetOverride(userId, assetId);
         dataJobService.ensureRecoveryQueued(userId, assetId, asset.getProductId(), asset.getProductType(), true);
         detailCache.evict(userId, assetId);
-        return detail(userId, assetId);
+        return detail(userId, assetId, false);
     }
 
     @Override
@@ -210,26 +220,27 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
         InvestmentAssetView asset = assetService.get(userId, assetId);
         dataJobService.ensureQueued(userId, assetId, asset.getProductId(), asset.getProductType(), true);
         detailCache.evict(userId, assetId);
-        return detail(userId, assetId);
+        return detail(userId, assetId, false);
     }
 
     private InvestmentAssetDetailResponse rebuildAndCache(Long userId, Long assetId) {
         String holdingsBefore = holdingsRevision(userId);
         InvestmentAssetDetailResponse response = build(userId, assetId);
-        DetailContext current = detailContext(userId, assetId);
         detailCache.evict(userId, assetId);
+        DetailContext current = detailContext(userId, assetId);
+        ResolvedHorizonProfile horizon = horizonService.resolve(userId, assetId);
         Map<String, Object> provenance = asMap(response.getTechnicalAnalysis().get("provenance"));
         AnalysisEligibility currentEligibility = analysisEligibility(current.product(),
-                detailHistory(current, loadQuotes(current.product())),
-                findSnapshot(userId, assetId), current.horizon(), current.quality(), null);
+                detailHistory(current, loadQuotes(current.product()), horizon),
+                findSnapshot(userId, assetId), horizon, current.quality(), null);
         if ((current.snapshot() == null || currentEligibility.compatibleInputs()) && !currentEligibility.blocked()
-                && Objects.equals(holdingsBefore, current.holdingsRevision())
+                && Objects.equals(holdingsBefore, holdingsRevision(userId))
                 && Objects.equals(response.getSourceStatus().get("qualityDecision"), current.quality().get("decision"))
                 && Objects.equals(provenance.get("datasetVersion"), current.quality().get("datasetVersion"))
                 && Objects.equals(response.getSourceStatus().get("analyzedAt"),
                         current.snapshot() == null ? null : current.snapshot().getAnalyzedAt())
-                && Objects.equals(response.getAsset(), current.asset())
-                && Objects.equals(response.getAnalysisPreference(), horizonService.describe(current.horizon()))) {
+                && Objects.equals(response.getAsset(), assetService.get(userId, assetId))
+                && Objects.equals(response.getAnalysisPreference(), horizonService.describe(horizon))) {
             detailCache.put(userId, assetId, current.key(), response, current.checkedAt());
         }
         return response;
@@ -352,11 +363,11 @@ public class InvestmentAnalysisServiceImpl implements InvestmentAnalysisService 
     }
 
     private InvestmentAssetDetailResponse readOnlyDetail(Long userId, Long assetId, DetailContext context) {
-        InvestmentAssetView asset = context.asset();
+        InvestmentAssetView asset = assetService.get(userId, assetId);
         InvestmentProduct product = context.product();
-        ResolvedHorizonProfile horizonProfile = context.horizon();
+        ResolvedHorizonProfile horizonProfile = horizonService.resolve(userId, assetId);
         List<ProductDailyQuote> quotes = loadQuotes(product);
-        AnalysisHistory history = detailHistory(context, quotes);
+        AnalysisHistory history = detailHistory(context, quotes, horizonProfile);
         List<ProductDailyQuote> analysisQuotes = history.records();
         InvestmentAnalysisSnapshot snapshot = findSnapshot(userId, assetId);
         Map<String, Object> quality = context.quality();

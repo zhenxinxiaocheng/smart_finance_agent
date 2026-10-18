@@ -1,23 +1,41 @@
 package com.smartfinance.agent.investment.service;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartfinance.agent.investment.config.InvestmentDetailCacheProperties;
 import com.smartfinance.agent.investment.dto.InvestmentAssetDetailResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @Slf4j
 public class InvestmentDetailCacheService {
+    private static final DefaultRedisScript<Long> WRITE_IF_CURRENT = new DefaultRedisScript<>("""
+            local incoming = cjson.decode(ARGV[1])
+            local stored = redis.call('GET', KEYS[1])
+            if stored then
+                local valid, previous = pcall(cjson.decode, stored)
+                if valid and type(previous) == 'table' and type(previous.cachedAt) == 'string' and
+                   (previous.cachedAt > incoming.cachedAt or
+                    (previous.cachedAt == incoming.cachedAt and incoming.data ~= cjson.null)) then
+                    return 0
+                end
+            end
+            redis.call('PSETEX', KEYS[1], ARGV[2], ARGV[1])
+            return 1
+            """, Long.class);
     private final StringRedisTemplate redis;
     private final ObjectMapper mapper;
     private final InvestmentDetailCacheProperties properties;
@@ -39,7 +57,10 @@ public class InvestmentDetailCacheService {
         this.clock = clock;
     }
 
-    public record Entry(Long userId, Long assetId, Instant cachedAt, Instant freshUntil,
+    public record Entry(Long userId, Long assetId,
+                        @JsonFormat(shape = JsonFormat.Shape.STRING,
+                                pattern = "uuuu-MM-dd'T'HH:mm:ss.SSSSSSSSS'Z'", timezone = "UTC") Instant cachedAt,
+                        Instant freshUntil,
                         String contextKey, InvestmentAssetDetailResponse data) {
         public boolean fresh(Instant now) { return now.isBefore(freshUntil); }
     }
@@ -76,7 +97,7 @@ public class InvestmentDetailCacheService {
             afterCommit(() -> {
                 if (!available() || !clock.instant().isBefore(freshUntil)) return;
                 try {
-                    redis.opsForValue().set(key(userId, assetId), json, properties.getStaleTtl());
+                    write(userId, assetId, json, properties.getStaleTtl());
                 } catch (Exception exception) { failed(exception); }
             });
         } catch (Exception exception) { failed(exception); }
@@ -89,12 +110,20 @@ public class InvestmentDetailCacheService {
                 ignoreCachedBefore = clock.millis();
                 return;
             }
-            try { redis.delete(key(userId, assetId)); }
+            try {
+                Instant now = clock.instant();
+                String tombstone = mapper.writeValueAsString(new Entry(userId, assetId, now, now, null, null));
+                write(userId, assetId, tombstone, properties.getFreshTtl());
+            }
             catch (Exception exception) {
                 ignoreCachedBefore = clock.millis();
                 failed(exception);
             }
         });
+    }
+
+    private void write(Long userId, Long assetId, String json, Duration ttl) {
+        redis.execute(WRITE_IF_CURRENT, List.of(key(userId, assetId)), json, Long.toString(ttl.toMillis()));
     }
 
     private boolean available() {
@@ -110,7 +139,7 @@ public class InvestmentDetailCacheService {
     }
 
     private static String key(Long userId, Long assetId) {
-        return "investment:detail:v3:" + userId + ":" + assetId;
+        return "investment:detail:v4:" + userId + ":" + assetId;
     }
 
     private static void afterCommit(Runnable action) {

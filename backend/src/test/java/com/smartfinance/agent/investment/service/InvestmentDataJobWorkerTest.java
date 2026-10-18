@@ -1059,22 +1059,25 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void freshCacheHitDoesNotReloadQuoteHistory() {
+    void freshCacheHitDoesNotReloadQuoteHistoryOrRebuildContext() {
         ReadOnlyFixture fixture = readOnlyFixture(2500);
         var response = fixture.service().refresh(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
-        clearInvocations(fixture.quoteMapper(), fixture.assetMapper(), fixture.analysisClient());
+        clearInvocations(fixture.quoteMapper(), fixture.assetMapper(), fixture.analysisClient(),
+                fixture.assetService(), fixture.horizonService());
 
         var cached = fixture.service().detail(7L, 11L);
 
         assertThat(cached.getSourceStatus()).containsEntry("cacheStatus", "FRESH");
         assertThat(cached.getQuoteSeries()).hasSize(2500);
-        verify(fixture.quoteMapper(), never()).selectList(any());
+        verify(fixture.assetMapper()).selectById(11L);
+        verify(fixture.assetMapper(), never()).selectList(any());
         verify(fixture.detailCache(), times(1)).put(eq(7L), eq(11L), anyString(), any(), any(Instant.class));
-        verifyNoInteractions(fixture.analysisClient());
+        verifyNoInteractions(fixture.quoteMapper(), fixture.assetService(), fixture.horizonService(),
+                fixture.analysisClient());
     }
 
     @Test
@@ -1771,6 +1774,28 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
+    void preferenceSaveBypassesFreshCacheBeforeItsDeferredInvalidation() {
+        var fixture = readOnlyFixture(30);
+        var previous = fixture.service().detail(7L, 11L);
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
+        when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
+                7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), previous));
+        when(fixture.horizonService().saveAssetOverride(7L, 11L, null)).thenAnswer(call -> {
+            when(fixture.horizonService().resolve(7L, 11L)).thenReturn(new ResolvedHorizonProfile(
+                    "asset:2", "test", List.of(new HorizonSetting("LONG", "长线", 1, 40, 120, true, "ASSET")), List.of()));
+            return null;
+        });
+
+        var updated = fixture.service().updatePreference(7L, 11L, null);
+
+        assertThat(((Map<?, ?>) updated.getTechnicalAnalysis().get("provenance")).get("horizonCode"))
+                .isEqualTo("LONG");
+        verify(fixture.detailCache(), times(1)).get(7L, 11L);
+        verifyNoInteractions(fixture.analysisClient());
+    }
+
+    @Test
     void redisConnectionFailureStillReturnsDatabaseDetail() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var redis = mock(org.springframework.data.redis.core.StringRedisTemplate.class);
@@ -1787,8 +1812,10 @@ class InvestmentDataJobWorkerTest {
     @Test
     void unauthorizedOrDeletedAssetCannotReadRedis() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
-        when(fixture.assetService().get(8L, 11L)).thenThrow(new IllegalArgumentException("资产不存在"));
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> fixture.service().detail(8L, 11L))
+                .isInstanceOf(IllegalArgumentException.class);
+        fixture.assetMapper().selectById(11L).setDeleted(1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> fixture.service().detail(7L, 11L))
                 .isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(fixture.detailCache());
     }
@@ -1830,18 +1857,18 @@ class InvestmentDataJobWorkerTest {
     }
 
     @Test
-    void lateCacheFillAfterAnotherHoldingMutationIsRejectedOnNextRead() {
+    void ownHoldingMutationInvalidatesFreshCacheWithoutReadingThePortfolio() {
         ReadOnlyFixture fixture = readOnlyFixture(20);
         var response = fixture.service().detail(7L, 11L);
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(fixture.detailCache()).put(eq(7L), eq(11L), key.capture(), any(), any(Instant.class));
         when(fixture.detailCache().get(7L, 11L)).thenReturn(new InvestmentDetailCacheService.Entry(
                 7L, 11L, Instant.now(), Instant.now().plusSeconds(30), key.getValue(), response));
-        var otherAsset = new com.smartfinance.agent.investment.entity.InvestmentAsset();
-        otherAsset.setId(12L);
-        otherAsset.setQuantity(java.math.BigDecimal.TEN);
-        when(fixture.assetMapper().selectList(any())).thenReturn(List.of(otherAsset));
+        fixture.assetMapper().selectById(11L).setQuantity(java.math.BigDecimal.TEN);
+        fixture.assetService().get(7L, 11L).setQuantity(java.math.BigDecimal.TEN);
+        clearInvocations(fixture.assetMapper());
         assertThat(fixture.service().detail(7L, 11L).getSourceStatus()).containsEntry("cacheStatus", "MISS");
+        verify(fixture.assetMapper(), never()).selectList(any());
     }
 
     private static InvestmentAssetDetailResponse detailWithQuotes(int count) {
@@ -1909,6 +1936,7 @@ class InvestmentDataJobWorkerTest {
         ProductDailyQuoteMapper quoteMapper = mock(ProductDailyQuoteMapper.class);
         InvestmentHorizonService horizonService = mock(InvestmentHorizonService.class);
         InvestmentHorizonProperties horizonProperties = new InvestmentHorizonProperties();
+        horizonProperties.setTemplateVersion("test");
         horizonProperties.setMinimumHistoryTradingDays(20);
         horizonProperties.setMaxHistoryTradingDays(2500);
         horizonProperties.setHistoryMultiplier(3);
@@ -1944,6 +1972,12 @@ class InvestmentDataJobWorkerTest {
         asset.setId(11L);
         asset.setProductId(21L);
         asset.setProductType(productType);
+        var ownedAsset = new com.smartfinance.agent.investment.entity.InvestmentAsset();
+        ownedAsset.setId(11L);
+        ownedAsset.setUserId(7L);
+        ownedAsset.setProductId(21L);
+        ownedAsset.setDeleted(0);
+        when(assetMapper.selectById(11L)).thenReturn(ownedAsset);
         InvestmentProduct product = new InvestmentProduct();
         product.setId(21L);
         product.setProductType(productType);
